@@ -1,0 +1,84 @@
+.hidden { display: none; }
+#context-menu button { font-size: 14px; font-family: sans-serif; }
+
+@keyframes float {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+    100% { transform: translateY(0px); }
+}
+
+.floating-mascot {
+    animation: float 3s ease-in-out infinite;
+}
+
+#mascot-dialog {
+    filter: drop-shadow(0 10px 15px rgba(0, 0, 0, 0.1));
+}
+
+.scribble-bubble {
+    background-color: rgba(215, 205, 245, 0.95); /* Màu tím nhạt hơn chút cho sang */
+    border: 2px solid #7c4dff;
+    border-radius: 40px 50px 30px 60px / 50px 30px 60px 40px; /* Hình dáng ngẫu hứng nhưng rộng rãi */
+    position: relative;
+    box-shadow: 3px 3px 0 #7c4dff;
+    padding: 1.5rem 2rem; 
+    pointer-events: auto;
+    max-width: 350px;
+    max-height: 50vh;
+    overflow-y: auto;
+    width: fit-content;
+    min-width: 200px;
+    transition: all 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: #7c4dff transparent;
+}
+
+.scribble-bubble::-webkit-scrollbar {
+    width: 4px;
+}
+
+.scribble-bubble::-webkit-scrollbar-thumb {
+    background: #7c4dff;
+    border-radius: 10px;
+}
+
+#mascot-text {
+    word-break: break-word;
+    white-space: pre-wrap;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.scribble-bubble::before {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border: 1px solid #7c4dff;
+    border-radius: 51% / 39%;
+    transform: rotate(1deg);
+    pointer-events: none;
+}
+
+.scribble-bubble::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+    border: 1px solid #7c4dff;
+    border-radius: 49% / 41%;
+    transform: rotate(-1.5deg);
+    pointer-events: none;
+}
+
+.scribble-tail {
+    position: absolute;
+    right: 15%;
+    bottom: -20px;
+    width: 30px;
+    height: 40px;
+    background-color: rgba(209, 196, 233, 0.9);
+    clip-path: polygon(0 0, 100% 0, 80% 100%, 20% 0);
+    border-left: 2px solid #7c4dff;
+    border-right: 2px solid #7c4dff;
+}
+
+

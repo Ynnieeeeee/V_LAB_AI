@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <link rel="stylesheet" href="./assets/css/output.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css">
+    <link rel="stylesheet" href="./assets/font/fontawesome-free-6.7.2-web/css/all.css">
+</head>
+<body>
+    <div class="flex h-screen">
+        <div class="xl:w-2/3 hidden lg:block lg:w-1/2">
+            <img src="./assets/img/login.jpg" alt="login" class="w-full h-full">
+        </div>
+        <div class="flex flex-col items-center justify-center h-screen space-y-6 mx-auto">
+            <div>
+                <p class="font-Italianno font-bold text-5xl bg-gradient-to-r from-[#352b4b] to-[#273eb0] bg-clip-text text-transparent">
+                    WELCOME
+                </p>
+            </div>
+            <div>
+                <a href="/auth/google" id="google-login" type="button" class="w-[300px] flex justify-center space-x-3 px-4 py-2 border rounded-lg bg-[#8C5A3C] text-white font-medium text-xl mt-2 transition-colors duration-300 ease-linear hover:bg-[#C08552]">
+                    <span>
+                        Login with
+                    </span>
+                    <img src="./assets/img/google.png" alt="google" class="w-[20px] overflow-hidden">
+                </a>
+            </div>
+            <div>
+                <a href="/auth/google" id="google-login" type="button" class="w-[300px] flex justify-center space-x-3 px-4 py-2 border rounded-lg bg-[#8C5A3C] text-white font-medium text-xl mt-2 transition-colors duration-300 ease-linear hover:bg-[#C08552]">
+                    <span>
+                        Login with
+                    </span>
+                    <img src="./assets/img/facebook.png" alt="facebook" class="w-[25px] overflow-hidden">
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script src="./assets/js/auth_google.js"></script>
+</body>
+</html>
