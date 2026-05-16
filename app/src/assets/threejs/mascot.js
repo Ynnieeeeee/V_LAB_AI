@@ -37,7 +37,7 @@ function getVietnameseVoice() {
     return voice;
 }
 
-// Lắng nghe sự kiện đổi giọng đọc (một số trình duyệt tải giọng đọc chậm)
+// Lắng nghe sự kiện đổi giọng đọc
 if ('speechSynthesis' in window) {
     window.speechSynthesis.onvoiceschanged = () => {
         getVietnameseVoice();
@@ -45,7 +45,7 @@ if ('speechSynthesis' in window) {
 }
 
 /**
- * Hàm mới: Giúp Mascot nói chuyện
+ * Hàm Giúp Mascot nói chuyện
  * @param {string} text - Nội dung Mascot sẽ nói
  */
 export function triggerMascotSpeech(text) {

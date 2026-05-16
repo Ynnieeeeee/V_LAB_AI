@@ -100,6 +100,7 @@ export class PouringEffect {
 
         volume.scale.set(size, size, size);
         volume.name = "fluid_volume";
+        volume.userData.container = target; // Lưu vết dụng cụ chứa
         
         // Căn chỉnh vị trí trong dụng cụ
         const box = new THREE.Box3().setFromObject(target);
@@ -140,13 +141,22 @@ export class PouringEffect {
     updateStream(start, end) {
         const distance = start.distanceTo(end);
         const mid = start.clone().lerp(end, 0.5);
-        mid.y += distance * 0.05; 
-
-        const curve = new THREE.CatmullRomCurve3([start, mid, end]);
+        mid.y -= distance * 0.28; // Dòng chảy cong xuống tự nhiên hơn (Gravity)
+        
+        // THÊM DAO ĐỘNG NHẸ CHO DÒNG CHẢY
+        mid.x += Math.sin(this.time * 8) * 0.01;
+        mid.z += Math.cos(this.time * 6) * 0.01;
+        
+        const curve = new THREE.CatmullRomCurve3([
+            start,
+            mid,
+            end
+        ]);
         
         if (this.streamMesh) this.scene.remove(this.streamMesh);
         
-        const geometry = new THREE.TubeGeometry(curve, 16, 0.03, 8, false); // Tăng độ mịn và bán kính
+        // LÀM DÒNG HÓA CHẤT NHỎ VÀ THẬT HƠN
+        const geometry = new THREE.TubeGeometry(curve, 24, 0.015, 12, false); 
         this.streamMesh = new THREE.Mesh(geometry, this.streamMaterial);
         
         // Đảm bảo dòng chảy nhận đúng màu từ thuộc tính material
@@ -195,4 +205,4 @@ export class PouringEffect {
         // Cập nhật điểm bắt đầu dòng chảy
         if (currentPos) this.spawnPos.copy(currentPos);
     }
-}
+}

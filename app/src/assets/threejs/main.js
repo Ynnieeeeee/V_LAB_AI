@@ -60,10 +60,10 @@ export async function loadChemistryCabinet() {
         // 1. Load cái tủ (Bookcase)
         const bookcaseGltf = await loader.loadAsync(`${modelPath}bookcase.glb`);
         chemicalCabinet = bookcaseGltf.scene;
-        
+
         // Vị trí sát tường đối diện bàn thí nghiệm
-        chemicalCabinet.position.set(0, 0, -9.8); 
-        chemicalCabinet.rotation.y = -Math.PI / 2; 
+        chemicalCabinet.position.set(0, 0, -9.8);
+        chemicalCabinet.rotation.y = -Math.PI / 2;
         scene.add(chemicalCabinet);
 
         // 2. Load cái lọ mẫu (id_tool)

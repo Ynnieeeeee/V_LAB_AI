@@ -1,4 +1,4 @@
-import * as three from 'three';
+ import * as three from 'three';
 import { triggerMascotSpeech } from './mascot.js';
 import { PouringEffect } from './pouringEffect.js';
 import { camera, cameraGroup } from './camera.js';
@@ -38,13 +38,14 @@ function createArm(isRight = true) {
     });
 
     // Cánh tay (Forearm)
-    const armGeo = new three.CylinderGeometry(0.045, 0.065, 0.8, 16);
-    const armMesh = new three.Mesh(armGeo, skinMaterial);
+    const armGeo = new three.CylinderGeometry(0.035, 0.05, 0.65, 16);
+    const armMat = new three.MeshStandardMaterial({ color: 0xe0ac69 });
+    const armMesh = new three.Mesh(armGeo, armMat);
     armMesh.rotation.x = Math.PI / 2;
-    armMesh.position.z = -0.4;
+    armMesh.position.z = -0.325; // nủa chiều dài 0.65
     armGroup.add(armMesh);
 
-    // Bàn tay (Palm)
+    armGroup.position.set(isRight ? 0.38 : -0.38, -0.68, -0.32);
     const handGroup = new three.Group();
     handGroup.position.z = -0.8;
     armGroup.add(handGroup);
@@ -94,7 +95,6 @@ function createArm(isRight = true) {
     itemSlot.position.set(0, 0.06, -0.05); // Đặt giữa lòng bàn tay
     handGroup.add(itemSlot);
 
-    armGroup.position.set(isRight ? 0.45 : -0.45, -0.5, -0.2);
     // Hơi xoay bàn tay vào trong cho tự nhiên
     handGroup.rotation.y = isRight ? -0.2 : 0.2;
     handGroup.rotation.z = isRight ? -0.1 : 0.1;
@@ -126,6 +126,29 @@ export function registerDraggableObject(obj) {
         const box = new three.Box3().setFromObject(obj);
         obj.userData.offsetToFloor = obj.position.y - box.min.y;
     }
+
+    // --- BƯỚC 1: TÍNH TOÁN TỰ ĐỘNG VỊ TRÍ MIỆNG LỌ ---
+    if (obj.userData.id_chemical && !obj.userData.pourAnchor) {
+        // Tính bounding box chỉ dựa trên Mesh (bỏ qua label sprite phía trên)
+        const meshBox = new three.Box3();
+        obj.traverse(child => {
+            if (child.isMesh && child.name !== "fluid_volume") {
+                meshBox.expandByObject(child);
+            }
+        });
+
+        if (!meshBox.isEmpty()) {
+            const center = new three.Vector3();
+            meshBox.getCenter(center);
+            
+            // --- ĐỔ ĐÚNG TỪ MIỆNG CHAI (CÁCH CHUẨN) ---
+            // Giả lập cổ chai nằm phía trước local -Z
+            const localMouth = new three.Vector3(0, 0.42, -0.18);
+            obj.userData.pourAnchor = localMouth.clone();
+            console.log(`[System] Đã xác định pourAnchor chuẩn cho ${obj.userData.name_vi}:`, obj.userData.pourAnchor);
+        }
+    }
+
     // Đánh dấu để Raycaster nhận diện được root model
     obj.traverse(child => {
         child.userData.root = obj;
@@ -292,8 +315,13 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 // Animation xoay lọ sẽ được xử lý liên tục trong updateArmsAnimation
 
                 // Xác định điểm đổ (miệng lọ) dựa trên thực tế xoay
-                const mouthOffset = new three.Vector3(0, 0.5, 0); // Miệng lọ ở đầu trên (+Y)
-                const pourPoint = mouthOffset.clone().applyMatrix4(heldObj.matrixWorld);
+                let pourPoint = new three.Vector3();
+                if (heldObj.userData.pourAnchor) {
+                    pourPoint.copy(heldObj.userData.pourAnchor).applyMatrix4(heldObj.matrixWorld);
+                } else {
+                    const mouthOffset = new three.Vector3(0, 0.5, 0); 
+                    pourPoint.copy(mouthOffset).applyMatrix4(heldObj.matrixWorld);
+                }
 
                 console.log("Bắt đầu đổ tại vị trí thế giới:", pourPoint, "Màu:", heldObj.userData.color);
                 pouringEffect.start(pourPoint, heldObj.userData.color || 0xffffff);
@@ -320,81 +348,137 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     });
 
     // --- LOGIC KIỂM TRA ĐỔ HÓA CHẤT ---
+    const downRaycaster = new three.Raycaster();
+    const downVector = new three.Vector3(0, -1, 0);
+
     window.checkPouringCollision = () => {
         if (!pouringEffect || !pouringEffect.isPouring) return;
 
         const potentialSources = [heldObjectRight, heldObjectLeft].filter(obj => obj && obj.userData.id_chemical);
-        let foundTargetThisFrame = false;
 
         potentialSources.forEach(sourceObj => {
-            // 1. Xác định miệng lọ (Source) - Lấy điểm cao nhất của lọ theo trục Y địa phương
-            const sourceBox = new three.Box3().setFromObject(sourceObj);
-            const sourceSize = sourceBox.getSize(new three.Vector3());
-            const mouthOffset = new three.Vector3(0, sourceSize.y * 0.4, 0); 
-            const pourPoint = mouthOffset.clone().applyMatrix4(sourceObj.matrixWorld);
+            sourceObj.updateMatrixWorld(true);
 
-            // Cập nhật vị trí bắt đầu của dòng chảy
+            // --- BƯỚC 2: CẬP NHẬT TỌA ĐỘ ĐỘNG CỦA ĐIỂM ĐỔ NƯỚC ---
+            let pourPoint = new three.Vector3();
+            if (sourceObj.userData.pourAnchor) {
+                // Lấy tọa độ thế giới từ điểm neo pourAnchor đã tính ở Bước 1
+                pourPoint.copy(sourceObj.userData.pourAnchor).applyMatrix4(sourceObj.matrixWorld);
+            } else {
+                // Fallback nếu chưa có anchor
+                const box = new three.Box3().setFromObject(sourceObj);
+                pourPoint.set((box.min.x + box.max.x) / 2, box.max.y, (box.min.z + box.max.z) / 2);
+            }
+
+            // Cập nhật vị trí bắt đầu dòng chảy trong visual effect
             pouringEffect.emit(pourPoint);
 
-            // Tìm mục tiêu (tay còn lại hoặc bàn)
-            const otherHandObj = (sourceObj === heldObjectRight) ? heldObjectLeft : (sourceObj === heldObjectLeft ? heldObjectRight : null);
-
-            // 2. KIỂM TRA ĐỔ VÀO TAY CÒN LẠI
-            if (otherHandObj && otherHandObj.userData.toolData) {
-                const targetBox = new three.Box3().setFromObject(otherHandObj);
-                const targetMouthPos = new three.Vector3();
-                // Lấy điểm chính giữa phía trên cùng của dụng cụ (Miệng cốc/ống nghiệm)
-                targetMouthPos.set(
-                    (targetBox.min.x + targetBox.max.x) / 2,
-                    targetBox.max.y,
-                    (targetBox.min.z + targetBox.max.z) / 2
-                );
-
-                if (pourPoint.distanceTo(targetMouthPos) < 0.6) {
-                    currentPourTargetPos = targetMouthPos.clone();
-                    foundTargetThisFrame = true;
-                    handlePourSuccess(sourceObj, otherHandObj, targetMouthPos);
-                    return;
-                }
-            }
-
-            // 3. KIỂM TRA ĐỔ VÀO DỤNG CỤ TRÊN BÀN
-            const ray = new three.Raycaster(pourPoint, new three.Vector3(0, -1, 0), 0, 0.6);
-            
-            // Lọc các đối tượng hợp lệ (còn trong scene và có matrixWorld)
-            const targets = draggableObjects.filter(obj => 
-                obj && 
-                obj.parent && 
-                obj !== sourceObj && 
-                obj !== otherHandObj
+            // --- BƯỚC 3: SỬ DỤNG RAYCASTING ĐỂ "BUỘC" DÒNG CHẢY RƠI VÀO CỐC ---
+            const allTargets = draggableObjects.filter(obj =>
+                obj && obj !== sourceObj && obj.userData.toolData
             );
 
-            let intersects = [];
-            try {
-                intersects = ray.intersectObjects(targets, true);
-            } catch (err) {
-                console.warn("Raycast error during pouring check:", err);
+            // Tìm tâm mục tiêu gần nhất trước để định hướng dòng chảy
+            let nearestTargetCenter = null;
+            let nearestDist = Infinity;
+
+            allTargets.forEach(target => {
+                const box = new three.Box3().setFromObject(target);
+                const center = new three.Vector3();
+                box.getCenter(center);
+                const d = pourPoint.distanceTo(center);
+
+                if (d < nearestDist) {
+                    nearestDist = d;
+                    nearestTargetCenter = center;
+                }
+            });
+
+            // Hướng đổ THẬT
+            let pourDirection;
+            if (nearestTargetCenter) {
+                // Aim trực tiếp vào tâm cốc
+                pourDirection = nearestTargetCenter.clone().sub(pourPoint).normalize();
+            } else {
+                // fallback hướng xuống
+                pourDirection = new three.Vector3(0, -1, 0);
             }
 
+            downRaycaster.set(pourPoint, pourDirection);
+            
+            // Danh sách các vật thể có thể nhận chất lỏng (cốc, ống nghiệm, hoặc chính khối chất lỏng)
+            const fluidVolumes = Array.from(pouringEffect.volumes.values());
+            const raycastTargets = [...allTargets, ...fluidVolumes];
+
+            let intersects = downRaycaster.intersectObjects(raycastTargets, true);
+            let targetHit = null;
+            let streamEnd = null;
+
             if (intersects.length > 0) {
-                const hit = intersects[0];
-                const target = hit.object.userData.root || hit.object;
-                if (target.userData.toolData) {
+                targetHit = intersects[0];
+                
+                const targetObj =
+                    targetHit.object.userData.container ||
+                    targetHit.object.userData.root ||
+                    targetHit.object;
+
+                const targetBox = new three.Box3().setFromObject(targetObj);
+                const targetCenter = new three.Vector3();
+                targetBox.getCenter(targetCenter);
+
+                // Luôn hút vào miệng cốc (kết thúc ở miệng thay vì center sâu bên dưới)
+                streamEnd = new three.Vector3(
+                    targetCenter.x,
+                    targetBox.max.y + 0.05, // Cao hơn miệng 1 chút để tạo tia đâm vào
+                    targetCenter.z
+                );
+            } else {
+                // --- CƠ CHẾ TỰ ĐỘNG HÚT (MAGNETIC SNAP) CẢI TIẾN ---
+                // Tăng bán kính tìm kiếm lên 0.55m để dễ đổ trúng hơn
+                let bestDist = 0.55; 
+                allTargets.forEach(target => {
                     const targetBox = new three.Box3().setFromObject(target);
-                    const targetMouthPos = new three.Vector3(
-                        (targetBox.min.x + targetBox.max.x) / 2,
-                        targetBox.max.y,
-                        (targetBox.min.z + targetBox.max.z) / 2
-                    );
-                    currentPourTargetPos = targetMouthPos.clone();
-                    foundTargetThisFrame = true;
-                    handlePourSuccess(sourceObj, target, targetMouthPos);
+                    const targetCenter = new three.Vector3();
+                    targetBox.getCenter(targetCenter);
+                    
+                    const dx = pourPoint.x - targetCenter.x;
+                    const dz = pourPoint.z - targetCenter.z;
+                    const distXZ = Math.sqrt(dx * dx + dz * dz);
+                    
+                    // Kiểm tra: Trong bán kính 0.55m và miệng lọ phải cao hơn thân dụng cụ
+                    if (distXZ < bestDist && (targetBox.max.y - 0.1) < pourPoint.y) {
+                        bestDist = distXZ;
+                        // Điểm rơi sẽ là miệng của dụng cụ
+                        streamEnd = new three.Vector3(targetCenter.x, targetBox.max.y + 0.05, targetCenter.z);
+                        targetHit = { object: target, point: streamEnd };
+                    }
+                });
+            }
+
+            // --- CHỈ ĐỔ KHI LỌ ĐÃ NGHIÊNG ĐỦ ĐỘ ---
+            const worldRot = new three.Euler().setFromQuaternion(
+                sourceObj.getWorldQuaternion(new three.Quaternion())
+            );
+
+            if (targetHit && Math.abs(worldRot.x) > Math.PI * 0.35) { 
+                const nearestTarget = targetHit.object.name === "fluid_volume" 
+                    ? targetHit.object.userData.container 
+                    : (targetHit.object.userData.root || targetHit.object);
+                
+                currentPourTargetPos = streamEnd;
+                handlePourSuccess(sourceObj, nearestTarget, streamEnd);
+            } else {
+                if (Math.abs(worldRot.x) > Math.PI * 0.35) {
+                    const fallEnd = pourPoint.clone();
+                    fallEnd.y = Math.max(pourPoint.y - 1.5, 0);
+                    currentPourTargetPos = fallEnd;
+                } else {
+                    currentPourTargetPos = null;
                 }
             }
         });
-
-        if (!foundTargetThisFrame) currentPourTargetPos = null;
     };
+
 
     // Hàm phụ xử lý khi đổ thành công
     function handlePourSuccess(source, target, targetMouthPos) {
@@ -607,10 +691,17 @@ export function updateArmsAnimation(time, isMoving) {
         targetPosLeft.set(-0.15, -0.2, -0.45);
         targetRotLeft.set(0.2, 0.4, 0);
     } else if (isPouringHandToHand) {
-        // Nếu tay trái cầm dụng cụ, đưa vào sát giữa hơn
-        if (heldObjectLeft.userData.toolData) {
-            targetPosLeft.set(-0.05, -0.3, -0.4);
-            targetRotLeft.set(0.1, 0.3, 0);
+        const isSource = heldObjectLeft.userData.id_chemical;
+        const isTarget = heldObjectLeft.userData.toolData;
+
+        if (isSource) {
+            // Tay trái cầm chai -> giữ bên trái
+            targetPosLeft.set(-0.18, -0.32, -0.55);
+            targetRotLeft.set(1.0, 0.35, 0.08);
+        } else if (isTarget) {
+            // Tay trái cầm cốc -> cũng giữ bên trái
+            targetPosLeft.set(-0.08, -0.45, -0.72);
+            targetRotLeft.set(0.05, 0.02, 0);
         }
     }
 
@@ -629,10 +720,17 @@ export function updateArmsAnimation(time, isMoving) {
         targetPosRight.set(0.15, -0.2, -0.45);
         targetRotRight.set(0.2, -0.4, 0);
     } else if (isPouringHandToHand) {
-        // Nếu tay phải cầm hóa chất, đưa sát vào tay trái hơn
-        if (heldObjectRight.userData.id_chemical) {
-            targetPosRight.set(0.05, -0.15, -0.45);
-            targetRotRight.set(0.2, -0.7, 0);
+        const isSource = heldObjectRight.userData.id_chemical;
+        const isTarget = heldObjectRight.userData.toolData;
+
+        if (isSource) {
+            // Tay phải cầm chai -> giữ bên phải
+            targetPosRight.set(0.18, -0.32, -0.55);
+            targetRotRight.set(1.0, -0.35, -0.08);
+        } else if (isTarget) {
+            // Tay phải cầm cốc -> vẫn bên phải
+            targetPosRight.set(0.08, -0.45, -0.72);
+            targetRotRight.set(0.05, -0.02, 0);
         }
     }
 
@@ -652,15 +750,21 @@ export function updateArmsAnimation(time, isMoving) {
             const isSource = h.held.userData.id_chemical;
 
             if (isPouringAction && isSource) {
-                // TỰ ĐỘNG HÚT (SNAPPING): Nếu đang đổ và có mục tiêu, hơi điều chỉnh tay về phía mục tiêu
-                if (currentPourTargetPos) {
-                    const localTarget = h.held.parent.worldToLocal(currentPourTargetPos.clone());
-                    // Đưa lọ lên phía trên mục tiêu một chút
-                    localTarget.y += 0.2;
-                    h.held.position.lerp(localTarget, 0.05);
+                // Chỉ bắt đầu nghiêng lọ khi tay đã đưa vào đủ gần vị trí trung tâm
+                const distToTarget = h.isRight ? rightArm.position.distanceTo(targetPosRight) : leftArm.position.distanceTo(targetPosLeft);
+                
+                if (distToTarget < 0.12) {
+                    // Nghiêng lọ vừa phải (~110 độ) để không quét quá mạnh
+                    h.held.rotation.x = three.MathUtils.lerp(h.held.rotation.x, Math.PI * 0.62, 0.12);
+                    h.held.rotation.z = three.MathUtils.lerp(h.held.rotation.z, h.isRight ? -0.25 : 0.25, 0.1);
                 }
-
-                h.held.rotation.x = three.MathUtils.lerp(h.held.rotation.x, Math.PI / 2, 0.2);
+                h.held.position.lerp(new three.Vector3(0, -0.02, -0.04), 0.1);
+            } else if (isPouringAction && !isSource) {
+                // ĐỐI VỚI DỤNG CỤ HỨNG: Xoay ngược lại để luôn thẳng đứng tuyệt đối
+                h.held.rotation.x = three.MathUtils.lerp(h.held.rotation.x, 0, 0.25); 
+                h.held.rotation.y = three.MathUtils.lerp(h.held.rotation.y, 0, 0.25);
+                h.held.rotation.z = three.MathUtils.lerp(h.held.rotation.z, 0, 0.25);
+                h.held.position.lerp(new three.Vector3(0, -0.02, -0.04), 0.1);
             } else {
                 h.held.position.lerp(new three.Vector3(0, 0.1, 0), 0.1);
                 h.held.rotation.x = three.MathUtils.lerp(h.held.rotation.x, 0, 0.2);
