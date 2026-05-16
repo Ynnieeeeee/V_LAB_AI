@@ -117,7 +117,12 @@ async function checkBackendStatus(scene) {
             }
         });
     } catch (err) {
-        console.error("Lỗi Polling Lab:", err);
+        // Chỉ log cảnh báo thay vì lỗi đỏ nếu không kết nối được backend
+        if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
+            console.warn("Không thể kết nối đến Backend (127.0.0.1:8000). Vui lòng kiểm tra server.");
+        } else {
+            console.error("Lỗi Polling Lab:", err);
+        }
     }
 }
 

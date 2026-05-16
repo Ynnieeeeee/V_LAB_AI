@@ -89,14 +89,23 @@ export function triggerMascotSpeech(text) {
         }
         
         window.mascotAudio.src = googleTTSUrl;
+        
+        // Lắng nghe lỗi nạp âm thanh (như bị Google chặn hoặc 404)
+        window.mascotAudio.onerror = (e) => {
+            console.warn("Không thể tải âm thanh từ Google TTS. Có thể do giới hạn yêu cầu.");
+        };
+
         window.mascotAudio.play().catch(e => {
-            console.warn("Âm thanh bị trình duyệt chặn. Hãy click vào màn hình để cho phép phát âm thanh.", e);
-            // Nếu bị chặn, thử phát lại khi người dùng click
-            const enableAudio = () => {
-                window.mascotAudio.play();
-                window.removeEventListener('click', enableAudio);
-            };
-            window.addEventListener('click', enableAudio);
+            if (e.name === 'NotAllowedError') {
+                console.warn("Âm thanh bị trình duyệt chặn. Hãy click vào màn hình để cho phép.");
+                const enableAudio = () => {
+                    window.mascotAudio.play().catch(() => {});
+                    window.removeEventListener('click', enableAudio);
+                };
+                window.addEventListener('click', enableAudio);
+            } else {
+                console.warn("Lỗi phát âm thanh Mascot:", e);
+            }
         });
     } catch (err) {
         console.error("Lỗi hệ thống âm thanh:", err);

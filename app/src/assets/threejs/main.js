@@ -10,7 +10,7 @@ import { initLights } from './lights.js';
 import { initEnvironment } from './environment.js';
 import { initMascot, updateMascot } from './mascot.js';
 import { setupChemicalCabinet } from './cabinetChemical.js';
-import { pouringEffect } from './interaction.js';
+import { pouringEffect, currentPourTargetPos } from './interaction.js';
 
 const scene = new three.Scene();
 scene.background = new three.Color(0x0f172a);
@@ -116,13 +116,13 @@ function animate() {
             updateArmsAnimation(performance.now() / 1000, isMoving);
         }
 
-        // 3. Cập nhật Mascot (Lơ lửng & Dialog bám theo)
+        // 3. Cập nhật Mascot & Hiệu ứng đổ
         updateMascot();
+        if (window.checkPouringCollision) {
+            window.checkPouringCollision();
+        }
         if (pouringEffect) {
-            pouringEffect.update();
-            if (window.checkPouringCollision) {
-                window.checkPouringCollision();
-            }
+            pouringEffect.update(currentPourTargetPos); // Luôn cập nhật để hạt tiếp tục rơi dù đã ngừng đổ
         }
 
         // 4. Render Scene
