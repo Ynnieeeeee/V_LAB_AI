@@ -1,4 +1,4 @@
- import * as three from 'three';
+import * as three from 'three';
 import { triggerMascotSpeech } from './mascot.js';
 import { PouringEffect } from './pouringEffect.js';
 import { camera, cameraGroup } from './camera.js';
@@ -18,8 +18,8 @@ let draggedObject = null;
 
 export let pouringEffect;
 let lastPouredTarget = null;
-let isPouringAction = false; // Trạng thái đang đổ chung
-export let currentPourTargetPos = null; // Vị trí tâm dụng cụ đang nhận đổ
+let isPouringAction = false; 
+export const pouringState = { currentPourTargetPos: null }; // Sử dụng object state chuẩn
 
 // Nhóm đại diện cho 2 tay người chơi, gắn vào camera
 const leftArmGroup = new three.Group();
@@ -184,6 +184,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (currentHeld) {
             // Thả vật thể về Scene (Sử dụng attach để giữ nguyên world transform tạm thời)
             scene.attach(currentHeld);
+            if (pouringEffect) pouringEffect.invalidateCavity(currentHeld);
 
             // Tìm điểm va chạm để đặt vật thể
             raycaster.setFromCamera({ x: 0, y: 0 }, camera);
@@ -270,6 +271,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     root.userData.originalWorldQuaternion = worldQuat.clone();
 
                     slot.attach(root);
+                    if (pouringEffect) pouringEffect.invalidateCavity(root);
                     root.position.set(0, 0.1, 0);
                     root.rotation.order = 'YXZ';
                     root.rotation.set(0, isRightHand ? -Math.PI / 2 : Math.PI / 2, 0);
@@ -455,25 +457,26 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 });
             }
 
-            // --- CHỈ ĐỔ KHI LỌ ĐÃ NGHIÊNG ĐỦ ĐỘ ---
+            // --- CHỈ ĐỔ KHI LỌ ĐÃ NGHIÊNG ĐỦ ĐỘ (X hoặc Z) ---
             const worldRot = new three.Euler().setFromQuaternion(
                 sourceObj.getWorldQuaternion(new three.Quaternion())
             );
+            const tiltAmount = Math.max(Math.abs(worldRot.x), Math.abs(worldRot.z));
 
-            if (targetHit && Math.abs(worldRot.x) > Math.PI * 0.35) { 
+            if (targetHit && tiltAmount > Math.PI * 0.35) { 
                 const nearestTarget = targetHit.object.name === "fluid_volume" 
                     ? targetHit.object.userData.container 
                     : (targetHit.object.userData.root || targetHit.object);
                 
-                currentPourTargetPos = streamEnd;
+                pouringState.currentPourTargetPos = streamEnd;
                 handlePourSuccess(sourceObj, nearestTarget, streamEnd);
             } else {
-                if (Math.abs(worldRot.x) > Math.PI * 0.35) {
+                if (tiltAmount > Math.PI * 0.35) {
                     const fallEnd = pourPoint.clone();
                     fallEnd.y = Math.max(pourPoint.y - 1.5, 0);
-                    currentPourTargetPos = fallEnd;
+                    pouringState.currentPourTargetPos = fallEnd;
                 } else {
-                    currentPourTargetPos = null;
+                    pouringState.currentPourTargetPos = null;
                 }
             }
         });
@@ -482,6 +485,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     // Hàm phụ xử lý khi đổ thành công
     function handlePourSuccess(source, target, targetMouthPos) {
+        if (!target || !target.userData || !target.userData.toolData) return;
+
         if (target === lastPouredTarget) {
             // Vẫn cập nhật mức nước nếu đang đổ tiếp vào cùng 1 mục tiêu
             target.userData.liquidLevel = (target.userData.liquidLevel || 0) + 0.005;
@@ -490,17 +495,13 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         }
 
         const chemName = source.userData.name_vi;
-        const toolName = target.userData.toolData.name_tool_vi;
+        const toolName = target.userData.toolData.name_tool_vi || "dụng cụ";
         const color = source.userData.color || "#ffffff";
         lastPouredTarget = target;
 
         // 1. Lấy hoặc tạo khối nước Marching Cubes
         const volume = pouringEffect.getOrCreateVolume(target);
         
-        // Cập nhật vị trí volume (Đáy dụng cụ)
-        const box = new three.Box3().setFromObject(target);
-        volume.position.set((box.min.x + box.max.x) / 2, box.min.y + 0.05, (box.min.z + box.max.z) / 2);
-
         // 2. Cập nhật mức chất lỏng
         target.userData.liquidLevel = (target.userData.liquidLevel || 0) + 0.005;
 
@@ -516,8 +517,6 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             target.userData.hasAnnouncedPour = true;
             setTimeout(() => { target.userData.hasAnnouncedPour = false; }, 5000);
         }
-
-        console.log(`Đang đổ ${chemName} vào ${toolName} - Mức: ${target.userData.liquidLevel.toFixed(3)}`);
     }
 
     // --- LOGIC KÉO THẢ (MOUSE/ORBIT) ---
@@ -540,6 +539,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (intersects.length > 0) {
             draggedObject = intersects[0].object.userData.root || intersects[0].object;
             scene.attach(draggedObject);
+            if (pouringEffect) pouringEffect.invalidateCavity(draggedObject);
 
             // Khôi phục scale và hướng xoay chuẩn (World)
             if (!draggedObject.userData.originalWorldScale) {
@@ -623,6 +623,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         zoomInBtn.onclick = () => {
             if (selectedObjectForMenu) {
                 selectedObjectForMenu.scale.multiplyScalar(1.2);
+                if (pouringEffect) pouringEffect.invalidateCavity(selectedObjectForMenu);
                 // Giới hạn scale tối đa
                 const maxScale = (selectedObjectForMenu.userData.originalScale || 1.0) * 5.0;
                 if (selectedObjectForMenu.scale.x > maxScale) {
@@ -637,6 +638,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         zoomOutBtn.onclick = () => {
             if (selectedObjectForMenu) {
                 selectedObjectForMenu.scale.multiplyScalar(0.8);
+                if (pouringEffect) pouringEffect.invalidateCavity(selectedObjectForMenu);
                 // Giới hạn scale tối thiểu
                 const minScale = (selectedObjectForMenu.userData.originalScale || 1.0) * 0.2;
                 if (selectedObjectForMenu.scale.x < minScale) {
