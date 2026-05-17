@@ -103,6 +103,7 @@ export async function loadChemistryCabinet() {
         chemicalCabinet = bookcaseGltf.scene;
         chemicalCabinet.position.set(0, 0, -9.8);
         chemicalCabinet.rotation.y = -Math.PI / 2;
+        chemicalCabinet.scale.set(2.0, 2.0, 2.0);
         scene.add(chemicalCabinet);
 
         const bottleGltf = await loader.loadAsync(`${modelPath}chemical_bottle_1778830207.glb`);
@@ -160,4 +161,4 @@ if (fpsBtn) {
 animate();
 initChatEvents();
 initLabLogic(scene, registerDraggableObject);
-
+

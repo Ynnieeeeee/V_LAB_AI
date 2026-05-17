@@ -22,19 +22,19 @@ import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
  */
 export class PouringEffect {
     constructor(scene) {
-        this.scene = scene;
+        this.scene   = scene;
         this.isPouring = false;
-        this.color = new THREE.Color(0x3498db);
+        this.color   = new THREE.Color(0x3498db);
 
         // ── Particle system ───────────────────────────────────────────────
-        this.particleCount = 500;
-        this.particles = [];
+        this.particleCount    = 500;
+        this.particles        = [];
         this.particleGeometry = new THREE.BufferGeometry();
         this.particlePositions = new Float32Array(this.particleCount * 3);
-        this.particleSizes = new Float32Array(this.particleCount);
+        this.particleSizes     = new Float32Array(this.particleCount);
 
         for (let i = 0; i < this.particleCount; i++) {
-            this.particlePositions[i * 3] = 0;
+            this.particlePositions[i * 3]     = 0;
             this.particlePositions[i * 3 + 1] = -100;
             this.particlePositions[i * 3 + 2] = 0;
             this.particleSizes[i] = 0;
@@ -42,19 +42,19 @@ export class PouringEffect {
         this.particleGeometry.setAttribute(
             'position', new THREE.BufferAttribute(this.particlePositions, 3));
         this.particleGeometry.setAttribute(
-            'size', new THREE.BufferAttribute(this.particleSizes, 1));
+            'size',     new THREE.BufferAttribute(this.particleSizes, 1));
 
         this.particleMaterial = this._createParticleMaterial();
-        this.particleSystem = new THREE.Points(this.particleGeometry, this.particleMaterial);
+        this.particleSystem   = new THREE.Points(this.particleGeometry, this.particleMaterial);
         this.particleSystem.renderOrder = 999;
         this.scene.add(this.particleSystem);
 
         // ── Volume map ────────────────────────────────────────────────────
-        this.volumes = new Map();
-        this.flowRate = 0.05;
-        this.time = 0;
+        this.volumes     = new Map();
+        this.flowRate    = 0.05;
+        this.time        = 0;
         this.activeParticles = 0;
-        this.spawnTimer = 0;
+        this.spawnTimer  = 0;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ export class PouringEffect {
         return new THREE.ShaderMaterial({
             uniforms: {
                 color: { value: this.color.clone() },
-                time: { value: 0 }
+                time:  { value: 0 }
             },
             vertexShader: `
                 attribute float size;
@@ -82,9 +82,9 @@ export class PouringEffect {
                 }
             `,
             transparent: true,
-            depthWrite: false,
-            depthTest: true,
-            blending: THREE.NormalBlending
+            depthWrite:  false,
+            depthTest:   true,
+            blending:    THREE.NormalBlending
         });
     }
 
@@ -186,19 +186,19 @@ export class PouringEffect {
         this.detectCavity(target);
 
         const liquidGroup = new THREE.Group();
-        liquidGroup.name = 'liquid_group';
+        liquidGroup.name  = 'liquid_group';
         target.add(liquidGroup); // Gắn trực tiếp vào target
 
         const resolution = 48;
         const material = new THREE.MeshPhysicalMaterial({
             color: this.color.clone(),
-            transmission: 0.45, // Giảm từ 1.0 để màu sắc của dung dịch hiển thị đậm đà, rõ nét và rực rỡ hơn
+            transmission: 1.0,
             transparent: true,
-            opacity: 0.95, // Giúp khối chất lỏng có độ sâu và đậm đặc thực tế hơn
+            opacity: 0.9,
             roughness: 0.02,
-            metalness: 0.05, // Một chút kim loại nhẹ giúp tương tác ánh sáng óng ánh hơn
-            ior: 1.333, // Khúc xạ nước thật
-            thickness: 0.5, // Tăng nhẹ độ dày khúc xạ
+            metalness: 0.0,
+            ior: 1.333, // nước thật
+            thickness: 0.35,
             clearcoat: 1.0,
             clearcoatRoughness: 0.02,
             envMapIntensity: 1.5,
@@ -243,8 +243,8 @@ export class PouringEffect {
         volume.scale.set(1, 1, 1);
         liquidGroup.add(volume);
 
-        volume.userData.container = target;
-        volume.userData.group = liquidGroup;
+        volume.userData.container   = target;
+        volume.userData.group       = liquidGroup;
         target.userData.liquidColor = this.color.clone();
 
         this.volumes.set(target, volume);
@@ -292,12 +292,12 @@ export class PouringEffect {
     }
 
     _updateParticles() {
-        const pos = this.particleGeometry.attributes.position.array;
+        const pos  = this.particleGeometry.attributes.position.array;
         const size = this.particleGeometry.attributes.size.array;
 
         for (let i = 0; i < this.particleCount; i++) {
             const p = this.particles[i];
-            if (!p || p.life <= 0) { size[i] = 0; pos[i * 3 + 1] = -100; continue; }
+            if (!p || p.life <= 0) { size[i] = 0; pos[i*3+1] = -100; continue; }
 
             p.vel.y -= 0.12;
             p.pos.addScaledVector(p.vel, 0.016);
@@ -306,11 +306,11 @@ export class PouringEffect {
             if (p.pos.y < 0 || (p.target && p.pos.y < p.target.y && p.vel.y < 0 && p.life < 0.98))
                 p.life = 0;
 
-            pos[i * 3] = p.pos.x; pos[i * 3 + 1] = p.pos.y; pos[i * 3 + 2] = p.pos.z;
-            size[i] = 5.0 * p.life;
+            pos[i*3] = p.pos.x; pos[i*3+1] = p.pos.y; pos[i*3+2] = p.pos.z;
+            size[i]  = 5.0 * p.life;
         }
         this.particleGeometry.attributes.position.needsUpdate = true;
-        this.particleGeometry.attributes.size.needsUpdate = true;
+        this.particleGeometry.attributes.size.needsUpdate     = true;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -460,7 +460,7 @@ export class PouringEffect {
 
     // ── Backward compat aliases ──────────────────────────────────────────
     createParticleMaterial() { return this._createParticleMaterial(); }
-    spawnParticle(t) { return this._spawnParticle(t); }
-    updateParticles() { return this._updateParticles(); }
-    updateVolumeEffect(v, t) { return this._updateVolumeEffect(v, t); }
+    spawnParticle(t)         { return this._spawnParticle(t); }
+    updateParticles()        { return this._updateParticles(); }
+    updateVolumeEffect(v,t)  { return this._updateVolumeEffect(v, t); }
 }

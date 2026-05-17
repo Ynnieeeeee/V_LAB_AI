@@ -50,7 +50,7 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
 
         chemicals.forEach((chem) => {
             const bottle = bottleModel.clone();
-            
+
             // ÉP VỀ 4 DÃY LỌ
             let shelf = chem.shelf_number || 1;
             if (shelf > 4) shelf = ((shelf - 1) % 4) + 1;
@@ -60,55 +60,35 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
             // GIỮ NGUYÊN CÁC THÔNG SỐ CỦA BẠN
             bottle.scale.set(0.2, 0.2, 0.2);
 
-            const yOffset = 0.89; 
+            const yOffset = 0.89;
             const yPos_local = (shelfPositionsY[shelf] !== undefined ? shelfPositionsY[shelf] : (shelfHeights[0] || 0.42)) + yOffset;
 
             const zPos_local = (shelfCount[shelf] * 0.2) - 1.8;
-            const xPos_local = 0.4; 
+            const xPos_local = 0.4;
 
             bottle.position.set(xPos_local, yPos_local, zPos_local);
 
-            // Tối ưu hóa màu sắc hóa chất: Tăng độ bão hòa (Saturation) để màu sắc rực rỡ và rõ ràng hơn
-            const chemColor = new THREE.Color(0xffffff);
-            if (chem.material_color) {
-                chemColor.set(new THREE.Color(chem.material_color));
-                const hsl = {};
-                chemColor.getHSL(hsl);
-                hsl.s = Math.min(1.0, hsl.s * 1.6); // Tăng 60% độ bão hòa màu để màu rực rỡ hơn
-                hsl.l = Math.max(0.35, Math.min(0.7, hsl.l * 1.05)); // Đảm bảo độ sáng nằm trong dải trung tính hiển thị đẹp
-                chemColor.setHSL(hsl.h, hsl.s, hsl.l);
-            }
-
-            // LƯU DỮ LIỆU VÀO USERDATA để Mascot tra cứu khi Click và truyền màu chuẩn khi đổ nước
+            // LƯU DỮ LIỆU VÀO USERDATA để Mascot tra cứu khi Click
             bottle.userData = {
                 id_chemical: chem.id_chemical,
                 name_vi: chem.name_vi,
                 formula: chem.formula,
                 safety: chem.safery_info,
                 isInteractable: true,
-                color: chemColor.getHex(), // Sử dụng màu đã được tối ưu rực rỡ
+                color: chem.material_color,
             };
 
-            // 1. TÔ MÀU CHAI VÀ TỐI ƯU HÓA CHẤT LIỆU (THỦY TINH TRONG SUỐT + NẮP CHAI RIÊNG)
+            // 1. GIỮ NGUYÊN VẬT LIỆU GỐC VÀ TÔ MÀU THEO CSDL
             bottle.traverse((child) => {
                 if (child.isMesh) {
-                    const nameLower = child.name.toLowerCase();
-                    const isCap = nameLower.includes('cap') || nameLower.includes('lid') || nameLower.includes('cork') || nameLower.includes('nap') || nameLower.includes('stopper');
+                    child.material.transparent = true;
+                    child.material.opacity = 0.95;
+                    child.material.roughness = 0.1;
+                    child.material.metalness = 0.2;
 
-                    if (isCap) {
-                        // Thiết lập nắp chai có chất liệu nhám mờ màu xám tối thực tế
-                        child.material.color.set(0x2d3748);
-                        child.material.transparent = false;
-                        child.material.opacity = 1.0;
-                        child.material.roughness = 0.6;
-                        child.material.metalness = 0.1;
-                    } else {
-                        // Thủy tinh đựng hóa chất trong suốt, bóng bẩy và hiển thị màu sắc rực rỡ
-                        child.material.transparent = true;
-                        child.material.opacity = 0.8; // Độ trong suốt hợp lý giúp thủy tinh sâu và thật hơn
-                        child.material.roughness = 0.05; // Độ nhám cực thấp tạo cảm giác trơn bóng, phản xạ ánh sáng mạnh
-                        child.material.metalness = 0.1;
-                        child.material.color.copy(chemColor);
+                    // Tô màu đặc trưng từ CSDL để dễ phân biệt
+                    if (chem.material_color) {
+                        child.material.color.set(new THREE.Color(chem.material_color));
                     }
                 }
             });
@@ -118,19 +98,19 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
             const context = canvas.getContext('2d');
             canvas.width = 512;
             canvas.height = 128;
-            context.fillStyle = 'rgba(0, 0, 0, 0.5)'; // Nền đen mờ
+            context.fillStyle = 'rgba(0, 0, 0, 0.75)'; // Nền đen đậm rõ nét hơn
             context.roundRect ? context.roundRect(0, 0, 512, 128, 20) : context.fillRect(0, 0, 512, 128);
             context.fill();
-            context.font = 'bold 50px Arial';
+            context.font = 'bold 60px Arial'; // Font chữ to hơn, sắc nét
             context.fillStyle = 'white';
             context.textAlign = 'center';
-            context.fillText(chem.name_vi || 'Hóa chất', 256, 80);
+            context.fillText(chem.name_vi || 'Hóa chất', 256, 82);
 
             const labelTexture = new THREE.CanvasTexture(canvas);
             const spriteMaterial = new THREE.SpriteMaterial({ map: labelTexture, depthTest: false });
             const sprite = new THREE.Sprite(spriteMaterial);
-            sprite.scale.set(0.5, 0.12, 1);
-            sprite.position.set(0, 0.65, 0); // Bay phía trên lọ
+            sprite.scale.set(0.9, 0.22, 1); // Phóng to nhãn nổi
+            sprite.position.set(0, 0.75, 0); // Bay cao hơn một chút để tránh chạm nắp lọ
             bottle.add(sprite);
 
             // 3. TẠO NHÃN DÁN TRỰC TIẾP LÊN THÂN LỌ (DECAL LABEL)
@@ -142,26 +122,26 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
             // Vẽ nền nhãn trắng
             decalCtx.fillStyle = 'white';
             decalCtx.fillRect(0, 0, 256, 256);
-            decalCtx.strokeStyle = '#333';
-            decalCtx.lineWidth = 10;
-            decalCtx.strokeRect(5, 5, 246, 246);
+            decalCtx.strokeStyle = '#000'; // Viền đen đậm tương phản cao
+            decalCtx.lineWidth = 16; // Viền dày hơn để nổi bật nhãn
+            decalCtx.strokeRect(8, 8, 240, 240);
 
             // Ghi tên và công thức
             decalCtx.fillStyle = 'black';
             decalCtx.textAlign = 'center';
-            decalCtx.font = 'bold 45px Arial';
-            decalCtx.fillText(chem.formula || '', 128, 90);
-            decalCtx.font = '24px Arial';
+            decalCtx.font = 'bold 55px Arial'; // Công thức hóa học to và đậm hơn
+            decalCtx.fillText(chem.formula || '', 128, 100);
+            decalCtx.font = 'bold 28px Arial'; // Tên phụ đề đậm nét
             const wrappedName = (chem.name_vi || '').length > 15 ? (chem.name_vi || '').substring(0, 15) + '...' : (chem.name_vi || '');
-            decalCtx.fillText(wrappedName, 128, 160);
+            decalCtx.fillText(wrappedName, 128, 175);
 
             const decalTex = new THREE.CanvasTexture(decalCanvas);
             const decalMat = new THREE.MeshStandardMaterial({ map: decalTex, side: THREE.DoubleSide });
-            const decalGeo = new THREE.PlaneGeometry(0.35, 0.35);
+            const decalGeo = new THREE.PlaneGeometry(0.48, 0.48); // Tăng kích thước nhãn dán trên thân
             const decalMesh = new THREE.Mesh(decalGeo, decalMat);
-            
+
             // Đặt nhãn ở mặt trước của lọ (Local X là mặt trước do xoay -90 độ)
-            decalMesh.position.set(0.25, 0, 0); 
+            decalMesh.position.set(0.26, 0, 0); // Đẩy nhẹ ra ngoài để tránh trùng mesh thân lọ
             decalMesh.rotation.y = Math.PI / 2; // Xoay nhãn để hướng ra ngoài
             bottle.add(decalMesh);
 
