@@ -68,27 +68,47 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
 
             bottle.position.set(xPos_local, yPos_local, zPos_local);
 
-            // LƯU DỮ LIỆU VÀO USERDATA để Mascot tra cứu khi Click
+            // Tối ưu hóa màu sắc hóa chất: Tăng độ bão hòa (Saturation) để màu sắc rực rỡ và rõ ràng hơn
+            const chemColor = new THREE.Color(0xffffff);
+            if (chem.material_color) {
+                chemColor.set(new THREE.Color(chem.material_color));
+                const hsl = {};
+                chemColor.getHSL(hsl);
+                hsl.s = Math.min(1.0, hsl.s * 1.6); // Tăng 60% độ bão hòa màu để màu rực rỡ hơn
+                hsl.l = Math.max(0.35, Math.min(0.7, hsl.l * 1.05)); // Đảm bảo độ sáng nằm trong dải trung tính hiển thị đẹp
+                chemColor.setHSL(hsl.h, hsl.s, hsl.l);
+            }
+
+            // LƯU DỮ LIỆU VÀO USERDATA để Mascot tra cứu khi Click và truyền màu chuẩn khi đổ nước
             bottle.userData = {
                 id_chemical: chem.id_chemical,
                 name_vi: chem.name_vi,
                 formula: chem.formula,
                 safety: chem.safery_info,
                 isInteractable: true,
-                color: chem.material_color, 
+                color: chemColor.getHex(), // Sử dụng màu đã được tối ưu rực rỡ
             };
 
-            // 1. GIỮ NGUYÊN VẬT LIỆU GỐC VÀ TÔ MÀU THEO CSDL
+            // 1. TÔ MÀU CHAI VÀ TỐI ƯU HÓA CHẤT LIỆU (THỦY TINH TRONG SUỐT + NẮP CHAI RIÊNG)
             bottle.traverse((child) => {
                 if (child.isMesh) {
-                    child.material.transparent = true;
-                    child.material.opacity = 0.95; 
-                    child.material.roughness = 0.1;
-                    child.material.metalness = 0.2;
+                    const nameLower = child.name.toLowerCase();
+                    const isCap = nameLower.includes('cap') || nameLower.includes('lid') || nameLower.includes('cork') || nameLower.includes('nap') || nameLower.includes('stopper');
 
-                    // Tô màu đặc trưng từ CSDL để dễ phân biệt
-                    if (chem.material_color) {
-                        child.material.color.set(new THREE.Color(chem.material_color));
+                    if (isCap) {
+                        // Thiết lập nắp chai có chất liệu nhám mờ màu xám tối thực tế
+                        child.material.color.set(0x2d3748);
+                        child.material.transparent = false;
+                        child.material.opacity = 1.0;
+                        child.material.roughness = 0.6;
+                        child.material.metalness = 0.1;
+                    } else {
+                        // Thủy tinh đựng hóa chất trong suốt, bóng bẩy và hiển thị màu sắc rực rỡ
+                        child.material.transparent = true;
+                        child.material.opacity = 0.8; // Độ trong suốt hợp lý giúp thủy tinh sâu và thật hơn
+                        child.material.roughness = 0.05; // Độ nhám cực thấp tạo cảm giác trơn bóng, phản xạ ánh sáng mạnh
+                        child.material.metalness = 0.1;
+                        child.material.color.copy(chemColor);
                     }
                 }
             });

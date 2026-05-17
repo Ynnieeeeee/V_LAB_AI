@@ -22,19 +22,19 @@ import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
  */
 export class PouringEffect {
     constructor(scene) {
-        this.scene   = scene;
+        this.scene = scene;
         this.isPouring = false;
-        this.color   = new THREE.Color(0x3498db);
+        this.color = new THREE.Color(0x3498db);
 
         // ── Particle system ───────────────────────────────────────────────
-        this.particleCount    = 500;
-        this.particles        = [];
+        this.particleCount = 500;
+        this.particles = [];
         this.particleGeometry = new THREE.BufferGeometry();
         this.particlePositions = new Float32Array(this.particleCount * 3);
-        this.particleSizes     = new Float32Array(this.particleCount);
+        this.particleSizes = new Float32Array(this.particleCount);
 
         for (let i = 0; i < this.particleCount; i++) {
-            this.particlePositions[i * 3]     = 0;
+            this.particlePositions[i * 3] = 0;
             this.particlePositions[i * 3 + 1] = -100;
             this.particlePositions[i * 3 + 2] = 0;
             this.particleSizes[i] = 0;
@@ -42,19 +42,19 @@ export class PouringEffect {
         this.particleGeometry.setAttribute(
             'position', new THREE.BufferAttribute(this.particlePositions, 3));
         this.particleGeometry.setAttribute(
-            'size',     new THREE.BufferAttribute(this.particleSizes, 1));
+            'size', new THREE.BufferAttribute(this.particleSizes, 1));
 
         this.particleMaterial = this._createParticleMaterial();
-        this.particleSystem   = new THREE.Points(this.particleGeometry, this.particleMaterial);
+        this.particleSystem = new THREE.Points(this.particleGeometry, this.particleMaterial);
         this.particleSystem.renderOrder = 999;
         this.scene.add(this.particleSystem);
 
         // ── Volume map ────────────────────────────────────────────────────
-        this.volumes     = new Map();
-        this.flowRate    = 0.05;
-        this.time        = 0;
+        this.volumes = new Map();
+        this.flowRate = 0.05;
+        this.time = 0;
         this.activeParticles = 0;
-        this.spawnTimer  = 0;
+        this.spawnTimer = 0;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ export class PouringEffect {
         return new THREE.ShaderMaterial({
             uniforms: {
                 color: { value: this.color.clone() },
-                time:  { value: 0 }
+                time: { value: 0 }
             },
             vertexShader: `
                 attribute float size;
@@ -82,9 +82,9 @@ export class PouringEffect {
                 }
             `,
             transparent: true,
-            depthWrite:  false,
-            depthTest:   true,
-            blending:    THREE.AdditiveBlending
+            depthWrite: false,
+            depthTest: true,
+            blending: THREE.NormalBlending
         });
     }
 
@@ -186,31 +186,65 @@ export class PouringEffect {
         this.detectCavity(target);
 
         const liquidGroup = new THREE.Group();
-        liquidGroup.name  = 'liquid_group';
+        liquidGroup.name = 'liquid_group';
         target.add(liquidGroup); // Gắn trực tiếp vào target
 
-        const resolution = 28;
+        const resolution = 48;
+        const material = new THREE.MeshPhysicalMaterial({
+            color: this.color.clone(),
+            transmission: 0.45, // Giảm từ 1.0 để màu sắc của dung dịch hiển thị đậm đà, rõ nét và rực rỡ hơn
+            transparent: true,
+            opacity: 0.95, // Giúp khối chất lỏng có độ sâu và đậm đặc thực tế hơn
+            roughness: 0.02,
+            metalness: 0.05, // Một chút kim loại nhẹ giúp tương tác ánh sáng óng ánh hơn
+            ior: 1.333, // Khúc xạ nước thật
+            thickness: 0.5, // Tăng nhẹ độ dày khúc xạ
+            clearcoat: 1.0,
+            clearcoatRoughness: 0.02,
+            envMapIntensity: 1.5,
+        });
+
+        material.onBeforeCompile = (shader) => {
+            if (shader.fragmentShader.indexOf('#include <tonemapping_fragment>') !== -1) {
+                shader.fragmentShader = shader.fragmentShader.replace(
+                    '#include <tonemapping_fragment>',
+                    `
+                    vec3 viewDir = normalize( vViewPosition );
+                    vec3 fNormal = normalize( vNormal );
+                    #ifdef DOUBLE_SIDED
+                        fNormal = fNormal * ( float( gl_FrontFacing ) * 2.0 - 1.0 );
+                    #endif
+                    float fresnel = pow( 1.0 - max( dot( fNormal, viewDir ), 0.0 ), 3.0 );
+                    outgoingLight = mix( outgoingLight, vec3( 1.0 ), fresnel * 0.45 * opacity );
+                    #include <tonemapping_fragment>
+                    `
+                );
+            } else {
+                shader.fragmentShader = shader.fragmentShader.replace(
+                    'gl_FragColor = vec4( outgoingLight, diffuseColor.a );',
+                    `
+                    vec3 viewDir = normalize( vViewPosition );
+                    vec3 fNormal = normalize( vNormal );
+                    float fresnel = pow( 1.0 - max( dot( fNormal, viewDir ), 0.0 ), 3.0 );
+                    outgoingLight = mix( outgoingLight, vec3( 1.0 ), fresnel * 0.45 * opacity );
+                    gl_FragColor = vec4( outgoingLight, diffuseColor.a );
+                    `
+                );
+            }
+        };
+
         const volume = new MarchingCubes(
             resolution,
-            new THREE.MeshPhysicalMaterial({
-                color:        this.color.clone(),
-                transparent:  true,
-                opacity:      0.82,
-                transmission: 0.35,
-                ior:          1.45,
-                thickness:    0.08,
-                roughness:    0.08,
-                metalness:    0.0,
-            }),
-            true, true, 100000
+            material,
+            false, false, 100000
         );
 
         volume.position.set(0, 0, 0);
         volume.scale.set(1, 1, 1);
         liquidGroup.add(volume);
 
-        volume.userData.container   = target;
-        volume.userData.group       = liquidGroup;
+        volume.userData.container = target;
+        volume.userData.group = liquidGroup;
         target.userData.liquidColor = this.color.clone();
 
         this.volumes.set(target, volume);
@@ -258,12 +292,12 @@ export class PouringEffect {
     }
 
     _updateParticles() {
-        const pos  = this.particleGeometry.attributes.position.array;
+        const pos = this.particleGeometry.attributes.position.array;
         const size = this.particleGeometry.attributes.size.array;
 
         for (let i = 0; i < this.particleCount; i++) {
             const p = this.particles[i];
-            if (!p || p.life <= 0) { size[i] = 0; pos[i*3+1] = -100; continue; }
+            if (!p || p.life <= 0) { size[i] = 0; pos[i * 3 + 1] = -100; continue; }
 
             p.vel.y -= 0.12;
             p.pos.addScaledVector(p.vel, 0.016);
@@ -272,11 +306,11 @@ export class PouringEffect {
             if (p.pos.y < 0 || (p.target && p.pos.y < p.target.y && p.vel.y < 0 && p.life < 0.98))
                 p.life = 0;
 
-            pos[i*3] = p.pos.x; pos[i*3+1] = p.pos.y; pos[i*3+2] = p.pos.z;
-            size[i]  = 5.0 * p.life;
+            pos[i * 3] = p.pos.x; pos[i * 3 + 1] = p.pos.y; pos[i * 3 + 2] = p.pos.z;
+            size[i] = 5.0 * p.life;
         }
         this.particleGeometry.attributes.position.needsUpdate = true;
-        this.particleGeometry.attributes.size.needsUpdate     = true;
+        this.particleGeometry.attributes.size.needsUpdate = true;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -345,7 +379,7 @@ export class PouringEffect {
         const padding = 0.55;
         volume.scale.set(
             Math.max(cavitySize.x * padding, 1e-4),
-            Math.max(cavityHeight * 0.92, 1e-4),
+            Math.max(cavityHeight * 0.55, 1e-4),
             Math.max(cavitySize.z * padding, 1e-4)
         );
 
@@ -355,37 +389,78 @@ export class PouringEffect {
 
         // ── 6. Reset + rải ball (sử dụng mapLinear để an toàn trong lưới) ──
         volume.reset();
+        volume.isolation = 18;
 
-        const STRENGTH = 0.18;
-        const SUBTRACT = 18;
+        const gridX = 18;
+        const gridZ = 18;
 
-        points.forEach(p => {
-            // Ánh xạ LOCAL coordinates sang vùng an toàn [0.15, 0.85] của MarchingCubes
-            const nx = THREE.MathUtils.mapLinear(p.lx, pointsBox.min.x, pointsBox.max.x, 0.15, 0.85);
-            const nz = THREE.MathUtils.mapLinear(p.lz, pointsBox.min.z, pointsBox.max.z, 0.15, 0.85);
+        const fillHeight = THREE.MathUtils.mapLinear(
+            level,
+            0,
+            1,
+            0.08,
+            0.88
+        );
 
-            // Mực nước mapping 0->1 -> 0.05->0.92
-            const localLevelY = p.lyBottom + level * (p.lyTop - p.lyBottom);
-            const ny = THREE.MathUtils.mapLinear(localLevelY, cavityMinY, cavityMaxY, 0.05, 0.92);
+        for (let ix = 0; ix < gridX; ix++) {
+            for (let iz = 0; iz < gridZ; iz++) {
 
-            // Clamp để tránh nổ volume
-            if (nx < 0.05 || nx > 0.95 || ny < 0.02 || ny > 0.95 || nz < 0.05 || nz > 0.95) return;
+                const nx = THREE.MathUtils.mapLinear(
+                    ix,
+                    0,
+                    gridX - 1,
+                    0.18,
+                    0.82
+                );
 
-            volume.addBall(nx, ny, nz, STRENGTH, SUBTRACT);
-        });
+                const nz = THREE.MathUtils.mapLinear(
+                    iz,
+                    0,
+                    gridZ - 1,
+                    0.18,
+                    0.82
+                );
+
+                // noise cực nhỏ để tránh mặt phẳng robot
+                const wave =
+                    Math.sin(ix * 0.7 + this.time * 2.0) *
+                    Math.cos(iz * 0.6 + this.time * 1.5) *
+                    0.01;
+
+                const ny = fillHeight + wave;
+
+                volume.addBall(
+                    nx,
+                    ny,
+                    nz,
+                    0.085,
+                    8
+                );
+            }
+        }
 
         // Ripple tại tâm mặt thoáng
         const rippleNy = THREE.MathUtils.mapLinear(level, 0, 1, 0.05, 0.92);
         if (this.isPouring) {
-            volume.addBall(0.5, rippleNy, 0.5, 0.55, 12);
+            const ripple = Math.sin(this.time * 8.0) * 0.02;
+            volume.addBall(
+                0.5 + ripple,
+                rippleNy,
+                0.5,
+                0.35,
+                8
+            );
         }
 
         volume.update();
+        if (volume.geometry) {
+            volume.geometry.computeVertexNormals();
+        }
     }
 
     // ── Backward compat aliases ──────────────────────────────────────────
     createParticleMaterial() { return this._createParticleMaterial(); }
-    spawnParticle(t)         { return this._spawnParticle(t); }
-    updateParticles()        { return this._updateParticles(); }
-    updateVolumeEffect(v,t)  { return this._updateVolumeEffect(v, t); }
+    spawnParticle(t) { return this._spawnParticle(t); }
+    updateParticles() { return this._updateParticles(); }
+    updateVolumeEffect(v, t) { return this._updateVolumeEffect(v, t); }
 }

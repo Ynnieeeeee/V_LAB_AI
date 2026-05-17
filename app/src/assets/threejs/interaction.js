@@ -18,7 +18,7 @@ let draggedObject = null;
 
 export let pouringEffect;
 let lastPouredTarget = null;
-let isPouringAction = false; 
+let isPouringAction = false;
 export const pouringState = { currentPourTargetPos: null }; // Sử dụng object state chuẩn
 
 // Nhóm đại diện cho 2 tay người chơi, gắn vào camera
@@ -140,7 +140,7 @@ export function registerDraggableObject(obj) {
         if (!meshBox.isEmpty()) {
             const center = new three.Vector3();
             meshBox.getCenter(center);
-            
+
             // --- ĐỔ ĐÚNG TỪ MIỆNG CHAI (CÁCH CHUẨN) ---
             // Giả lập cổ chai nằm phía trước local -Z
             const localMouth = new three.Vector3(0, 0.42, -0.18);
@@ -321,7 +321,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 if (heldObj.userData.pourAnchor) {
                     pourPoint.copy(heldObj.userData.pourAnchor).applyMatrix4(heldObj.matrixWorld);
                 } else {
-                    const mouthOffset = new three.Vector3(0, 0.5, 0); 
+                    const mouthOffset = new three.Vector3(0, 0.5, 0);
                     pourPoint.copy(mouthOffset).applyMatrix4(heldObj.matrixWorld);
                 }
 
@@ -407,7 +407,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             }
 
             downRaycaster.set(pourPoint, pourDirection);
-            
+
             // Danh sách các vật thể có thể nhận chất lỏng (cốc, ống nghiệm, hoặc chính khối chất lỏng)
             const fluidVolumes = Array.from(pouringEffect.volumes.values());
             const raycastTargets = [...allTargets, ...fluidVolumes];
@@ -418,7 +418,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             if (intersects.length > 0) {
                 targetHit = intersects[0];
-                
+
                 const targetObj =
                     targetHit.object.userData.container ||
                     targetHit.object.userData.root ||
@@ -437,16 +437,16 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             } else {
                 // --- CƠ CHẾ TỰ ĐỘNG HÚT (MAGNETIC SNAP) CẢI TIẾN ---
                 // Tăng bán kính tìm kiếm lên 0.55m để dễ đổ trúng hơn
-                let bestDist = 0.55; 
+                let bestDist = 0.55;
                 allTargets.forEach(target => {
                     const targetBox = new three.Box3().setFromObject(target);
                     const targetCenter = new three.Vector3();
                     targetBox.getCenter(targetCenter);
-                    
+
                     const dx = pourPoint.x - targetCenter.x;
                     const dz = pourPoint.z - targetCenter.z;
                     const distXZ = Math.sqrt(dx * dx + dz * dz);
-                    
+
                     // Kiểm tra: Trong bán kính 0.55m và miệng lọ phải cao hơn thân dụng cụ
                     if (distXZ < bestDist && (targetBox.max.y - 0.1) < pourPoint.y) {
                         bestDist = distXZ;
@@ -463,11 +463,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             );
             const tiltAmount = Math.max(Math.abs(worldRot.x), Math.abs(worldRot.z));
 
-            if (targetHit && tiltAmount > Math.PI * 0.35) { 
-                const nearestTarget = targetHit.object.name === "fluid_volume" 
-                    ? targetHit.object.userData.container 
+            if (targetHit && tiltAmount > Math.PI * 0.35) {
+                const nearestTarget = targetHit.object.name === "fluid_volume"
+                    ? targetHit.object.userData.container
                     : (targetHit.object.userData.root || targetHit.object);
-                
+
                 pouringState.currentPourTargetPos = streamEnd;
                 handlePourSuccess(sourceObj, nearestTarget, streamEnd);
             } else {
@@ -501,7 +501,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         // 1. Lấy hoặc tạo khối nước Marching Cubes
         const volume = pouringEffect.getOrCreateVolume(target);
-        
+
         // 2. Cập nhật mức chất lỏng
         target.userData.liquidLevel = (target.userData.liquidLevel || 0) + 0.005;
 
@@ -754,7 +754,7 @@ export function updateArmsAnimation(time, isMoving) {
             if (isPouringAction && isSource) {
                 // Chỉ bắt đầu nghiêng lọ khi tay đã đưa vào đủ gần vị trí trung tâm
                 const distToTarget = h.isRight ? rightArm.position.distanceTo(targetPosRight) : leftArm.position.distanceTo(targetPosLeft);
-                
+
                 if (distToTarget < 0.12) {
                     // Nghiêng lọ vừa phải (~110 độ) để không quét quá mạnh
                     h.held.rotation.x = three.MathUtils.lerp(h.held.rotation.x, Math.PI * 0.62, 0.12);
@@ -763,7 +763,7 @@ export function updateArmsAnimation(time, isMoving) {
                 h.held.position.lerp(new three.Vector3(0, -0.02, -0.04), 0.1);
             } else if (isPouringAction && !isSource) {
                 // ĐỐI VỚI DỤNG CỤ HỨNG: Xoay ngược lại để luôn thẳng đứng tuyệt đối
-                h.held.rotation.x = three.MathUtils.lerp(h.held.rotation.x, 0, 0.25); 
+                h.held.rotation.x = three.MathUtils.lerp(h.held.rotation.x, 0, 0.25);
                 h.held.rotation.y = three.MathUtils.lerp(h.held.rotation.y, 0, 0.25);
                 h.held.rotation.z = three.MathUtils.lerp(h.held.rotation.z, 0, 0.25);
                 h.held.position.lerp(new three.Vector3(0, -0.02, -0.04), 0.1);
