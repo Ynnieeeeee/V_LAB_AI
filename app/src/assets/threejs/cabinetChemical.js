@@ -68,13 +68,20 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
 
             bottle.position.set(xPos_local, yPos_local, zPos_local);
 
-            // LƯU DỮ LIỆU VÀO USERDATA để Mascot tra cứu khi Click
             bottle.userData = {
                 id_chemical: chem.id_chemical,
+
+                chemicalName: chem.name_vi,
+
+                chemical_type: chem.chemical_type,
+                chemicalType: chem.chemical_type,
+
                 name_vi: chem.name_vi,
                 formula: chem.formula,
                 safety: chem.safery_info,
+
                 isInteractable: true,
+
                 color: chem.material_color,
             };
 
@@ -83,8 +90,8 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
                 if (child.isMesh) {
                     child.material.transparent = true;
                     child.material.opacity = 0.95;
-                    child.material.roughness = 0.1;
-                    child.material.metalness = 0.2;
+                    child.material.roughness = 0.45; // Tăng nhám để bớt lóng lánh, màu rõ hơn
+                    child.material.metalness = 0.05; // Giảm kim loại hóa
 
                     // Tô màu đặc trưng từ CSDL để dễ phân biệt
                     if (chem.material_color) {

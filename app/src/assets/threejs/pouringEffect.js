@@ -51,6 +51,16 @@ export class PouringEffect {
 
         // ── Volume map ────────────────────────────────────────────────────
         this.volumes     = new Map();
+
+        // --- THÊM KHỞI TẠO HỆ THỐNG HẠT KHÓI/BỌT KHÍ ---
+        this.smokeParticles = [];
+        this.smokeGeometry = new THREE.SphereGeometry(0.008, 4, 4);
+        this.smokeMaterial = new THREE.MeshBasicMaterial({
+            color: 0xf5f5f5,
+            transparent: true,
+            opacity: 0.5
+        });
+
         this.flowRate    = 0.05;
         this.time        = 0;
         this.activeParticles = 0;
@@ -89,11 +99,12 @@ export class PouringEffect {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    start(startPos, color) {
+    startPouring(position, color, chemicalName) {
         this.isPouring = true;
+        this.chemicalName = chemicalName;
         this.color.set(color);
         this.particleMaterial.uniforms.color.value.copy(this.color);
-        this.spawnPos = startPos.clone();
+        this.spawnPos = position.clone();
     }
 
     stop() { this.isPouring = false; }
@@ -192,16 +203,16 @@ export class PouringEffect {
         const resolution = 48;
         const material = new THREE.MeshPhysicalMaterial({
             color: this.color.clone(),
-            transmission: 1.0,
+            transmission: 0.8, // Giảm trong suốt để dung dịch có màu đậm đà, rõ nét hơn
             transparent: true,
             opacity: 0.9,
-            roughness: 0.02,
+            roughness: 0.2, // Tăng nhám nhẹ để bớt chói lóa lóng lánh
             metalness: 0.0,
             ior: 1.333, // nước thật
             thickness: 0.35,
-            clearcoat: 1.0,
-            clearcoatRoughness: 0.02,
-            envMapIntensity: 1.5,
+            clearcoat: 0.2, // Giảm bóng lóng lánh
+            clearcoatRoughness: 0.3, // Làm nhòe vệt bóng
+            envMapIntensity: 1.0,
         });
 
         material.onBeforeCompile = (shader) => {
@@ -238,6 +249,7 @@ export class PouringEffect {
             material,
             false, false, 100000
         );
+        volume.name = "fluid_volume";
 
         volume.position.set(0, 0, 0);
         volume.scale.set(1, 1, 1);
@@ -269,7 +281,15 @@ export class PouringEffect {
 
         this.volumes.forEach((volume, target) => {
             this._updateVolumeEffect(volume, target);
+            
+            // --- NẾU CÓ HIỆU ỨNG KHÍ, LIÊN TỤC SINH HẠT KHÓI TẠI VỊ TRÍ CỐC ---
+            if (volume.userData.hasGasEffect) {
+                this.spawnSmokeEffect(volume.position);
+            }
         });
+
+        // Cập nhật chuyển động vật lý cho toàn bộ hạt khói
+        this.updateSmokeParticles();
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -283,11 +303,15 @@ export class PouringEffect {
         if (targetPos) vel.copy(targetPos.clone().sub(pos).normalize()).multiplyScalar(2.2);
 
         if (!this.particles[idx])
-            this.particles[idx] = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0 };
+            this.particles[idx] = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, userData: {} };
 
         const p = this.particles[idx];
         p.pos.copy(pos); p.vel.copy(vel);
         p.life = 1.0; p.target = targetPos ? targetPos.clone() : null;
+        p.userData = {
+            color: this.color.clone(),
+            chemicalName: this.chemicalName
+        };
         this.activeParticles++;
     }
 
@@ -383,9 +407,53 @@ export class PouringEffect {
             Math.max(cavitySize.z * padding, 1e-4)
         );
 
-        // ── 5. Màu sắc ────────────────────────────────────────────────────
-        if (target.userData.liquidColor)
-            volume.material.color.copy(target.userData.liquidColor);
+        // ── 5. UPDATE MÀU DUNG DỊCH ─────────────────────────────
+        if (volume.userData.isColorLerping && volume.userData.targetColor) {
+            // Lerp sang màu phản ứng
+            volume.material.color.lerp(
+                volume.userData.targetColor,
+                0.08
+            );
+
+            // Đồng bộ màu hiện tại
+            target.userData.liquidColor =
+                volume.material.color.clone();
+
+            // ÉP THREEJS UPDATE MATERIAL
+            volume.material.needsUpdate = true;
+
+            // Hoàn tất đổi màu (so sánh chênh lệch màu RGB)
+            const colorDiff = Math.sqrt(
+                Math.pow(volume.material.color.r - volume.userData.targetColor.r, 2) +
+                Math.pow(volume.material.color.g - volume.userData.targetColor.g, 2) +
+                Math.pow(volume.material.color.b - volume.userData.targetColor.b, 2)
+            );
+
+            if (colorDiff < 0.01) {
+                volume.material.color.copy(
+                    volume.userData.targetColor
+                );
+
+                target.userData.liquidColor =
+                    volume.userData.targetColor.clone();
+
+                volume.userData.isColorLerping = false;
+
+                volume.material.needsUpdate = true;
+
+                target.userData.isReacting = false;
+            }
+        }
+        else {
+            // Giữ màu hiện tại của dung dịch
+            if (target.userData.liquidColor) {
+                volume.material.color.copy(
+                    target.userData.liquidColor
+                );
+
+                volume.material.needsUpdate = true;
+            }
+        }
 
         // ── 6. Reset + rải ball (sử dụng mapLinear để an toàn trong lưới) ──
         volume.reset();
@@ -457,6 +525,47 @@ export class PouringEffect {
             volume.geometry.computeVertexNormals();
         }
     }
+
+    // Thêm hàm sinh hạt khói lơ lửng phía trên mặt cốc
+    spawnSmokeEffect(pos) {
+        for (let i = 0; i < 2; i++) { // Mỗi khung hình sinh ra 2 hạt ngẫu nhiên
+            const p = new THREE.Mesh(this.smokeGeometry, this.smokeMaterial.clone());
+            p.position.set(
+                pos.x + (Math.random() - 0.5) * 0.15, // Phát tán ngẫu nhiên theo bề rộng cốc
+                pos.y + 0.05,
+                pos.z + (Math.random() - 0.5) * 0.15
+            );
+            this.scene.add(p);
+            this.smokeParticles.push({
+                mesh: p,
+                velocity: new THREE.Vector3((Math.random() - 0.5) * 0.005, 0.015, (Math.random() - 0.5) * 0.005), // Bay ngược lên
+                life: 1.0 // Tuổi thọ hạt
+            });
+        }
+    }
+
+    // Thêm hàm cập nhật chuyển động bay lên và tan biến của khói
+    updateSmokeParticles() {
+        for (let i = this.smokeParticles.length - 1; i >= 0; i--) {
+            const p = this.smokeParticles[i];
+            p.mesh.position.add(p.velocity);
+            p.life -= 0.02; // Hạt già đi theo thời gian
+            p.mesh.material.opacity = p.life * 0.5; // Mờ dần
+            p.mesh.scale.addScalar(0.015); // Khói nở rộng dần ra ngoài không khí
+
+            if (p.life <= 0) {
+                this.scene.remove(p.mesh);
+                if (p.mesh.material) {
+                    p.mesh.material.dispose();
+                }
+                this.smokeParticles.splice(i, 1);
+            }
+        }
+    }
+
+    // Backward compat aliases for smoke methods
+    spawnSmoke(pos) { this.spawnSmokeEffect(pos); }
+    updateSmoke()     { this.updateSmokeParticles(); }
 
     // ── Backward compat aliases ──────────────────────────────────────────
     createParticleMaterial() { return this._createParticleMaterial(); }

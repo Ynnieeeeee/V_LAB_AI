@@ -52,10 +52,10 @@ export function applyAdvancedPBR(model, pbrData) {
                 }
                 
                 // 3. THÔNG SỐ PBR
-                physicalMat.roughness = pbrData.roughness !== undefined ? parseFloat(pbrData.roughness) : (oldMat.roughness || 0.5);
+                physicalMat.roughness = pbrData.roughness !== undefined ? parseFloat(pbrData.roughness) : (oldMat.roughness || 0.4);
                 physicalMat.metalness = pbrData.metalness !== undefined ? parseFloat(pbrData.metalness) : (oldMat.metalness || 0.0);
-                physicalMat.clearcoat = pbrData.clearcoat !== undefined ? parseFloat(pbrData.clearcoat) : 0.5;
-                physicalMat.clearcoatRoughness = 0.05;
+                physicalMat.clearcoat = pbrData.clearcoat !== undefined ? parseFloat(pbrData.clearcoat) : 0.1; // Bớt bóng lóng lánh
+                physicalMat.clearcoatRoughness = 0.4; // Làm nhòe bóng phản chiếu
 
                 // 4. XỬ LÝ THEO LOẠI CHẤT LIỆU (GLASS, METAL, LIQUID, PLASTIC...)
                 const materialType = pbrData.material_type || "OTHER";
@@ -74,23 +74,23 @@ export function applyAdvancedPBR(model, pbrData) {
                     physicalMat.depthWrite = true;
 
                     // SỬ DỤNG ATTENUATION CHO TRONG SUỐT CÓ MÀU (REALISTIC)
-                    // Thay vì đặt màu ở bề mặt (color), ta đặt màu ở khối tích (attenuationColor)
-                    physicalMat.color.set("#ffffff"); // Bề mặt luôn trắng để phản chiếu tốt
+                    // Nhuộm nhẹ bề mặt bằng màu hóa chất để màu sắc hiện rõ nét hơn, tránh phản xạ trắng xóa
+                    physicalMat.color.copy(aiColor).lerp(new three.Color("#ffffff"), 0.5); 
                     physicalMat.attenuationColor.copy(aiColor); 
 
                     if (materialType === "LIQUID") {
-                        physicalMat.transmission = 0.9;
-                        physicalMat.roughness = 0.05;
+                        physicalMat.transmission = 0.75; // Giảm truyền sáng một chút để màu cô đặc và đậm rõ
+                        physicalMat.roughness = 0.25;     // Tăng nhám bề mặt chất lỏng để bớt bóng lóa
                         physicalMat.ior = 1.33;
                         physicalMat.thickness = 1.0;
-                        physicalMat.attenuationDistance = 0.1; // Màu đậm hơn do mật độ cao
+                        physicalMat.attenuationDistance = 0.15; // Màu đậm đà hơn
                     } else {
                         // Mặc định là GLASS
-                        physicalMat.transmission = 0.99;
-                        physicalMat.roughness = 0.01;
-                        physicalMat.ior = 1.5;
-                        physicalMat.thickness = 0.2;
-                        physicalMat.attenuationDistance = 0.5; // Màu nhạt hơn, trong hơn
+                        physicalMat.transmission = 0.65; // Giảm bớt trong suốt để thấy rõ màu thủy tinh của chai lọ
+                        physicalMat.roughness = 0.35;     // Tăng nhám thủy tinh (mờ satin) để loại bỏ độ lóng lánh chói lóa
+                        physicalMat.ior = 1.45;
+                        physicalMat.thickness = 0.25;
+                        physicalMat.attenuationDistance = 0.4;
                     }
                 } else if (materialType === "METAL") {
                     physicalMat.metalness = 1.0;

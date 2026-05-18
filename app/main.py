@@ -14,6 +14,7 @@ from app.router.message_router import router as message_router
 from app.router.conversation_router import router as conversation_router
 from app.router.message_mascot_router import router as mascot_router
 from app.router.chemical_router import router as chemical_router
+from app.router.reaction_rule_router import router as reaction_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -47,6 +48,7 @@ app.include_router(message_router)
 app.include_router(conversation_router)
 app.include_router(mascot_router)
 app.include_router(chemical_router)
+app.include_router(reaction_router)     
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):

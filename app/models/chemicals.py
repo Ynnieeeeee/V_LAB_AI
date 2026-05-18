@@ -19,3 +19,4 @@ class Chemicals(SQLModel, table=True):
     is_in_cabinet: bool = Field(default=True)
     shelf_number: int
     image_url: str
+    chemical_type: str = Field(default="generic_solution")

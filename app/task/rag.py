@@ -6,12 +6,13 @@ from langchain.agents import create_agent
 from app.config import DATABASE_URL, HF_TOKEN
 
 #Khởi tạo llm
+# Tăng temperature lên 0.7 và repetition_penalty lên 1.25 để tránh lặp từ vô hạn
 llm = HuggingFaceEndpoint(
     repo_id="Qwen/Qwen2.5-7B-Instruct",
     task="text-generation",
-    temperature=0.4,
+    temperature=0.7,
     max_new_tokens=1024,
-    repetition_penalty=1.2,
+    repetition_penalty=1.25,
     huggingfacehub_api_token=HF_TOKEN,
     stop_sequences=["<|endoftext|>", "<|im_end|>", "User:", "Assistant:"]
 )
@@ -64,6 +65,68 @@ QUY TẮC:
 """
 agent = create_agent(model, tools, system_prompt=prompt)
 
+def clean_repeating_text(text: str) -> str:
+    """
+    Hậu xử lý nâng cao giúp phát hiện và cắt bỏ các cụm lặp vô hạn (inline loops)
+    cũng như các dòng trùng lặp liên tiếp do lỗi suy luận (degeneration) của LLM.
+    """
+    if not text:
+        return text
+        
+    # 1. Quét tìm và xử lý các cụm lặp vô hạn trên cùng một dòng (inline loops)
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            cleaned_lines.append("")
+            continue
+            
+        n = len(line_stripped)
+        best_len = 0
+        best_pos = -1
+        
+        # Tìm các chuỗi lặp có độ dài từ 10 đến 300 ký tự
+        for length in range(10, min(300, n // 3)):
+            for start in range(n - 3 * length):
+                chunk = line_stripped[start:start+length]
+                # Kiểm tra xem chunk có lặp lại liên tiếp ít nhất 3 lần không
+                if (line_stripped[start+length:start+2*length] == chunk and 
+                    line_stripped[start+2*length:start+3*length] == chunk):
+                    best_len = length
+                    best_pos = start
+                    break
+            if best_len > 0:
+                break
+                
+        if best_len > 0:
+            # Tìm thấy chuỗi lặp! Giữ lại phần trước lặp và lần lặp đầu tiên, cắt bỏ phần lặp thừa
+            truncated = line_stripped[:best_pos+best_len].rstrip(",. ") + "..."
+            # Khôi phục khoảng trắng thụt lề ban đầu của dòng
+            indent = line[:len(line) - len(line.lstrip())]
+            cleaned_lines.append(indent + truncated)
+        else:
+            cleaned_lines.append(line)
+            
+    # 2. Loại bỏ các dòng lặp lại liên tiếp hoặc dòng quá trùng lặp (duplicate lines)
+    seen = set()
+    unique_lines = []
+    for line in cleaned_lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            unique_lines.append("")
+            continue
+        
+        # Nếu dòng dài hơn 15 ký tự và đã xuất hiện trước đó, bỏ qua để tránh lặp dòng
+        if len(line_stripped) > 15:
+            if line_stripped in seen:
+                continue
+            seen.add(line_stripped)
+            
+        unique_lines.append(line)
+        
+    return '\n'.join(unique_lines)
+
 def ask_questions(question: str, selected_subject: str, history: list = None):
     """Trả lời câu hỏi"""
     input_messages = []
@@ -93,24 +156,12 @@ def ask_questions(question: str, selected_subject: str, history: list = None):
         response = agent.invoke({"messages": input_messages})
         answer = response["messages"][-1].content
         
-        # Hậu xử lý nếu vẫn bị lặp
-        if len(answer) > 2000:
-            # Cắt bớt nếu thấy dấu hiệu lặp
-            lines = answer.split('\n')
-            if len(lines) > 50:
-                # Nếu có quá nhiều dòng giống hệt nhau thì lọc bớt
-                seen = set()
-                unique_lines = []
-                for line in lines:
-                    if line not in seen or len(line) < 10:
-                        unique_lines.append(line)
-                        seen.add(line)
-                answer = '\n'.join(unique_lines)
+        # Áp dụng bộ lọc dọn dẹp các đoạn text lặp vô hạn
+        answer = clean_repeating_text(answer)
                 
         return answer
     except Exception as e:
         print(f"Error in ask_questions: {e}")
         return "Xin lỗi, mình gặp chút trục trặc khi xử lý câu hỏi. Bạn thử lại nhé!"
 
-# (Kết thúc file)
 
