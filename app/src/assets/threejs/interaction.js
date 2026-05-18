@@ -3,6 +3,7 @@ import { triggerMascotSpeech } from './mascot.js';
 import { PouringEffect } from './pouringEffect.js';
 import { detectReaction } from './reactionRules.js';
 import { camera, cameraGroup } from './camera.js';
+const THREE = three;
 
 export const draggableObjects = [];
 let heldObjectRight = null; // Đối tượng tay phải
@@ -247,8 +248,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             // NHẶT VẬT THỂ
             raycaster.setFromCamera({ x: 0, y: 0 }, camera);
             const oldFar = raycaster.far;
-            raycaster.far = 15;
-            const intersects = raycaster.intersectObjects(draggableObjects, true);
+            const candidates = draggableObjects.filter(
+                obj => obj !== heldObjectRight &&
+                       obj !== heldObjectLeft
+            );
+            const intersects = raycaster.intersectObjects(candidates, true);
             raycaster.far = oldFar;
 
             if (intersects.length > 0) {
@@ -343,7 +347,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 pouringEffect.startPouring(
                     pourPoint,
                     heldObj.userData.liquidColor || heldObj.userData.color,
-                    heldObj.userData.chemicalName
+                    heldObj.userData.chemicalName || heldObj.userData.name_vi,
+                    heldObj.userData.chemicalType || heldObj.userData.chemical_type
                 );
             }
         }
@@ -434,75 +439,230 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         animateParticles();
     }
 
-    function checkChemicalReaction(sourceContainer, targetContainer) {
-        if (!sourceContainer || !targetContainer) return;
+    function spawnExplosionEffect(position) {
+        createExplosion(position);
+    }
 
-        // Không tự phản ứng với chính nó
-        if (sourceContainer === targetContainer) return;
+    function createExplosionEffect(position) {
+        createExplosion(position);
+    }
 
-        // Chống spam gọi API liên tục (1 giây)
-        const now = performance.now();
-        if (sourceContainer.userData.lastReactionCheck &&
-            now - sourceContainer.userData.lastReactionCheck < 1000) {
-            return;
+    function createReactionEffect(config) {
+        if (!config || !config.position) return;
+        const position = config.position;
+        const color = config.color;
+        const gas = config.gas;
+        const smoke = config.smoke;
+
+        console.log("createReactionEffect triggered at:", position, "color:", color, "gas:", gas, "smoke:", smoke);
+
+        if (gas) {
+            spawnGasEffect(position);
         }
-        sourceContainer.userData.lastReactionCheck = now;
-
-        const type1 = sourceContainer.userData.current_chemical_type || sourceContainer.userData.chemicalType || sourceContainer.userData.chemical_type;
-        const type2 = targetContainer.userData.current_chemical_type || targetContainer.userData.chemicalType || targetContainer.userData.chemical_type;
-
-        const sourceId = sourceContainer.userData.current_chemical_id || sourceContainer.userData.chemicalId || sourceContainer.userData.id_chemical;
-        const targetId = targetContainer.userData.current_chemical_id || targetContainer.userData.chemicalId || targetContainer.userData.id_chemical;
-
-        const reaction = detectReaction(type1, type2);
-
-        console.log("SOURCE:", sourceContainer.userData);
-        console.log("TARGET:", targetContainer.userData);
-        console.log("REACTION:", type1, "+", type2, reaction);
-
-        if (reaction.has_reaction) {
-            targetContainer.userData.isReacting = true;
-
-            const volume = pouringEffect.getOrCreateVolume(targetContainer);
-            volume.position.set(0, 0, 0); // Đảm bảo volume ở gốc tọa độ chuẩn
-
-            if (reaction.gas) {
-                volume.userData.hasGasEffect = true;
-            }
-
-            if (reaction.explosion) {
-                createExplosion(targetContainer.position);
-            }
-
-            if (reaction.color) {
-                const reactionColor = new three.Color(reaction.color);
-                
-                targetContainer.userData.liquidColor = reactionColor.clone();
-                volume.material.color.copy(reactionColor);
-
-                volume.userData.targetColor = reactionColor.clone();
-                volume.userData.isColorLerping = true;
-
-                volume.material.uniformsNeedUpdate = true;
-                volume.material.needsUpdate = true;
-            }
-
-            // Gọi Mascot nói tiếng Việt
-            let speechMsg = "";
-            if (type1 === "alkali_metal" || type2 === "alkali_metal") {
-                speechMsg = "Wow! Phản ứng giữa Kim loại kiềm (Natri) và Nước tỏa rất nhiều nhiệt, sinh ra khí Hidro H₂ có thể gây nổ mạnh!";
-            } else if (type1 === "strong_acid" || type2 === "strong_acid" || type1 === "acid" || type2 === "acid") {
-                speechMsg = "Phản ứng trung hòa Axit và Bazơ tỏa nhiệt, tạo ra muối và nước trung tính!";
-            } else {
-                speechMsg = "Phản ứng hóa học đang xảy ra cực kỳ sinh động!";
-            }
-            triggerMascotSpeech(speechMsg);
-
-            // Đồng bộ trạng thái hóa chất mới
-            targetContainer.userData.current_chemical_type = "generic_solution";
-            targetContainer.userData.current_chemical_id = sourceId;
+        if (smoke) {
+            spawnSmokeEffect(position);
         }
     }
+
+    function spawnFireEffect(position) {
+        const particleCount = 30;
+        const geometry = new three.BufferGeometry();
+        const positions = [];
+        const velocities = [];
+        const colors = [];
+
+        for (let i = 0; i < particleCount; i++) {
+            positions.push(
+                position.x + (Math.random() - 0.5) * 0.1,
+                position.y + 0.15 + Math.random() * 0.05,
+                position.z + (Math.random() - 0.5) * 0.1
+            );
+            
+            const vx = (Math.random() - 0.5) * 0.02;
+            const vy = 0.04 + Math.random() * 0.04;
+            const vz = (Math.random() - 0.5) * 0.02;
+            velocities.push(vx, vy, vz);
+
+            const r = 1.0;
+            const g = 0.3 + Math.random() * 0.5;
+            const b = 0.0;
+            colors.push(r, g, b);
+        }
+
+        geometry.setAttribute('position', new three.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new three.Float32BufferAttribute(colors, 3));
+
+        const material = new three.PointsMaterial({
+            size: 0.15,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.9,
+            blending: three.AdditiveBlending,
+            depthWrite: false
+        });
+
+        const particles = new three.Points(geometry, material);
+        scene.add(particles);
+
+        let age = 0;
+        const maxAge = 50;
+        
+        function animate() {
+            if (age >= maxAge) {
+                scene.remove(particles);
+                geometry.dispose();
+                material.dispose();
+                return;
+            }
+            
+            const posAttr = geometry.attributes.position;
+            const colAttr = geometry.attributes.color;
+            for (let i = 0; i < particleCount; i++) {
+                posAttr.setX(i, posAttr.getX(i) + velocities[i * 3]);
+                posAttr.setY(i, posAttr.getY(i) + velocities[i * 3 + 1]);
+                posAttr.setZ(i, posAttr.getZ(i) + velocities[i * 3 + 2]);
+                
+                const gCurrent = colAttr.getY(i);
+                colAttr.setY(i, Math.max(0.0, gCurrent - 0.01));
+            }
+            posAttr.needsUpdate = true;
+            colAttr.needsUpdate = true;
+            material.opacity = 1.0 - (age / maxAge);
+            age++;
+            
+            requestAnimationFrame(animate);
+        }
+        animate();
+    }
+
+    function spawnGasEffect(position) {
+        const particleCount = 20;
+        const geometry = new three.BufferGeometry();
+        const positions = [];
+        const velocities = [];
+
+        for (let i = 0; i < particleCount; i++) {
+            positions.push(
+                position.x + (Math.random() - 0.5) * 0.15,
+                position.y + 0.1 + Math.random() * 0.05,
+                position.z + (Math.random() - 0.5) * 0.15
+            );
+            
+            const vx = (Math.random() - 0.5) * 0.005;
+            const vy = 0.01 + Math.random() * 0.015;
+            const vz = (Math.random() - 0.5) * 0.005;
+            velocities.push(vx, vy, vz);
+        }
+
+        geometry.setAttribute('position', new three.Float32BufferAttribute(positions, 3));
+
+        const material = new three.PointsMaterial({
+            color: 0xe0f7fa,
+            size: 0.06,
+            transparent: true,
+            opacity: 0.7,
+            depthWrite: false
+        });
+
+        const particles = new three.Points(geometry, material);
+        scene.add(particles);
+
+        let age = 0;
+        const maxAge = 60;
+        
+        function animate() {
+            if (age >= maxAge) {
+                scene.remove(particles);
+                geometry.dispose();
+                material.dispose();
+                return;
+            }
+            
+            const posAttr = geometry.attributes.position;
+            for (let i = 0; i < particleCount; i++) {
+                posAttr.setX(i, posAttr.getX(i) + velocities[i * 3]);
+                posAttr.setY(i, posAttr.getY(i) + velocities[i * 3 + 1]);
+                posAttr.setZ(i, posAttr.getZ(i) + velocities[i * 3 + 2]);
+                
+                velocities[i * 3] += (Math.random() - 0.5) * 0.001;
+                velocities[i * 3 + 2] += (Math.random() - 0.5) * 0.001;
+            }
+            posAttr.needsUpdate = true;
+            material.opacity = (1.0 - (age / maxAge)) * 0.7;
+            age++;
+            
+            requestAnimationFrame(animate);
+        }
+        animate();
+    }
+
+    function spawnSmokeEffect(position) {
+        if (pouringEffect && typeof pouringEffect.spawnSmokeEffect === 'function') {
+            pouringEffect.spawnSmokeEffect(position);
+        }
+    }
+
+    function spawnPrecipitateEffect(position) {
+        const particleCount = 40;
+        const geometry = new three.BufferGeometry();
+        const positions = [];
+        const velocities = [];
+
+        for (let i = 0; i < particleCount; i++) {
+            positions.push(
+                position.x + (Math.random() - 0.5) * 0.12,
+                position.y + 0.15 + (Math.random() - 0.5) * 0.05,
+                position.z + (Math.random() - 0.5) * 0.12
+            );
+            
+            const vx = (Math.random() - 0.5) * 0.003;
+            const vy = -0.015 - Math.random() * 0.015;
+            const vz = (Math.random() - 0.5) * 0.003;
+            velocities.push(vx, vy, vz);
+        }
+
+        geometry.setAttribute('position', new three.Float32BufferAttribute(positions, 3));
+
+        const material = new three.PointsMaterial({
+            color: 0xffffff,
+            size: 0.04,
+            transparent: true,
+            opacity: 0.8,
+            depthWrite: false
+        });
+
+        const particles = new three.Points(geometry, material);
+        scene.add(particles);
+
+        let age = 0;
+        const maxAge = 80;
+        
+        function animate() {
+            if (age >= maxAge) {
+                scene.remove(particles);
+                geometry.dispose();
+                material.dispose();
+                return;
+            }
+            
+            const posAttr = geometry.attributes.position;
+            for (let i = 0; i < particleCount; i++) {
+                posAttr.setX(i, posAttr.getX(i) + velocities[i * 3]);
+                posAttr.setY(i, posAttr.getY(i) + velocities[i * 3 + 1]);
+                posAttr.setZ(i, posAttr.getZ(i) + velocities[i * 3 + 2]);
+                
+                velocities[i * 3 + 1] *= 0.98;
+            }
+            posAttr.needsUpdate = true;
+            material.opacity = (1.0 - (age / maxAge)) * 0.8;
+            age++;
+            
+            requestAnimationFrame(animate);
+        }
+        animate();
+    }
+
+
 
     window.checkPouringCollision = () => {
         if (!pouringEffect || !pouringEffect.isPouring) return;
@@ -511,17 +671,6 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         potentialSources.forEach(sourceObj => {
             sourceObj.updateMatrixWorld(true);
-
-            // --- BƯỚC 1.5: BỘ DÒ PHẢN ỨNG HÓA HỌC CHỦ ĐỘNG THEO KHOẢNG CÁCH (PROACTIVE REACTION DETECTOR) ---
-            const nearbyObjects = draggableObjects.filter(obj => {
-                if (!obj || obj === sourceObj) return false;
-                const d = obj.position.distanceTo(sourceObj.position);
-                return d < 0.25;
-            });
-
-            nearbyObjects.forEach(target => {
-                checkChemicalReaction(sourceObj, target);
-            });
 
             // --- BƯỚC 2: CẬP NHẬT TỌA ĐỘ ĐỘNG CỦA ĐIỂM ĐỔ NƯỚC ---
             let pourPoint = new three.Vector3();
@@ -661,12 +810,22 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (!targetChemType || targetId === sourceId) {
             target.userData.current_chemical_id = sourceId;
             target.userData.current_chemical_type = sourceChemType;
+
+            // Gán các thông tin hóa chất cho target/volume khi tạo/đổ
+            target.userData.chemicalType = source.userData.chemicalType || source.userData.chemical_type;
+            target.userData.chemicalName = source.userData.name_vi || source.userData.chemicalName;
+            target.userData.color = source.userData.color;
             
             target.userData.liquidLevel = (target.userData.liquidLevel || 0) + 0.003;
             if (target.userData.liquidLevel > 0.8) target.userData.liquidLevel = 0.8;
             
             const volume = pouringEffect.getOrCreateVolume(target);
             volume.position.set(0, 0, 0); // Đưa volume về đúng gốc tọa độ nội bộ của liquidGroup
+
+            // Gán cho cả volume
+            volume.userData.chemicalType = source.userData.chemicalType || source.userData.chemical_type;
+            volume.userData.chemicalName = source.userData.name_vi || source.userData.chemicalName;
+            volume.userData.color = source.userData.color;
             
             // Đồng bộ màu sắc dung dịch ban đầu của hóa chất
             if (source.userData.color) {
@@ -680,15 +839,30 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         // 2. Trường hợp trộn 2 chất khác nhau và cốc không trong trạng thái đợi đổi màu cũ kết thúc
         if (targetChemType && targetChemType !== sourceChemType && !target.userData.isReacting) {
+            const now = performance.now();
+            if (
+                target.lastReactionCheck &&
+                now - target.lastReactionCheck < 1500
+            ) {
+                return;
+            }
+            target.lastReactionCheck = now;
             target.userData.isReacting = true; // Khóa tạm thời để tránh spam
 
             const type1 =
+                source.userData.current_chemical_type ||
                 source.userData.chemicalType ||
                 source.userData.chemical_type;
 
             const type2 =
+                target.userData.current_chemical_type ||
                 target.userData.chemicalType ||
                 target.userData.chemical_type;
+
+            if (sourceId === targetId || type1 === type2) {
+                target.userData.isReacting = false;
+                return;
+            }
 
             console.log("REACTION CHECK:", type1, type2);
 
@@ -699,35 +873,95 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (reaction.has_reaction) {
                 console.log("Phản ứng xảy ra!");
 
+                const targetObject = target;
+
+                createReactionEffect({
+                    position: targetObject.position,
+                    color: reaction.color,
+                    gas: reaction.gas,
+                    smoke: reaction.smoke
+                });
+
+                const volume = pouringEffect.getOrCreateVolume(targetObject);
+
+                // đổi màu
+                if (reaction.color) {
+                    volume.userData.targetColor =
+                        new THREE.Color(reaction.color);
+
+                    volume.userData.isColorLerping = true;
+                }
+
+                // hiệu ứng khí
+                volume.userData.hasGasEffect =
+                    reaction.gas || reaction.smoke;
+
+                // cháy
+                volume.userData.hasFireEffect =
+                    reaction.fire;
+
+                // nổ
+                if (reaction.explosion) {
+                    createExplosionEffect(targetObject.position);
+                }
+
+                // đánh dấu đang phản ứng
+                targetObject.userData.isReacting = true;
+
+                console.log("REACTION APPLIED:", reaction);
+
+                // Kích hoạt thêm particle effects
+                const position = targetObject.position;
+                if (reaction.fire) {
+                    spawnFireEffect(position);
+                }
+                if (reaction.gas) {
+                    spawnGasEffect(position);
+                }
+                if (reaction.smoke) {
+                    spawnSmokeEffect(position);
+                }
+                if (reaction.precipitate) {
+                    spawnPrecipitateEffect(position);
+                }
+
                 // --- ĐỒNG BỘ TRẠNG THÁI HÓA CHẤT MỚI SAU PHẢN ỨNG ---
                 target.userData.current_chemical_type = "generic_solution";
                 target.userData.current_chemical_id = sourceId;
 
-                const volume = pouringEffect.getOrCreateVolume(target);
+                target.userData.chemicalType = "generic_solution";
+                target.userData.chemicalName = "Dung dịch phản ứng";
+                target.userData.color = reaction.color;
 
                 if (volume) {
-                    if (reaction.gas) {
-                        volume.userData.hasGasEffect = true;
-                    }
-
-                    if (reaction.explosion) {
-                        createExplosion(target.position);
-                    }
+                    volume.userData.chemicalType = "generic_solution";
+                    volume.userData.chemicalName = "Dung dịch phản ứng";
+                    volume.userData.color = reaction.color;
 
                     if (reaction.color) {
-                        const reactionColor = new three.Color(reaction.color);
 
-                        // Lưu màu mới
+                        const reactionColor = new THREE.Color(reaction.color);
+
+                        // lưu màu mới
                         target.userData.liquidColor = reactionColor.clone();
-                        volume.material.color.copy(reactionColor);
 
-                        // Bắt đầu lerp
-                        volume.userData.targetColor = reactionColor.clone();
-                        volume.userData.isColorLerping = true;
+                        // FORCE đổi màu marching cubes
+                        if (volume.material) {
 
-                        // FORCE UPDATE
-                        volume.material.uniformsNeedUpdate = true;
-                        volume.material.needsUpdate = true;
+                            volume.material.color.set(reactionColor);
+
+                            volume.material.emissive = reactionColor.clone().multiplyScalar(0.15);
+
+                            volume.material.needsUpdate = true;
+                        }
+
+                        // nếu material clone bên trong marching cubes
+                        if (volume.mesh && volume.mesh.material) {
+
+                            volume.mesh.material.color.set(reactionColor);
+
+                            volume.mesh.material.needsUpdate = true;
+                        }
                     }
                 }
 
@@ -765,9 +999,12 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         // CHỈ KÉO THẢ BẰNG CHUỘT TRÁI (Button 0)
         if (e.button !== 0) return;
 
-        if (e.target.closest('#ui') || e.target.closest('#context-menu')) return;
         updateRaycaster(e);
-        const intersects = raycaster.intersectObjects(draggableObjects, true);
+        const candidates = draggableObjects.filter(
+            obj => obj !== heldObjectRight &&
+                   obj !== heldObjectLeft
+        );
+        const intersects = raycaster.intersectObjects(candidates, true);
         if (intersects.length > 0) {
             draggedObject = intersects[0].object.userData.root || intersects[0].object;
             scene.attach(draggedObject);
@@ -840,78 +1077,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         draggedObject.position.y = targetY + (draggedObject.userData.offsetToFloor || 0);
     });
 
-    function checkSolidChemicalReaction(obj) {
-        if (!obj) return;
-        if (!obj.userData.id_chemical) return;
-
-        draggableObjects.forEach(target => {
-            if (!target || target === obj) return;
-
-            const box1 = new three.Box3().setFromObject(obj);
-            const box2 = new three.Box3().setFromObject(target);
-
-            // KHÔNG CHẠM -> BỎ
-            if (!box1.intersectsBox(box2)) return;
-
-            const type1 = obj.userData.chemicalType || obj.userData.chemical_type;
-            const type2 = target.userData.current_chemical_type || target.userData.chemicalType || target.userData.chemical_type;
-
-            const sourceId = obj.userData.id_chemical;
-            const targetId = target.userData.current_chemical_id || target.userData.id_chemical;
-
-            if (!sourceId || !targetId) return;
-
-            const reaction = detectReaction(type1, type2);
-
-            console.log("SOURCE (Solid):", obj.userData);
-            console.log("TARGET (Solid):", target.userData);
-            console.log("REACTION (Solid):", type1, "+", type2, reaction);
-
-            if (reaction.has_reaction) {
-                console.log("REACTION!");
-
-                // EFFECT
-                const volume = pouringEffect.getOrCreateVolume(target);
-                volume.position.set(0, 0, 0); // Đảm bảo volume ở vị trí chuẩn
-
-                if (reaction.gas) {
-                    volume.userData.hasGasEffect = true;
-                }
-
-                if (reaction.explosion) {
-                    createExplosion(target.position);
-                }
-
-                // COLOR
-                if (reaction.color) {
-                    const newColor = new three.Color(reaction.color);
-                    volume.material.color.copy(newColor);
-                    target.userData.liquidColor = newColor.clone();
-                    volume.material.uniformsNeedUpdate = true;
-                    volume.material.needsUpdate = true;
-                }
-
-                // SPEECH / MASCOT
-                let speechMsg = "";
-                if (type1 === "alkali_metal" || type2 === "alkali_metal") {
-                    speechMsg = "Wow! Phản ứng giữa Kim loại kiềm (Natri) và Nước tỏa rất nhiều nhiệt, sinh ra khí Hidro H₂ có thể gây nổ mạnh!";
-                } else if (type1 === "strong_acid" || type2 === "strong_acid" || type1 === "acid" || type2 === "acid") {
-                    speechMsg = "Phản ứng trung hòa Axit và Bazơ tỏa nhiệt, tạo ra muối và nước trung tính!";
-                } else {
-                    speechMsg = "Phản ứng hóa học đang xảy ra cực kỳ sinh động!";
-                }
-                triggerMascotSpeech(speechMsg);
-
-                // LƯU TRẠNG THÁI HÓA CHẤT MỚI
-                target.userData.current_chemical_type = "generic_solution";
-                target.userData.current_chemical_id = sourceId;
-            }
-        });
-    }
-
     window.addEventListener('pointerup', () => {
         if (draggedObject) {
-            checkSolidChemicalReaction(draggedObject);
             orbit.enabled = true;
             draggedObject = null;
         }
@@ -962,7 +1129,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         e.preventDefault();
         if (fps.isLocked) return;
         updateRaycaster(e);
-        const intersects = raycaster.intersectObjects(draggableObjects, true);
+        const candidates = draggableObjects.filter(
+            obj => obj !== heldObjectRight &&
+                   obj !== heldObjectLeft
+        );
+        const intersects = raycaster.intersectObjects(candidates, true);
 
         if (intersects.length > 0) {
             selectedObjectForMenu = intersects[0].object.userData.root || intersects[0].object;

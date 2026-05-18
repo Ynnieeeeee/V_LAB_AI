@@ -54,11 +54,11 @@ export class PouringEffect {
 
         // --- THÊM KHỞI TẠO HỆ THỐNG HẠT KHÓI/BỌT KHÍ ---
         this.smokeParticles = [];
-        this.smokeGeometry = new THREE.SphereGeometry(0.008, 4, 4);
+        this.smokeGeometry = new THREE.SphereGeometry(0.03, 8, 8);
         this.smokeMaterial = new THREE.MeshBasicMaterial({
             color: 0xf5f5f5,
             transparent: true,
-            opacity: 0.5
+            opacity: 0.85
         });
 
         this.flowRate    = 0.05;
@@ -99,9 +99,10 @@ export class PouringEffect {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    startPouring(position, color, chemicalName) {
+    startPouring(position, color, chemicalName, chemicalType) {
         this.isPouring = true;
         this.chemicalName = chemicalName;
+        this.chemicalType = chemicalType;
         this.color.set(color);
         this.particleMaterial.uniforms.color.value.copy(this.color);
         this.spawnPos = position.clone();
@@ -310,7 +311,8 @@ export class PouringEffect {
         p.life = 1.0; p.target = targetPos ? targetPos.clone() : null;
         p.userData = {
             color: this.color.clone(),
-            chemicalName: this.chemicalName
+            chemicalName: this.chemicalName,
+            chemicalType: this.chemicalType
         };
         this.activeParticles++;
     }

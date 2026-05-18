@@ -86,6 +86,7 @@ export function triggerMascotSpeech(text) {
         // Tạo hoặc dùng lại đối tượng Audio
         if (!window.mascotAudio) {
             window.mascotAudio = new Audio();
+            window.mascotAudio.crossOrigin = "anonymous";
         }
         
         window.mascotAudio.src = googleTTSUrl;
