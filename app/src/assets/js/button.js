@@ -5,9 +5,17 @@ const searchModal = document.getElementById("searchModal");
 const searchBtn = document.getElementById("searchBtn");
 const fpsBtn = document.getElementById("fpsBtn");
 
+function setSidebarOpen(open) {
+    if (!menuSidebar) return;
+    menuSidebar.classList.toggle("translate-x-0", open);
+    menuSidebar.classList.toggle("-translate-x-full", !open);
+    menuSidebar.setAttribute("aria-hidden", open ? "false" : "true");
+}
+
+setSidebarOpen(false);
+
 sidebarBtn.addEventListener("click", () => {
-    menuSidebar.classList.toggle("-translate-x-full");
-    menuSidebar.classList.toggle("translate-x-0");
+    setSidebarOpen(!menuSidebar.classList.contains("translate-x-0"));
 });
 
 searchBtn.addEventListener("click", () => {

@@ -1,6 +1,38 @@
 .hidden { display: none; }
 #context-menu button { font-size: 14px; font-family: sans-serif; }
 
+#menuSidebar {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    height: 100dvh;
+    transform: translateX(calc(-100% - 24px)) !important;
+    opacity: 0;
+    pointer-events: none;
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+    will-change: transform, opacity;
+}
+
+#menuSidebar.translate-x-0 {
+    transform: translateX(0) !important;
+    opacity: 1;
+    pointer-events: auto;
+}
+
+#menuSidebar.-translate-x-full:not(.translate-x-0) {
+    transform: translateX(calc(-100% - 24px)) !important;
+    opacity: 0;
+    pointer-events: none;
+}
+
+#menuSidebar > div {
+    position: absolute;
+    inset: 5rem 1.5rem auto 1.5rem;
+    max-height: calc(100dvh - 6rem);
+    overflow-y: auto;
+}
+
 @keyframes float {
     0% { transform: translateY(0px); }
     50% { transform: translateY(-10px); }
