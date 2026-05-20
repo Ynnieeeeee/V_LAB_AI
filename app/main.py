@@ -1,10 +1,11 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from contextlib import asynccontextmanager
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+import uuid
 
 from app.models.base_db import check_db_connection, create_db_and_tables
 from app.router.lab_router import router as lab_router
@@ -54,6 +55,22 @@ app.include_router(reaction_router)
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/chat/{conversation_id}", response_class=HTMLResponse)
+async def chat_conversation_page(request: Request, conversation_id: str):
+    return templates.TemplateResponse("index.html", {"request": request})
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
+
+@app.get("/{conversation_id}", response_class=HTMLResponse)
+async def legacy_conversation_page(request: Request, conversation_id: str):
+    try:
+        uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
+    return templates.TemplateResponse("index.html", {"request": request})

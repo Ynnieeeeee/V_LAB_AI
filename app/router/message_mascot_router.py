@@ -9,7 +9,7 @@ from app.models.conversations import Conversations
 from app.models.chemicals import Chemicals
 from app.models.tools import Tools
 from app.models.experiment_steps import ExpermentSteps
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select, delete, text
 from app.task.rag import ask_questions_with_plan
 from datetime import datetime
@@ -128,9 +128,14 @@ def _persist_experiment_plan_steps(session: Session, id_conversation, experiment
 @router.post("/message/send")
 def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_user)):
     with Session(engine) as session:
-        id_conversation = req.id_conv
         current_subject = req.subject
-        if not id_conversation:
+        id_conversation = _as_uuid(req.id_conv)
+        existing_conv = session.get(Conversations, id_conversation) if id_conversation else None
+        if (
+            not existing_conv or
+            existing_conv.id_profile != user.id_profile or
+            existing_conv.is_deleted
+        ):
             conv = Conversations(
                 id_profile=user.id_profile,
                 title=req.question[:50],
@@ -140,9 +145,13 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
             session.commit()
             session.refresh(conv)
             id_conversation = conv.id_conv
+            existing_conv = None
+        else:
+            id_conversation = existing_conv.id_conv
+            current_subject = existing_conv.subject_type or req.subject
 
         history = []
-        if req.id_conv:
+        if existing_conv:
             history_stmt = select(MascotMessages).where(
                 MascotMessages.id_conv == id_conversation
             ).order_by(MascotMessages.created_at.desc()).limit(5)
@@ -186,20 +195,25 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
 @router.get("/api/message/full_history/{id_conversation}")
 def get_full_history(id_conversation: str, user: Profiles = Depends(get_current_user)):
     with Session(engine) as session:
+        conv_id = _as_uuid(id_conversation)
+        conversation = session.get(Conversations, conv_id) if conv_id else None
+        if not conversation or conversation.id_profile != user.id_profile or conversation.is_deleted:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
         msg_stmt = select(Messages).where(
-            Messages.id_conv == id_conversation
+            Messages.id_conv == conv_id
         ).order_by(Messages.created_at)
 
         msg = session.exec(msg_stmt).all()
 
         msg_mascot_stmt = select(MascotMessages).where(
-            MascotMessages.id_conv == id_conversation
+            MascotMessages.id_conv == conv_id
         ).order_by(MascotMessages.created_at)
 
         msg_mascot = session.exec(msg_mascot_stmt).all()
 
         return{
-            "id_conversation": id_conversation,
+            "id_conversation": str(conv_id),
             "chat_history": msg,
             "mascot_instructions": msg_mascot
         }

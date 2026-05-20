@@ -7,6 +7,18 @@ function getCurrentConvId() {
     return window.currentConvId || localStorage.getItem('mascot_conv_id') || null;
 }
 
+function clearStoredSession() {
+    window.currentConvId = null;
+    localStorage.removeItem('mascot_conv_id');
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('user');
+}
+
+function handleUnauthorized() {
+    clearStoredSession();
+    mascotTalk('Phiên đăng nhập đã hết hạn. Bạn hãy đăng nhập lại để Mascot có thể trả lời và lưu thí nghiệm nhé.');
+}
+
 function ensurePanel() {
     if (typeof window.ensureMascotPanel === 'function') {
         return window.ensureMascotPanel();
@@ -72,6 +84,16 @@ async function sendMascotMessage(question) {
             })
         });
 
+        if (response.status === 401 || response.status === 403) {
+            handleUnauthorized();
+            return;
+        }
+        if (response.status === 404) {
+            localStorage.removeItem('mascot_conv_id');
+            window.currentConvId = null;
+            mascotTalk('Đoạn chat cũ không còn tồn tại. Mình đã đặt lại phiên, bạn gửi lại câu hỏi nhé.');
+            return;
+        }
         if (!response.ok) throw new Error(`Server error ${response.status}`);
 
         const data = await response.json();
@@ -138,6 +160,16 @@ async function loadMessages(id) {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
+        if (response.status === 401 || response.status === 403) {
+            handleUnauthorized();
+            return;
+        }
+        if (response.status === 404) {
+            localStorage.removeItem('mascot_conv_id');
+            if (window.currentConvId === id) window.currentConvId = null;
+            mascotTalk('Không tìm thấy đoạn chat này. Bạn có thể tạo đoạn chat mới để tiếp tục.');
+            return;
+        }
         if (!response.ok) return;
 
         const data = await response.json();
@@ -168,7 +200,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const pathParts = window.location.pathname.split('/');
     const idFromUrl = pathParts[pathParts.length - 1];
-    if (idFromUrl && idFromUrl.length > 30) {
+    const isChatConversationUrl = pathParts.includes('chat') && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idFromUrl || '');
+    if (isChatConversationUrl) {
         window.currentConvId = idFromUrl;
         localStorage.setItem('mascot_conv_id', idFromUrl);
         loadMessages(idFromUrl);
