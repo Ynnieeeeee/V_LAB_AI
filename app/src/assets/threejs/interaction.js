@@ -3,7 +3,32 @@ import { triggerMascotSpeech } from './mascot.js';
 import { PouringEffect } from './pouringEffect.js';
 import { detectReaction } from './reactionRules.js';
 import { camera, cameraGroup } from './camera.js';
+import {
+    spawnFireParticles,
+    spawnSmoke,
+    spawnGasCloud,
+    createShockwave,
+    heatDistortion,
+    spawnPrecipitate
+} from './reactionEffects.js';
 const THREE = three;
+
+function isSolidChemical(obj) {
+    const s = String(
+        obj?.userData?.physical_state ||
+        obj?.userData?.physicalState ||
+        obj?.userData?.state ||
+        ''
+    ).toLowerCase();
+    return s.includes('rắn') || s.includes('ran') || s.includes('solid') || s.includes('powder') || s.includes('bột');
+}
+
+function getWorldCenter(obj) {
+    const box = new three.Box3().setFromObject(obj);
+    const center = new three.Vector3();
+    box.getCenter(center);
+    return center;
+}
 
 export const draggableObjects = [];
 let heldObjectRight = null; // Đối tượng tay phải
@@ -348,7 +373,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     pourPoint,
                     heldObj.userData.liquidColor || heldObj.userData.color,
                     heldObj.userData.chemicalName || heldObj.userData.name_vi,
-                    heldObj.userData.chemicalType || heldObj.userData.chemical_type
+                    heldObj.userData.chemicalType || heldObj.userData.chemical_type,
+                    heldObj.userData.physical_state || heldObj.userData.physicalState || heldObj.userData.state || 'Lỏng'
                 );
             }
         }
@@ -376,292 +402,71 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     const downRaycaster = new three.Raycaster();
     const downVector = new three.Vector3(0, -1, 0);
 
-    function createExplosion(position) {
-        const particleCount = 40;
-        const geometry = new three.BufferGeometry();
-        const positions = [];
-        const velocities = [];
-
-        for (let i = 0; i < particleCount; i++) {
-            positions.push(position.x, position.y + 0.1, position.z);
-            
-            // Random spherical direction
-            const theta = Math.random() * Math.PI * 2;
-            const phi = Math.acos((Math.random() * 2) - 1);
-            const speed = 0.05 + Math.random() * 0.15;
-            
-            const vx = Math.sin(phi) * Math.cos(theta) * speed;
-            const vy = (Math.sin(phi) * Math.sin(theta) * speed) + 0.1; // slight upward bias
-            const vz = Math.cos(phi) * speed;
-            
-            velocities.push(vx, vy, vz);
-        }
-
-        geometry.setAttribute('position', new three.Float32BufferAttribute(positions, 3));
-
-        const material = new three.PointsMaterial({
-            color: 0xffaa00,
-            size: 0.12,
-            transparent: true,
-            opacity: 1,
-            blending: three.AdditiveBlending
-        });
-
-        const particles = new three.Points(geometry, material);
-        scene.add(particles);
-
-        let age = 0;
-        const maxAge = 40; // frames
-        
-        function animateParticles() {
-            if (age >= maxAge) {
-                scene.remove(particles);
-                geometry.dispose();
-                material.dispose();
-                return;
-            }
-            
-            const posAttr = geometry.attributes.position;
-            for (let i = 0; i < particleCount; i++) {
-                posAttr.setX(i, posAttr.getX(i) + velocities[i * 3]);
-                posAttr.setY(i, posAttr.getY(i) + velocities[i * 3 + 1]);
-                posAttr.setZ(i, posAttr.getZ(i) + velocities[i * 3 + 2]);
-                
-                // Apply gravity
-                velocities[i * 3 + 1] -= 0.005;
-            }
-            posAttr.needsUpdate = true;
-            material.opacity = 1 - (age / maxAge);
-            age++;
-            
-            requestAnimationFrame(animateParticles);
-        }
-        animateParticles();
+    function getContainerEffectPosition(container) {
+        if (!container) return new three.Vector3();
+        container.updateMatrixWorld(true);
+        const box = new three.Box3().setFromObject(container);
+        const center = new three.Vector3();
+        box.getCenter(center);
+        // Đặt hiệu ứng phụ ở gần miệng dụng cụ, không ở ngoài tủ/kệ.
+        center.y = box.max.y + 0.035;
+        return center;
     }
 
-    function spawnExplosionEffect(position) {
-        createExplosion(position);
-    }
-
-    function createExplosionEffect(position) {
-        createExplosion(position);
+    function effectPower(...values) {
+        for (const value of values) {
+            if (value === undefined || value === null || value === false) continue;
+            if (value === true) return 1;
+            if (typeof value === 'number') return Math.max(0, Math.min(2, value));
+            if (typeof value === 'object') {
+                const nested = value.intensity ?? value.power ?? value.strength ?? value.density ?? value.toxicity ?? value.value;
+                const n = effectPower(nested);
+                if (n > 0) return n;
+            }
+        }
+        return 0;
     }
 
     function createReactionEffect(config) {
-        if (!config || !config.position) return;
-        const position = config.position;
-        const color = config.color;
-        const gas = config.gas;
-        const smoke = config.smoke;
 
-        console.log("createReactionEffect triggered at:", position, "color:", color, "gas:", gas, "smoke:", smoke);
+        if (!config) return;
 
-        if (gas) {
-            spawnGasEffect(position);
-        }
-        if (smoke) {
-            spawnSmokeEffect(position);
-        }
-    }
+        const raw = config.raw || config.reaction || {};
+        const visual = raw.visual || {};
+        const effects = raw.effects || {};
+        const container = config.container || null;
+        const position = config.position || getContainerEffectPosition(container);
 
-    function spawnFireEffect(position) {
-        const particleCount = 30;
-        const geometry = new three.BufferGeometry();
-        const positions = [];
-        const velocities = [];
-        const colors = [];
+        const fire = effectPower(config.fire, raw.fire, visual.fire_effect, effects.fire);
+        const smoke = effectPower(config.smoke, raw.smoke, visual.smoke_effect, effects.smoke);
+        const gas = effectPower(config.gas, raw.gas, visual.gas_effect, effects.gas);
+        const explosion = effectPower(config.explosion, raw.explosion, visual.explosion_effect, effects.explosion);
+        const heat = effectPower(config.heat, raw.heat, effects.heat);
 
-        for (let i = 0; i < particleCount; i++) {
-            positions.push(
-                position.x + (Math.random() - 0.5) * 0.1,
-                position.y + 0.15 + Math.random() * 0.05,
-                position.z + (Math.random() - 0.5) * 0.1
-            );
-            
-            const vx = (Math.random() - 0.5) * 0.02;
-            const vy = 0.04 + Math.random() * 0.04;
-            const vz = (Math.random() - 0.5) * 0.02;
-            velocities.push(vx, vy, vz);
+        console.log("REACTION FX:", { fire, smoke, gas, explosion, heat, config });
 
-            const r = 1.0;
-            const g = 0.3 + Math.random() * 0.5;
-            const b = 0.0;
-            colors.push(r, g, b);
+        // Các hiệu ứng bay lên khỏi miệng cốc dùng world-space.
+        // Kết tủa tuyệt đối KHÔNG spawn vào scene ở world-space, vì sẽ bị lệch ra ngoài dụng cụ.
+        if (fire > 0) {
+            spawnFireParticles(scene, position, { intensity: fire });
         }
 
-        geometry.setAttribute('position', new three.Float32BufferAttribute(positions, 3));
-        geometry.setAttribute('color', new three.Float32BufferAttribute(colors, 3));
-
-        const material = new three.PointsMaterial({
-            size: 0.15,
-            vertexColors: true,
-            transparent: true,
-            opacity: 0.9,
-            blending: three.AdditiveBlending,
-            depthWrite: false
-        });
-
-        const particles = new three.Points(geometry, material);
-        scene.add(particles);
-
-        let age = 0;
-        const maxAge = 50;
-        
-        function animate() {
-            if (age >= maxAge) {
-                scene.remove(particles);
-                geometry.dispose();
-                material.dispose();
-                return;
-            }
-            
-            const posAttr = geometry.attributes.position;
-            const colAttr = geometry.attributes.color;
-            for (let i = 0; i < particleCount; i++) {
-                posAttr.setX(i, posAttr.getX(i) + velocities[i * 3]);
-                posAttr.setY(i, posAttr.getY(i) + velocities[i * 3 + 1]);
-                posAttr.setZ(i, posAttr.getZ(i) + velocities[i * 3 + 2]);
-                
-                const gCurrent = colAttr.getY(i);
-                colAttr.setY(i, Math.max(0.0, gCurrent - 0.01));
-            }
-            posAttr.needsUpdate = true;
-            colAttr.needsUpdate = true;
-            material.opacity = 1.0 - (age / maxAge);
-            age++;
-            
-            requestAnimationFrame(animate);
-        }
-        animate();
-    }
-
-    function spawnGasEffect(position) {
-        const particleCount = 20;
-        const geometry = new three.BufferGeometry();
-        const positions = [];
-        const velocities = [];
-
-        for (let i = 0; i < particleCount; i++) {
-            positions.push(
-                position.x + (Math.random() - 0.5) * 0.15,
-                position.y + 0.1 + Math.random() * 0.05,
-                position.z + (Math.random() - 0.5) * 0.15
-            );
-            
-            const vx = (Math.random() - 0.5) * 0.005;
-            const vy = 0.01 + Math.random() * 0.015;
-            const vz = (Math.random() - 0.5) * 0.005;
-            velocities.push(vx, vy, vz);
+        if (smoke > 0) {
+            spawnSmoke(scene, position, { density: smoke });
         }
 
-        geometry.setAttribute('position', new three.Float32BufferAttribute(positions, 3));
-
-        const material = new three.PointsMaterial({
-            color: 0xe0f7fa,
-            size: 0.06,
-            transparent: true,
-            opacity: 0.7,
-            depthWrite: false
-        });
-
-        const particles = new three.Points(geometry, material);
-        scene.add(particles);
-
-        let age = 0;
-        const maxAge = 60;
-        
-        function animate() {
-            if (age >= maxAge) {
-                scene.remove(particles);
-                geometry.dispose();
-                material.dispose();
-                return;
-            }
-            
-            const posAttr = geometry.attributes.position;
-            for (let i = 0; i < particleCount; i++) {
-                posAttr.setX(i, posAttr.getX(i) + velocities[i * 3]);
-                posAttr.setY(i, posAttr.getY(i) + velocities[i * 3 + 1]);
-                posAttr.setZ(i, posAttr.getZ(i) + velocities[i * 3 + 2]);
-                
-                velocities[i * 3] += (Math.random() - 0.5) * 0.001;
-                velocities[i * 3 + 2] += (Math.random() - 0.5) * 0.001;
-            }
-            posAttr.needsUpdate = true;
-            material.opacity = (1.0 - (age / maxAge)) * 0.7;
-            age++;
-            
-            requestAnimationFrame(animate);
+        if (gas > 0) {
+            spawnGasCloud(scene, position, { toxicity: gas });
         }
-        animate();
-    }
 
-    function spawnSmokeEffect(position) {
-        if (pouringEffect && typeof pouringEffect.spawnSmokeEffect === 'function') {
-            pouringEffect.spawnSmokeEffect(position);
+        if (explosion > 0) {
+            createShockwave(scene, position, { power: explosion });
+        }
+
+        if (heat > 0) {
+            heatDistortion(scene, position, { strength: heat });
         }
     }
-
-    function spawnPrecipitateEffect(position) {
-        const particleCount = 40;
-        const geometry = new three.BufferGeometry();
-        const positions = [];
-        const velocities = [];
-
-        for (let i = 0; i < particleCount; i++) {
-            positions.push(
-                position.x + (Math.random() - 0.5) * 0.12,
-                position.y + 0.15 + (Math.random() - 0.5) * 0.05,
-                position.z + (Math.random() - 0.5) * 0.12
-            );
-            
-            const vx = (Math.random() - 0.5) * 0.003;
-            const vy = -0.015 - Math.random() * 0.015;
-            const vz = (Math.random() - 0.5) * 0.003;
-            velocities.push(vx, vy, vz);
-        }
-
-        geometry.setAttribute('position', new three.Float32BufferAttribute(positions, 3));
-
-        const material = new three.PointsMaterial({
-            color: 0xffffff,
-            size: 0.04,
-            transparent: true,
-            opacity: 0.8,
-            depthWrite: false
-        });
-
-        const particles = new three.Points(geometry, material);
-        scene.add(particles);
-
-        let age = 0;
-        const maxAge = 80;
-        
-        function animate() {
-            if (age >= maxAge) {
-                scene.remove(particles);
-                geometry.dispose();
-                material.dispose();
-                return;
-            }
-            
-            const posAttr = geometry.attributes.position;
-            for (let i = 0; i < particleCount; i++) {
-                posAttr.setX(i, posAttr.getX(i) + velocities[i * 3]);
-                posAttr.setY(i, posAttr.getY(i) + velocities[i * 3 + 1]);
-                posAttr.setZ(i, posAttr.getZ(i) + velocities[i * 3 + 2]);
-                
-                velocities[i * 3 + 1] *= 0.98;
-            }
-            posAttr.needsUpdate = true;
-            material.opacity = (1.0 - (age / maxAge)) * 0.8;
-            age++;
-            
-            requestAnimationFrame(animate);
-        }
-        animate();
-    }
-
 
 
     window.checkPouringCollision = () => {
@@ -796,7 +601,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
 
     // Hàm phụ xử lý khi đổ thành công
-    function handlePourSuccess(source, target, targetMouthPos) {
+    async function handlePourSuccess(source, target, targetMouthPos) {
         if (!target || !target.userData) return;
 
         // Lấy thông tin chemical_type động (nếu cốc đã phản ứng trước đó, lấy chất mới sinh ra)
@@ -806,28 +611,33 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const sourceId = source.userData.id_chemical;
         const targetId = target.userData.current_chemical_id || target.userData.id_chemical;
 
-        // 1. Trường hợp cốc trống hoặc đổ cùng loại chất: Chỉ dâng nước
+        // 1. Trường hợp cốc trống hoặc đổ cùng loại chất.
+        // Nếu chất nguồn là RẮN thì KHÔNG tạo liquid volume; chỉ tạo lớp bột/hạt trong dụng cụ.
         if (!targetChemType || targetId === sourceId) {
             target.userData.current_chemical_id = sourceId;
             target.userData.current_chemical_type = sourceChemType;
+            target.userData.current_physical_state = source.userData.physical_state || source.userData.physicalState || source.userData.state || 'Lỏng';
 
-            // Gán các thông tin hóa chất cho target/volume khi tạo/đổ
             target.userData.chemicalType = source.userData.chemicalType || source.userData.chemical_type;
             target.userData.chemicalName = source.userData.name_vi || source.userData.chemicalName;
             target.userData.color = source.userData.color;
-            
+            target.userData.physical_state = target.userData.current_physical_state;
+
+            if (isSolidChemical(source)) {
+                createPowderDeposit(target, source.userData.color || '#dddddd');
+                return;
+            }
+
             target.userData.liquidLevel = (target.userData.liquidLevel || 0) + 0.003;
             if (target.userData.liquidLevel > 0.8) target.userData.liquidLevel = 0.8;
-            
-            const volume = pouringEffect.getOrCreateVolume(target);
-            volume.position.set(0, 0, 0); // Đưa volume về đúng gốc tọa độ nội bộ của liquidGroup
 
-            // Gán cho cả volume
+            const volume = pouringEffect.getOrCreateVolume(target);
+            volume.position.set(0, 0, 0);
+
             volume.userData.chemicalType = source.userData.chemicalType || source.userData.chemical_type;
             volume.userData.chemicalName = source.userData.name_vi || source.userData.chemicalName;
             volume.userData.color = source.userData.color;
-            
-            // Đồng bộ màu sắc dung dịch ban đầu của hóa chất
+
             if (source.userData.color) {
                 const sourceColor = new three.Color(source.userData.color);
                 volume.material.color.copy(sourceColor);
@@ -838,7 +648,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         }
 
         // 2. Trường hợp trộn 2 chất khác nhau và cốc không trong trạng thái đợi đổi màu cũ kết thúc
-        if (targetChemType && targetChemType !== sourceChemType && !target.userData.isReacting) {
+        if (targetChemType && targetId !== sourceId && !target.userData.isReacting) {
             const now = performance.now();
             if (
                 target.lastReactionCheck &&
@@ -859,14 +669,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 target.userData.chemicalType ||
                 target.userData.chemical_type;
 
-            if (sourceId === targetId || type1 === type2) {
+            if (sourceId === targetId) {
                 target.userData.isReacting = false;
                 return;
             }
 
-            console.log("REACTION CHECK:", type1, type2);
+            console.log("REACTION CHECK:", { type1, type2, sourceId, targetId });
 
-            const reaction = detectReaction(type1, type2);
+            const reaction = await detectReaction(source, target);
 
             console.log("REACTION RESULT:", reaction);
 
@@ -876,10 +686,17 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 const targetObject = target;
 
                 createReactionEffect({
-                    position: targetObject.position,
+                    container: targetObject,
+                    position: getContainerEffectPosition(targetObject),
                     color: reaction.color,
                     gas: reaction.gas,
-                    smoke: reaction.smoke
+                    smoke: reaction.smoke,
+                    fire: reaction.fire,
+                    explosion: reaction.explosion,
+                    heat: reaction.heat,
+                    raw: reaction.raw || reaction,
+                    precipitate: reaction.precipitate,
+                    precipitateColor: reaction.precipitateColor
                 });
 
                 const volume = pouringEffect.getOrCreateVolume(targetObject);
@@ -887,7 +704,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 // đổi màu
                 if (reaction.color) {
                     volume.userData.targetColor =
-                        new THREE.Color(reaction.color);
+                        new three.Color(reaction.color);
 
                     volume.userData.isColorLerping = true;
                 }
@@ -900,47 +717,38 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 volume.userData.hasFireEffect =
                     reaction.fire;
 
-                // nổ
-                if (reaction.explosion) {
-                    createExplosionEffect(targetObject.position);
-                }
-
                 // đánh dấu đang phản ứng
                 targetObject.userData.isReacting = true;
+                window.setTimeout(() => {
+                    if (targetObject?.userData) targetObject.userData.isReacting = false;
+                }, 1800);
 
                 console.log("REACTION APPLIED:", reaction);
 
-                // Kích hoạt thêm particle effects
-                const position = targetObject.position;
-                if (reaction.fire) {
-                    spawnFireEffect(position);
-                }
-                if (reaction.gas) {
-                    spawnGasEffect(position);
-                }
-                if (reaction.smoke) {
-                    spawnSmokeEffect(position);
-                }
+                // kết tủa
                 if (reaction.precipitate) {
-                    spawnPrecipitateEffect(position);
+                    createPrecipitate(
+                        targetObject,
+                        reaction.precipitateColor || "#ffffff"
+                    );
                 }
 
                 // --- ĐỒNG BỘ TRẠNG THÁI HÓA CHẤT MỚI SAU PHẢN ỨNG ---
-                target.userData.current_chemical_type = "generic_solution";
+                target.userData.current_chemical_type = reaction.result_chemical_type || "generic_solution";
                 target.userData.current_chemical_id = sourceId;
 
-                target.userData.chemicalType = "generic_solution";
+                target.userData.chemicalType = reaction.result_chemical_type || "generic_solution";
                 target.userData.chemicalName = "Dung dịch phản ứng";
                 target.userData.color = reaction.color;
 
                 if (volume) {
-                    volume.userData.chemicalType = "generic_solution";
+                    volume.userData.chemicalType = reaction.result_chemical_type || "generic_solution";
                     volume.userData.chemicalName = "Dung dịch phản ứng";
                     volume.userData.color = reaction.color;
 
                     if (reaction.color) {
 
-                        const reactionColor = new THREE.Color(reaction.color);
+                        const reactionColor = new three.Color(reaction.color);
 
                         // lưu màu mới
                         target.userData.liquidColor = reactionColor.clone();
@@ -965,15 +773,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     }
                 }
 
-                // Gọi Mascot hiển thị câu thoại thuyết minh động
-                let speechMsg = "";
-                if (type1 === "alkali_metal" || type2 === "alkali_metal") {
-                    speechMsg = "Wow! Phản ứng giữa Kim loại kiềm (Natri) và Nước tỏa rất nhiều nhiệt, sinh ra khí Hidro H₂ có thể gây nổ mạnh!";
-                } else if (type1 === "strong_acid" || type2 === "strong_acid" || type1 === "acid" || type2 === "acid") {
-                    speechMsg = "Phản ứng trung hòa Axit và Bazơ tỏa nhiệt, tạo ra muối và nước trung tính!";
-                } else {
-                    speechMsg = "Phản ứng hóa học đang xảy ra cực kỳ sinh động!";
-                }
+                // Gọi Mascot hiển thị câu thoại chính xác từ backend/engine
+                const speechMsg = reaction.mascotText || reaction.equation || "Phản ứng hóa học đã xảy ra.";
                 triggerMascotSpeech(speechMsg);
             } else {
                 // Trộn vật lý thông thường, không phản ứng -> Mở khóa cho phép thử chất khác
@@ -1277,4 +1078,129 @@ function animateFingers(arm, isGripping) {
 export function setArmsVisibility(visible) {
     leftArmGroup.visible = visible;
     rightArmGroup.visible = visible;
+}
+
+
+function ensureLocalEffectGroup(container, name = 'local_reaction_effects') {
+    if (!container) return null;
+    let group = container.userData[name];
+    if (!group) {
+        group = new three.Group();
+        group.name = name;
+        container.add(group);
+        container.userData[name] = group;
+    }
+    return group;
+}
+
+function getCavityLocalInfo(container) {
+    const points = container?.userData?.cavityPoints || [];
+    if (points.length > 0) {
+        const box = new three.Box3();
+        let minY = Infinity;
+        let maxY = -Infinity;
+        points.forEach(p => {
+            if (!isFinite(p.lx) || !isFinite(p.lz)) return;
+            box.expandByPoint(new three.Vector3(p.lx, 0, p.lz));
+            minY = Math.min(minY, p.lyBottom);
+            maxY = Math.max(maxY, p.lyTop);
+        });
+        if (isFinite(minY) && isFinite(maxY) && !box.isEmpty()) {
+            return {
+                radiusX: Math.max((box.max.x - box.min.x) * 0.28, 0.035),
+                radiusZ: Math.max((box.max.z - box.min.z) * 0.28, 0.035),
+                bottomY: minY + 0.015,
+                surfaceY: three.MathUtils.lerp(minY, maxY, Math.min(container.userData.liquidLevel || 0.2, 0.85))
+            };
+        }
+    }
+
+    // Fallback an toàn cho model chưa detect được cavity.
+    const localBox = new three.Box3().setFromObject(container);
+    const inv = container.matrixWorld.clone().invert();
+    const worldCenter = new three.Vector3();
+    localBox.getCenter(worldCenter);
+    const localCenter = worldCenter.applyMatrix4(inv);
+    return {
+        radiusX: 0.08,
+        radiusZ: 0.08,
+        bottomY: localCenter.y - 0.08,
+        surfaceY: localCenter.y
+    };
+}
+
+function createPowderDeposit(container, color) {
+    if (!container) return;
+
+    const group = ensureLocalEffectGroup(container, 'powderDeposit');
+    if (!group) return;
+
+    const info = getCavityLocalInfo(container);
+    const geo = new three.BufferGeometry();
+    const points = [];
+    const amount = 180;
+
+    for (let i = 0; i < amount; i++) {
+        const r = Math.sqrt(Math.random());
+        const a = Math.random() * Math.PI * 2;
+        points.push(
+            Math.cos(a) * r * info.radiusX,
+            info.bottomY + Math.random() * 0.045,
+            Math.sin(a) * r * info.radiusZ
+        );
+    }
+
+    geo.setAttribute('position', new three.Float32BufferAttribute(points, 3));
+
+    const mat = new three.PointsMaterial({
+        color: color || '#dddddd',
+        size: 0.012,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: true
+    });
+
+    const powder = new three.Points(geo, mat);
+    powder.name = 'solid_powder_inside_container';
+    group.add(powder);
+}
+
+function createPrecipitate(container, color) {
+    if (!container) return;
+
+    // Kết tủa là pha rắn lơ lửng/lắng trong lòng chất lỏng, phải là child local của dụng cụ.
+    const group = ensureLocalEffectGroup(container, 'precipitateLayer');
+    if (!group) return;
+
+    const info = getCavityLocalInfo(container);
+    const geo = new THREE.BufferGeometry();
+    const points = [];
+    const amount = 520;
+
+    for (let i = 0; i < amount; i++) {
+        const r = Math.sqrt(Math.random());
+        const a = Math.random() * Math.PI * 2;
+        const yBand = three.MathUtils.lerp(info.bottomY, Math.min(info.surfaceY, info.bottomY + 0.12), Math.random());
+        points.push(
+            Math.cos(a) * r * info.radiusX,
+            yBand,
+            Math.sin(a) * r * info.radiusZ
+        );
+    }
+
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+
+    const mat = new THREE.PointsMaterial({
+        color: color || '#ffffff',
+        size: 0.011,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.96,
+        depthWrite: true
+    });
+
+    const precipitate = new THREE.Points(geo, mat);
+    precipitate.name = 'precipitate_inside_container';
+    group.add(precipitate);
 }

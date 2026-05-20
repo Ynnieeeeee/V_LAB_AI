@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 let mascotModel;
 let speechTimeout;
+let lastSpeakTime = 0;
 
 export function initMascot(scene, camera) {
     const loader = new GLTFLoader();
@@ -52,7 +53,7 @@ export function triggerMascotSpeech(text) {
     const mascotDialog = document.getElementById('mascot-dialog');
     const speechContent = document.getElementById('mascot-text');
 
-    // 1. LUÔN HIỂN THỊ VĂN BẢN (Không còn tự động ẩn)
+    // 1. LUÔN HIỂN THỊ VĂN BẢN
     if (mascotDialog && speechContent) {
         clearTimeout(speechTimeout);
         speechContent.innerText = text;
@@ -61,55 +62,32 @@ export function triggerMascotSpeech(text) {
         mascotDialog.classList.remove('hidden');
     }
 
-    // 2. XỬ LÝ ÂM THANH
+    // 2. GIỚI HẠN THỜI GIAN COOLDOWN ĐỂ TRÁNH SPAM ÂM THANH
+    const now = performance.now();
+    if (now - lastSpeakTime < 2500) {
+        return;
+    }
+    lastSpeakTime = now;
+
+    // 3. XỬ LÝ ÂM THANH BẰNG WEB SPEECH API (KHÔNG BỊ CORS)
     try {
-        // Ưu tiên SpeechSynthesis nếu có giọng Việt
         if ('speechSynthesis' in window) {
-            window.speechSynthesis.cancel();
+            const utter = new SpeechSynthesisUtterance(text);
+            utter.lang = 'vi-VN';
+            utter.rate = 1;
+            utter.pitch = 1;
+
             const voices = window.speechSynthesis.getVoices();
             const viVoice = voices.find(v => v.lang.startsWith('vi') || v.name.toLowerCase().includes('vietnamese'));
-
             if (viVoice) {
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = 'vi-VN';
-                utterance.voice = viVoice;
-                utterance.rate = 0.9;
-                window.speechSynthesis.speak(utterance);
-                return; // Đã xong nếu dùng được giọng nội bộ
+                utter.voice = viVoice;
             }
-        }
 
-        // PHƯƠNG ÁN DỰ PHÒNG: Dùng Google TTS Online với xử lý lỗi tốt hơn
-        console.log("Đang gọi Google TTS...");
-        const googleTTSUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=vi&client=tw-ob`;
-        
-        // Tạo hoặc dùng lại đối tượng Audio
-        if (!window.mascotAudio) {
-            window.mascotAudio = new Audio();
-            window.mascotAudio.crossOrigin = "anonymous";
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(utter);
         }
-        
-        window.mascotAudio.src = googleTTSUrl;
-        
-        // Lắng nghe lỗi nạp âm thanh (như bị Google chặn hoặc 404)
-        window.mascotAudio.onerror = (e) => {
-            console.warn("Không thể tải âm thanh từ Google TTS. Có thể do giới hạn yêu cầu.");
-        };
-
-        window.mascotAudio.play().catch(e => {
-            if (e.name === 'NotAllowedError') {
-                console.warn("Âm thanh bị trình duyệt chặn. Hãy click vào màn hình để cho phép.");
-                const enableAudio = () => {
-                    window.mascotAudio.play().catch(() => {});
-                    window.removeEventListener('click', enableAudio);
-                };
-                window.addEventListener('click', enableAudio);
-            } else {
-                console.warn("Lỗi phát âm thanh Mascot:", e);
-            }
-        });
     } catch (err) {
-        console.error("Lỗi hệ thống âm thanh:", err);
+        console.error("Lỗi hệ thống âm thanh Web Speech:", err);
     }
 }
 

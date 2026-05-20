@@ -65,6 +65,26 @@ export class PouringEffect {
         this.time        = 0;
         this.activeParticles = 0;
         this.spawnTimer  = 0;
+
+        // Hạt rắn/bột: dùng riêng với chất có physical_state = Rắn.
+        this.powderParticles = [];
+        this.powderCount = 700;
+        this.powderGeometry = new THREE.BufferGeometry();
+        this.powderPositions = new Float32Array(this.powderCount * 3);
+        this.powderSizes = new Float32Array(this.powderCount);
+        for (let i = 0; i < this.powderCount; i++) {
+            this.powderPositions[i * 3] = 0;
+            this.powderPositions[i * 3 + 1] = -100;
+            this.powderPositions[i * 3 + 2] = 0;
+            this.powderSizes[i] = 0;
+        }
+        this.powderGeometry.setAttribute('position', new THREE.BufferAttribute(this.powderPositions, 3));
+        this.powderGeometry.setAttribute('size', new THREE.BufferAttribute(this.powderSizes, 1));
+        this.powderMaterial = this._createPowderMaterial();
+        this.powderSystem = new THREE.Points(this.powderGeometry, this.powderMaterial);
+        this.powderSystem.renderOrder = 1000;
+        this.scene.add(this.powderSystem);
+        this.activePowderParticles = 0;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -98,13 +118,47 @@ export class PouringEffect {
         });
     }
 
+    _createPowderMaterial() {
+        return new THREE.ShaderMaterial({
+            uniforms: { color: { value: this.color.clone() } },
+            vertexShader: `
+                attribute float size;
+                void main() {
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    gl_PointSize = clamp(size * (120.0 / -mvPosition.z), 1.5, 18.0);
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 color;
+                void main() {
+                    float d = distance(gl_PointCoord, vec2(0.5));
+                    if (d > 0.5) discard;
+                    float grain = 0.75 + fract(sin(gl_FragCoord.x * 12.9898 + gl_FragCoord.y * 78.233) * 43758.5453) * 0.25;
+                    gl_FragColor = vec4(color * grain, 1.0);
+                }
+            `,
+            transparent: true,
+            depthWrite: true,
+            depthTest: true
+        });
+    }
+
+    _isSolidState(state) {
+        const s = String(state || '').toLowerCase();
+        return s.includes('rắn') || s.includes('ran') || s.includes('solid') || s.includes('powder') || s.includes('bột');
+    }
+
     // ─────────────────────────────────────────────────────────────────────
-    startPouring(position, color, chemicalName, chemicalType) {
+    startPouring(position, color, chemicalName, chemicalType, physicalState = 'Lỏng') {
         this.isPouring = true;
         this.chemicalName = chemicalName;
         this.chemicalType = chemicalType;
-        this.color.set(color);
+        this.physicalState = physicalState;
+        this.isPouringSolid = this._isSolidState(physicalState);
+        this.color.set(color || '#ffffff');
         this.particleMaterial.uniforms.color.value.copy(this.color);
+        this.powderMaterial.uniforms.color.value.copy(this.color);
         this.spawnPos = position.clone();
     }
 
@@ -273,19 +327,26 @@ export class PouringEffect {
         if (this.isPouring) {
             this.spawnTimer += 0.016;
             if (this.spawnTimer > 0.01) {
-                this._spawnParticle(targetPos);
+                if (this.isPouringSolid) {
+                    this._spawnPowderParticle(targetPos);
+                    this._spawnPowderParticle(targetPos);
+                } else {
+                    this._spawnParticle(targetPos);
+                }
                 this.spawnTimer = 0;
             }
         }
 
         this._updateParticles();
+        this._updatePowderParticles();
 
         this.volumes.forEach((volume, target) => {
             this._updateVolumeEffect(volume, target);
             
-            // --- NẾU CÓ HIỆU ỨNG KHÍ, LIÊN TỤC SINH HẠT KHÓI TẠI VỊ TRÍ CỐC ---
+            // --- NẾU CÓ HIỆU ỨNG KHÍ, sinh bọt/khói từ MIỆNG DỤNG CỤ theo world-space ---
             if (volume.userData.hasGasEffect) {
-                this.spawnSmokeEffect(volume.position);
+                const surfacePos = this._getContainerSurfaceWorldPosition(volume, target);
+                this.spawnSmokeEffect(surfacePos, target);
             }
         });
 
@@ -337,6 +398,70 @@ export class PouringEffect {
         }
         this.particleGeometry.attributes.position.needsUpdate = true;
         this.particleGeometry.attributes.size.needsUpdate     = true;
+    }
+
+
+    _spawnPowderParticle(targetPos) {
+        if (!this.spawnPos) return;
+        const idx = this.activePowderParticles % this.powderCount;
+        const pos = this.spawnPos.clone();
+        pos.x += (Math.random() - 0.5) * 0.035;
+        pos.z += (Math.random() - 0.5) * 0.035;
+
+        const vel = new THREE.Vector3(
+            (Math.random() - 0.5) * 0.09,
+            -0.55 - Math.random() * 0.45,
+            (Math.random() - 0.5) * 0.09
+        );
+        if (targetPos) {
+            const toTarget = targetPos.clone().sub(pos).normalize().multiplyScalar(1.2);
+            vel.lerp(toTarget, 0.45);
+        }
+
+        if (!this.powderParticles[idx]) {
+            this.powderParticles[idx] = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, settled: false };
+        }
+
+        const p = this.powderParticles[idx];
+        p.pos.copy(pos);
+        p.vel.copy(vel);
+        p.life = 1.0;
+        p.target = targetPos ? targetPos.clone() : null;
+        p.settled = false;
+        this.activePowderParticles++;
+    }
+
+    _updatePowderParticles() {
+        const pos = this.powderGeometry.attributes.position.array;
+        const size = this.powderGeometry.attributes.size.array;
+
+        for (let i = 0; i < this.powderCount; i++) {
+            const p = this.powderParticles[i];
+            if (!p || p.life <= 0) {
+                size[i] = 0;
+                pos[i * 3 + 1] = -100;
+                continue;
+            }
+
+            if (!p.settled) {
+                p.vel.y -= 0.035;
+                p.pos.addScaledVector(p.vel, 0.016);
+                if (p.target && p.pos.distanceTo(p.target) < 0.08) {
+                    p.settled = true;
+                    p.vel.set(0, 0, 0);
+                }
+                if (p.pos.y < 0) p.life = 0;
+            }
+
+            p.life -= p.settled ? 0.018 : 0.006;
+            pos[i * 3] = p.pos.x;
+            pos[i * 3 + 1] = p.pos.y;
+            pos[i * 3 + 2] = p.pos.z;
+            size[i] = (p.settled ? 4.0 : 3.0) * Math.max(p.life, 0);
+        }
+
+        this.powderGeometry.attributes.position.needsUpdate = true;
+        this.powderGeometry.attributes.size.needsUpdate = true;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -528,14 +653,27 @@ export class PouringEffect {
         }
     }
 
-    // Thêm hàm sinh hạt khói lơ lửng phía trên mặt cốc
-    spawnSmokeEffect(pos) {
+    _getContainerSurfaceWorldPosition(volume, target) {
+        const p = new THREE.Vector3();
+        try {
+            const box = new THREE.Box3().setFromObject(target);
+            box.getCenter(p);
+            p.y = box.max.y + 0.025;
+        } catch (e) {
+            volume.userData.group?.getWorldPosition(p);
+        }
+        return p;
+    }
+
+    // Thêm hàm sinh hạt khí/bọt lơ lửng phía trên mặt cốc
+    spawnSmokeEffect(pos, target = null) {
         for (let i = 0; i < 2; i++) { // Mỗi khung hình sinh ra 2 hạt ngẫu nhiên
             const p = new THREE.Mesh(this.smokeGeometry, this.smokeMaterial.clone());
+            const spread = target ? Math.max(0.08, Math.min(0.22, new THREE.Box3().setFromObject(target).getSize(new THREE.Vector3()).x * 0.18)) : 0.15;
             p.position.set(
-                pos.x + (Math.random() - 0.5) * 0.15, // Phát tán ngẫu nhiên theo bề rộng cốc
-                pos.y + 0.05,
-                pos.z + (Math.random() - 0.5) * 0.15
+                pos.x + (Math.random() - 0.5) * spread,
+                pos.y + 0.04,
+                pos.z + (Math.random() - 0.5) * spread
             );
             this.scene.add(p);
             this.smokeParticles.push({

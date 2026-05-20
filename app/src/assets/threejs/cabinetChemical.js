@@ -80,6 +80,12 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
                 formula: chem.formula,
                 safety: chem.safery_info,
 
+                // Trạng thái vật lý từ CSDL: "Rắn", "Lỏng", "Khí"...
+                // Frontend dùng trường này để quyết định rót dạng bột/hạt hay dòng lỏng.
+                physical_state: chem.physical_state,
+                physicalState: chem.physical_state,
+                state: chem.physical_state,
+
                 isInteractable: true,
 
                 color: chem.material_color,
