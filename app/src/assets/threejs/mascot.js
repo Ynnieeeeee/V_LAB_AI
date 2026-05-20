@@ -2,122 +2,109 @@
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 let mascotModel;
-let speechTimeout;
-let lastSpeakTime = 0;
-let cachedVietnameseVoice = null;
+const MAX_MASCOT_MESSAGES = 8;
 
 export function initMascot(scene, camera) {
-    const loader = new GLTFLoader();
+    ensureMascotPanel();
 
+    const loader = new GLTFLoader();
     loader.load('./assets/models/mascot.glb', (gltf) => {
         mascotModel = gltf.scene;
         mascotModel.scale.set(0.12, 0.12, 0.12);
         camera.add(mascotModel);
         mascotModel.position.set(0.73, 0, -1.8);
         mascotModel.rotation.y = 0.2;
-        console.log('Mascot đã được tải.');
+        console.log('Mascot loaded.');
     }, undefined, (error) => {
-        console.error('Lỗi tải model Mascot:', error);
+        console.error('Mascot model load error:', error);
     });
 }
 
-function normalizeVietnameseText(text = '') {
-    return String(text)
-        .replace(/CuSO₄/g, 'Cu SO 4')
-        .replace(/NaOH/g, 'Na O H')
-        .replace(/Cu\(OH\)₂/g, 'Cu O H 2')
-        .replace(/Na₂SO₄/g, 'Na 2 SO 4')
-        .replace(/H₂O/g, 'H 2 O')
-        .replace(/H₂/g, 'H 2')
-        .replace(/CO₂/g, 'CO 2')
-        .replace(/↓/g, ' kết tủa ')
-        .replace(/→/g, ' tạo ra ')
-        .trim();
-}
-
-function findVietnameseVoice() {
-    if (!('speechSynthesis' in window)) return null;
-
-    const voices = window.speechSynthesis.getVoices() || [];
-    cachedVietnameseVoice =
-        voices.find(v => /^vi(-|_)?VN/i.test(v.lang)) ||
-        voices.find(v => /^vi/i.test(v.lang)) ||
-        voices.find(v => /vietnam|tiếng việt|vietnamese/i.test(v.name)) ||
-        null;
-
-    return cachedVietnameseVoice;
-}
-
-if ('speechSynthesis' in window) {
-    window.speechSynthesis.onvoiceschanged = () => {
-        findVietnameseVoice();
-    };
-    findVietnameseVoice();
-}
-
-/**
- * Mascot chỉ nên được gọi khi có kết quả phản ứng.
- * Nội dung truyền vào nên là mascot_speech + equation.
- */
-export function triggerMascotSpeech(text) {
+function ensureMascotPanel() {
+    const mascotContainer = document.getElementById('mascot-container');
     const mascotDialog = document.getElementById('mascot-dialog');
     const speechContent = document.getElementById('mascot-text');
-    const rawText = String(text || '').trim();
 
-    if (!rawText) return;
-
-    if (mascotDialog && speechContent) {
-        clearTimeout(speechTimeout);
-        speechContent.innerText = rawText;
-        mascotDialog.style.display = 'block';
-        mascotDialog.style.opacity = '1';
-        mascotDialog.classList.remove('hidden');
-
-        speechTimeout = setTimeout(() => {
-            mascotDialog.style.opacity = '0';
-            setTimeout(() => mascotDialog.classList.add('hidden'), 250);
-        }, Math.max(4500, Math.min(12000, rawText.length * 90)));
+    if (mascotContainer) {
+        mascotContainer.classList.remove('hidden');
+        mascotContainer.style.display = 'flex';
+        mascotContainer.style.opacity = '1';
+        mascotContainer.style.visibility = 'visible';
+        mascotContainer.style.pointerEvents = 'none';
     }
 
-    const now = performance.now();
-    if (now - lastSpeakTime < 900) return;
-    lastSpeakTime = now;
+    if (mascotDialog) {
+        mascotDialog.classList.remove('hidden');
+        mascotDialog.style.display = 'block';
+        mascotDialog.style.opacity = '1';
+        mascotDialog.style.visibility = 'visible';
+        mascotDialog.style.pointerEvents = 'auto';
+    }
 
-    try {
-        if (!('speechSynthesis' in window)) return;
+    if (mascotDialog && !document.getElementById('mascot-history')) {
+        const history = document.createElement('div');
+        history.id = 'mascot-history';
+        history.className = 'mascot-history';
+        if (speechContent?.parentElement) {
+            speechContent.parentElement.insertBefore(history, speechContent);
+        } else {
+            mascotDialog.prepend(history);
+        }
+    }
 
-        const speakText = normalizeVietnameseText(rawText);
-        const utter = new SpeechSynthesisUtterance(speakText);
+    return {
+        container: mascotContainer,
+        dialog: mascotDialog,
+        text: speechContent,
+        history: document.getElementById('mascot-history')
+    };
+}
 
-        // Ép đọc tiếng Việt. Nếu máy không có voice vi-VN, trình duyệt vẫn cố đọc theo ngôn ngữ này.
-        utter.lang = 'vi-VN';
-        utter.rate = 0.92;
-        utter.pitch = 1.02;
-        utter.volume = 1;
+function appendMascotHistory(text) {
+    const { history } = ensureMascotPanel();
+    if (!history) return;
 
-        const viVoice = cachedVietnameseVoice || findVietnameseVoice();
-        if (viVoice) utter.voice = viVoice;
+    const last = history.lastElementChild;
+    if (last && last.textContent === text) {
+        history.scrollTop = history.scrollHeight;
+        return;
+    }
 
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utter);
-    } catch (err) {
-        console.error('Lỗi hệ thống âm thanh Web Speech:', err);
+    const item = document.createElement('div');
+    item.className = 'mascot-history-item';
+    item.textContent = text;
+    history.appendChild(item);
+
+    while (history.children.length > MAX_MASCOT_MESSAGES) {
+        history.firstElementChild?.remove();
+    }
+    history.scrollTop = history.scrollHeight;
+}
+
+// Public API name is preserved for reaction code compatibility.
+// This only updates text in the fixed panel. It never plays audio and never hides the panel.
+export function triggerMascotSpeech(text) {
+    const rawText = String(text || '').trim();
+    if (!rawText) return;
+
+    const { dialog, text: speechContent } = ensureMascotPanel();
+    if (speechContent) {
+        speechContent.innerText = rawText;
+        appendMascotHistory(rawText);
+    }
+    if (dialog) {
+        dialog.scrollTop = dialog.scrollHeight;
     }
 }
 
 window.triggerMascotSpeech = triggerMascotSpeech;
+window.ensureMascotPanel = ensureMascotPanel;
 
 export function updateMascot() {
-    if (mascotModel) {
-        const time = Date.now() * 0.002;
-        const floatOffset = Math.sin(time) * 0.03;
-
-        mascotModel.position.y = 0 + floatOffset;
-
-        const mascotDialog = document.getElementById('mascot-dialog');
-        if (mascotDialog && mascotDialog.style.display !== 'none') {
-            const pixelOffset = floatOffset * 300;
-            mascotDialog.style.transform = `translateY(${-pixelOffset}px)`;
-        }
-    }
+    if (!mascotModel) return;
+    const time = Date.now() * 0.002;
+    const floatOffset = Math.sin(time) * 0.03;
+    mascotModel.position.y = floatOffset;
 }
+
+document.addEventListener('DOMContentLoaded', ensureMascotPanel);
