@@ -1,6 +1,8 @@
 // Fixed text-only mascot chat panel.
 // It updates the existing panel without playback, auto-hide, or repeated DOM node churn.
 
+const mascotTalkScriptUrl = document.currentScript?.src || null;
+
 function getCurrentConvId() {
     return window.currentConvId || localStorage.getItem('mascot_conv_id') || null;
 }
@@ -83,7 +85,26 @@ async function sendMascotMessage(question) {
             window.loadConversations();
         }
 
-        mascotTalk(data.answer);
+        if ('experiment_plan' in data) {
+            if (typeof window.setCurrentExperimentPlan === 'function') {
+                window.setCurrentExperimentPlan(data.experiment_plan);
+            } else {
+                window.currentExperimentPlan = data.experiment_plan || null;
+                const sessionModuleUrl = mascotTalkScriptUrl
+                    ? new URL('../threejs/ExperimentSessionManager.js', mascotTalkScriptUrl).href
+                    : './assets/threejs/ExperimentSessionManager.js';
+                import(sessionModuleUrl)
+                    .then(module => module.setCurrentExperimentPlan(data.experiment_plan))
+                    .catch(() => {});
+            }
+        }
+
+        const answerText = data.answer_text || data.answer;
+        if (data.experiment_plan) {
+            mascotTalk(`${answerText}\n\nĐề bài đã được lưu: ${data.experiment_plan.title}`);
+        } else {
+            mascotTalk(answerText);
+        }
     } catch (error) {
         console.error(error);
         mascotTalk('Rất tiếc, mình gặp lỗi khi kết nối với hệ thống. Bạn thử lại nhé!');

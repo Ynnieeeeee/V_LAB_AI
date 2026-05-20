@@ -8,7 +8,7 @@ from app.models.profiles import Profiles
 from app.models.conversations import Conversations
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
-from app.task.rag import ask_questions
+from app.task.rag import ask_questions_with_plan
 from datetime import datetime
 
 router = APIRouter()
@@ -46,7 +46,9 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
         )
         session.add(user_msg)
             
-        answer = ask_questions(req.question, selected_subject=current_subject, history=history)
+        rag_result = ask_questions_with_plan(req.question, selected_subject=current_subject, history=history)
+        answer = rag_result["answer_text"]
+        experiment_plan = rag_result["experiment_plan"]
 
         mascot_message = MascotMessages(
             id_conv=id_conversation,
@@ -62,8 +64,10 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
         session.commit()
 
         return {
-            "id_conversation": id_conversation,
-            "answer": answer
+            "id_conversation": str(id_conversation),
+            "answer": answer,
+            "answer_text": answer,
+            "experiment_plan": experiment_plan
         }
         
 @router.get("/api/message/full_history/{id_conversation}")

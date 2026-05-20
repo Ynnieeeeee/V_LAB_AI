@@ -2,6 +2,14 @@ import * as three from 'three';
 import { triggerMascotSpeech } from './mascot.js';
 import { PouringEffect } from './pouringEffect.js';
 import { detectReaction } from './reactionRules.js';
+import {
+    getSelectedQuantity,
+    recordPourAction,
+    validateExperimentBeforeReaction,
+    describeNextRequirement,
+    hasActiveExperimentPlan,
+    markReactionSuccess
+} from './ExperimentSessionManager.js';
 import { camera, cameraGroup } from './camera.js';
 import {
     spawnFireParticles,
@@ -952,6 +960,15 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     async function handlePourSuccess(source, target, targetMouthPos) {
         if (!target || !target.userData) return;
 
+        const selectedQuantity = getSelectedQuantity(source);
+        const pourRecord = recordPourAction({
+            source,
+            target,
+            amount: selectedQuantity.amount,
+            unit: selectedQuantity.unit,
+            physicalState: getPhysicalState(source)
+        });
+
         // Lấy thông tin chemical_type động (nếu cốc đã phản ứng trước đó, lấy chất mới sinh ra)
         const sourceChemType = getChemicalType(source);
         const targetChemType = getChemicalType(target);
@@ -966,6 +983,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 replaceIdentity: true,
                 forceSourceColor: true
             });
+            if (hasActiveExperimentPlan() && pourRecord.recorded) {
+                const guidance = describeNextRequirement(target);
+                if (guidance) triggerMascotSpeech(guidance);
+            }
             return;
         }
 
@@ -991,6 +1012,19 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             }
 
             console.log("REACTION CHECK:", { type1, type2, sourceId, targetId });
+
+            if (hasActiveExperimentPlan()) {
+                const validation = validateExperimentBeforeReaction({ source, target });
+                if (!validation.ok) {
+                    addSourceContentToContainer(target, source, {
+                        replaceIdentity: false,
+                        forceSourceColor: false
+                    });
+                    target.userData.isReacting = false;
+                    triggerMascotSpeech(validation.message || 'Thí nghiệm chưa đúng điều kiện nên phản ứng chưa xảy ra.');
+                    return;
+                }
+            }
 
             const reaction = await detectReaction(source, target);
 
@@ -1117,6 +1151,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     reaction.result_chemical_type
                 );
                 applyReactionState(targetObject, reaction);
+                markReactionSuccess(targetObject, reaction);
 
                 // --- ĐỒNG BỘ TRẠNG THÁI HÓA CHẤT MỚI SAU PHẢN ỨNG ---
                 target.userData.current_chemical_type = reaction.result_chemical_type || "generic_solution";
@@ -1161,7 +1196,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 }
 
                 // Mascot chỉ hiển thị kết quả phản ứng: mascot_speech + equation.
-                triggerMascotSpeech(formatReactionMascotText(reaction));
+                if (hasActiveExperimentPlan()) {
+                    triggerMascotSpeech(window.currentExperimentPlan?.success_message || formatReactionMascotText(reaction));
+                } else {
+                    triggerMascotSpeech(formatReactionMascotText(reaction));
+                }
             } else {
                 // Trộn vật lý thông thường, không phản ứng.
                 // FIX: trước đây nhánh này chỉ mở khóa + tăng liquidLevel ở cuối,
