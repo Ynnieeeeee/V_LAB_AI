@@ -956,6 +956,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return volume;
     }
 
+    function stopPouringForAutoStop(source) {
+        isPouringAction = false;
+        activePourSource = null;
+        if (source) source.rotation.z = 0;
+        pouringEffect.stop();
+        lastPouredTarget = null;
+    }
+
     // Hàm phụ xử lý khi đổ thành công
     async function handlePourSuccess(source, target, targetMouthPos) {
         if (!target || !target.userData) return;
@@ -968,6 +976,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             unit: selectedQuantity.unit,
             physicalState: getPhysicalState(source)
         });
+        if (pourRecord.autoStopped) {
+            stopPouringForAutoStop(source);
+        }
 
         // Lấy thông tin chemical_type động (nếu cốc đã phản ứng trước đó, lấy chất mới sinh ra)
         const sourceChemType = getChemicalType(source);
@@ -987,6 +998,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 const guidance = describeNextRequirement(target);
                 if (guidance) triggerMascotSpeech(guidance);
             }
+            if (pourRecord.autoStopped) {
+                stopPouringForAutoStop(source);
+                if (pourRecord.message) triggerMascotSpeech(pourRecord.message);
+            }
             return;
         }
 
@@ -995,7 +1010,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             const now = performance.now();
             if (
                 target.lastReactionCheck &&
-                now - target.lastReactionCheck < 1500
+                now - target.lastReactionCheck < 1500 &&
+                !pourRecord.autoStopped
             ) {
                 return;
             }

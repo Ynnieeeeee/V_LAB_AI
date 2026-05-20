@@ -1,10 +1,13 @@
 const DEFAULT_LIQUID_AMOUNT = 5;
 const DEFAULT_SOLID_AMOUNT = 0.5;
-const ACTION_DEBOUNCE_MS = 10000;
+const LIQUID_FLOW_PER_TICK = 0.5;
+const SOLID_FLOW_PER_TICK = 0.05;
+const STEP_SYNC_THROTTLE_MS = 250;
 
 let currentExperimentPlan = window.currentExperimentPlan || null;
+let currentExperimentSteps = window.currentExperimentSteps || [];
 let actionStep = 0;
-let lastRecordedAction = null;
+const lastStepSyncAt = new Map();
 
 function norm(value) {
     return String(value || '')
@@ -12,6 +15,7 @@ function norm(value) {
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/đ/g, 'd')
+        .replace(/Ä‘/g, 'd')
         .replace(/[()[\]{}]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
@@ -89,12 +93,42 @@ function defaultQuantityForSource(source) {
         : { amount: DEFAULT_LIQUID_AMOUNT, unit: 'ml' };
 }
 
-function plannedAddSteps() {
+function stepIsChemicalAction(step) {
+    const action = step?.action_type || step?.action;
+    return action === 'pour' || action === 'add' || action === 'add_chemical';
+}
+
+function activeChemicalSteps() {
+    if (currentExperimentSteps.length) {
+        return currentExperimentSteps
+            .filter(stepIsChemicalAction)
+            .map(step => ({
+                step: step.step_order,
+                chemical: step.chemical_name_vi,
+                amount: Number(step.target_amount || 0),
+                unit: step.unit,
+                tolerance: Number(step.tolerance || 0),
+                actual_amount: Number(step.actual_amount || 0),
+                is_completed: !!step.is_completed,
+                dbStep: step
+            }));
+    }
     return (currentExperimentPlan?.required_conditions?.steps || [])
         .filter(step => step?.action === 'add_chemical');
 }
 
+function plannedAddSteps() {
+    return activeChemicalSteps();
+}
+
 function nextIncompleteStep(container) {
+    if (currentExperimentSteps.length) {
+        return plannedAddSteps().find(step => {
+            const required = Number(step.amount || 0);
+            const current = Number(step.actual_amount || 0);
+            return current < required;
+        });
+    }
     const contents = aggregateContents(container);
     return plannedAddSteps().find(step => {
         const required = Number(step.amount || 0);
@@ -144,19 +178,101 @@ function syncQuantityForNextStep(container = null) {
     if (step) setQuantityControlValue(step.amount, step.unit);
 }
 
+function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
+    if (!steps.length) return basePlan || null;
+    const chemicalSteps = steps.filter(stepIsChemicalAction);
+    const requiredChemicals = chemicalSteps.map(step => ({
+        name_vi: step.chemical_name_vi,
+        name_en: step.chemical_name_vi,
+        amount: Number(step.target_amount || 0),
+        unit: step.unit,
+        tolerance: Number(step.tolerance || 0.1),
+        role: 'reactant'
+    }));
+    const legacySteps = steps.map(step => ({
+        step: step.step_order,
+        action: step.action_type === 'heat' ? 'heat' : 'add_chemical',
+        chemical: step.chemical_name_vi,
+        amount: Number(step.target_amount || 0),
+        unit: step.unit,
+        temperature_min: step.target_temperature
+    }));
+    const heatingStep = steps.find(step => step.action_type === 'heat' || step.heating_required);
+    return {
+        ...(basePlan || {}),
+        experiment_id: basePlan?.experiment_id || 'rag_experiment',
+        reaction_id: basePlan?.reaction_id || basePlan?.success_reaction_id || null,
+        title: basePlan?.title || 'Thí nghiệm từ Mascot/RAG',
+        steps,
+        required_chemicals: requiredChemicals,
+        required_conditions: {
+            ...(basePlan?.required_conditions || {}),
+            order_required: true,
+            heating_required: !!heatingStep,
+            temperature_min: heatingStep?.target_temperature ?? basePlan?.required_conditions?.temperature_min ?? null,
+            temperature_max: basePlan?.required_conditions?.temperature_max ?? null,
+            steps: legacySteps
+        },
+        success_reaction_id: basePlan?.success_reaction_id || basePlan?.reaction_id || null,
+        success_message: basePlan?.success_message || 'Thí nghiệm thành công.'
+    };
+}
+
 export function setCurrentExperimentPlan(plan) {
     currentExperimentPlan = plan || null;
+    currentExperimentSteps = Array.isArray(plan?.steps)
+        ? plan.steps.filter(step => step?.id_step)
+        : [];
     window.currentExperimentPlan = currentExperimentPlan;
+    window.currentExperimentSteps = currentExperimentSteps;
     window.experimentSession = {
         plan: currentExperimentPlan,
+        steps: currentExperimentSteps,
         actions: [],
         startedAt: Date.now()
     };
     actionStep = 0;
-    lastRecordedAction = null;
     setQuantityControlVisible(!!currentExperimentPlan);
     syncQuantityForNextStep();
     return currentExperimentPlan;
+}
+
+export function setCurrentExperimentSteps(steps = []) {
+    currentExperimentSteps = Array.isArray(steps)
+        ? steps.map(step => ({
+            ...step,
+            target_amount: step.target_amount === null || step.target_amount === undefined ? null : Number(step.target_amount),
+            tolerance: step.tolerance === null || step.tolerance === undefined ? 0.1 : Number(step.tolerance),
+            actual_amount: Number(step.actual_amount || 0),
+            is_completed: !!step.is_completed,
+            is_failed: !!step.is_failed,
+            auto_stop: step.auto_stop !== false
+        })).sort((a, b) => Number(a.step_order || 0) - Number(b.step_order || 0))
+        : [];
+    window.currentExperimentSteps = currentExperimentSteps;
+    currentExperimentPlan = buildPlanFromSteps(currentExperimentSteps, currentExperimentPlan);
+    window.currentExperimentPlan = currentExperimentPlan;
+    if (!window.experimentSession) window.experimentSession = { actions: [], startedAt: Date.now() };
+    window.experimentSession.plan = currentExperimentPlan;
+    window.experimentSession.steps = currentExperimentSteps;
+    setQuantityControlVisible(!!currentExperimentPlan);
+    syncQuantityForNextStep();
+    return currentExperimentSteps;
+}
+
+export async function fetchExperimentSteps(idConversation = window.currentConvId || localStorage.getItem('mascot_conv_id')) {
+    if (!idConversation) return [];
+    const token = localStorage.getItem('access_token');
+    if (!token) return [];
+    const response = await fetch(`/api/experiment-steps/${idConversation}`, {
+        headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!response.ok) {
+        console.error('Experiment steps fetch failed:', response.status, await response.text().catch(() => ''));
+        return [];
+    }
+    const data = await response.json();
+    return setCurrentExperimentSteps(data.steps || []);
 }
 
 export function getCurrentExperimentPlan() {
@@ -180,6 +296,50 @@ export function getSelectedQuantity(source) {
     return { amount, unit };
 }
 
+function currentDbStepForSource(source) {
+    if (!currentExperimentSteps.length) return null;
+    const nameKey = key(sourceName(source));
+    return currentExperimentSteps.find(step => {
+        if (!stepIsChemicalAction(step) || step.is_completed) return false;
+        return key(step.chemical_name_vi) === nameKey;
+    }) || currentExperimentSteps.find(step => stepIsChemicalAction(step) && !step.is_completed) || null;
+}
+
+function flowIncrementFor(source, step = null) {
+    const unit = step?.unit || defaultQuantityForSource(source).unit;
+    return unit === 'g' ? SOLID_FLOW_PER_TICK : LIQUID_FLOW_PER_TICK;
+}
+
+function syncStepActualAmount(step, force = false) {
+    if (!step?.id_step) return;
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+    const now = performance.now();
+    const last = lastStepSyncAt.get(step.id_step) || 0;
+    if (!force && now - last < STEP_SYNC_THROTTLE_MS) return;
+    lastStepSyncAt.set(step.id_step, now);
+    fetch(`/api/experiment-steps/${step.id_step}`, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+            actual_amount: step.actual_amount,
+            is_completed: step.is_completed
+        })
+    })
+        .then(response => response.ok ? response.json() : Promise.reject(response))
+        .then(updated => {
+            const index = currentExperimentSteps.findIndex(item => item.id_step === updated.id_step);
+            if (index >= 0) {
+                currentExperimentSteps[index] = { ...currentExperimentSteps[index], ...updated };
+                setCurrentExperimentSteps(currentExperimentSteps);
+            }
+        })
+        .catch(error => console.error('Experiment step sync failed:', error));
+}
+
 export function ensureContainerExperimentState(container) {
     if (!container?.userData) return null;
     if (!container.userData.experimentState) {
@@ -200,18 +360,27 @@ export function ensureContainerExperimentState(container) {
 export function recordPourAction({ source, target, amount, unit, physicalState } = {}) {
     if (!target?.userData || !source?.userData) return { recorded: false };
     const name = sourceName(source);
-    const now = performance.now();
-    const actionKey = `${source.uuid || name}->${target.uuid || 'container'}`;
-    if (
-        lastRecordedAction &&
-        lastRecordedAction.key === actionKey &&
-        now - lastRecordedAction.time < ACTION_DEBOUNCE_MS
-    ) {
-        return { recorded: false, action: lastRecordedAction.action };
+    const dbStep = currentDbStepForSource(source);
+    const sameAsCurrentStep = !dbStep || key(dbStep.chemical_name_vi) === key(name);
+    const remaining = dbStep?.target_amount !== null && dbStep?.target_amount !== undefined
+        ? Math.max(0, Number(dbStep.target_amount) - Number(dbStep.actual_amount || 0))
+        : Infinity;
+    const tickAmount = dbStep && sameAsCurrentStep
+        ? Math.min(flowIncrementFor(source, dbStep), remaining)
+        : Number(amount) || defaultQuantityForSource(source).amount;
+    if (dbStep && sameAsCurrentStep && remaining <= 0) {
+        return {
+            recorded: false,
+            dbStep,
+            autoStopped: !!dbStep.auto_stop,
+            message: `Đã đủ ${dbStep.target_amount} ${dbStep.unit} ${dbStep.chemical_name_vi}.`
+        };
     }
-
-    const quantityAmount = Number(amount) || defaultQuantityForSource(source).amount;
-    const quantityUnit = unit || defaultQuantityForSource(source).unit;
+    const numericTickAmount = Number(tickAmount);
+    const quantityAmount = Number.isFinite(numericTickAmount)
+        ? numericTickAmount
+        : defaultQuantityForSource(source).amount;
+    const quantityUnit = dbStep?.unit || unit || defaultQuantityForSource(source).unit;
     const state = ensureContainerExperimentState(target);
     const action = {
         step: ++actionStep,
@@ -237,9 +406,30 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
         window.experimentSession = { plan: getCurrentExperimentPlan(), actions: [], startedAt: Date.now() };
     }
     window.experimentSession.actions.push(action);
-    lastRecordedAction = { key: actionKey, time: now, action };
+
+    let autoStopped = false;
+    let completedStep = null;
+    if (dbStep && sameAsCurrentStep) {
+        dbStep.actual_amount = Math.min(
+            Number(dbStep.target_amount || 0),
+            Number(dbStep.actual_amount || 0) + quantityAmount
+        );
+        dbStep.is_completed = Number(dbStep.actual_amount || 0) >= Number(dbStep.target_amount || 0);
+        completedStep = dbStep;
+        autoStopped = !!dbStep.auto_stop && dbStep.is_completed;
+        syncStepActualAmount(dbStep, autoStopped);
+    }
+
     syncQuantityForNextStep(target);
-    return { recorded: true, action };
+    return {
+        recorded: true,
+        action,
+        dbStep: completedStep,
+        autoStopped,
+        message: autoStopped && completedStep
+            ? `Đã đủ ${completedStep.target_amount} ${completedStep.unit} ${completedStep.chemical_name_vi}.`
+            : ''
+    };
 }
 
 function aggregateContents(container) {
@@ -260,6 +450,15 @@ function aggregateContents(container) {
 }
 
 function findRequiredChemical(name) {
+    const step = activeChemicalSteps().find(item => key(item.chemical) === key(name));
+    if (step) {
+        return {
+            name_vi: step.chemical,
+            amount: step.amount,
+            unit: step.unit,
+            tolerance: step.tolerance
+        };
+    }
     const required = currentExperimentPlan?.required_chemicals || [];
     return required.find(item => key(item.name_vi || item.name_en) === key(name));
 }
@@ -297,7 +496,14 @@ function validateOrder(container) {
 }
 
 function validateAmounts(container) {
-    const required = currentExperimentPlan?.required_chemicals || [];
+    const required = currentExperimentSteps.length
+        ? activeChemicalSteps().map(step => ({
+            name_vi: step.chemical,
+            amount: step.amount,
+            unit: step.unit,
+            tolerance: step.tolerance
+        }))
+        : (currentExperimentPlan?.required_chemicals || []);
     const contents = aggregateContents(container);
     const requiredKeys = new Set(required.map(item => key(item.name_vi || item.name_en)));
 
@@ -352,6 +558,14 @@ export function describeNextRequirement(container) {
 
     const next = nextIncompleteStep(container);
     if (next) {
+        if (next.dbStep) {
+            const current = Number(next.dbStep.actual_amount || 0);
+            const remaining = Math.max(0, Number(next.dbStep.target_amount || 0) - current);
+            if (current > 0) {
+                return `Đúng rồi. Bạn đã rót ${current.toFixed(2)} ${next.dbStep.unit} ${next.dbStep.chemical_name_vi}, cần thêm khoảng ${remaining.toFixed(2)} ${next.dbStep.unit}.`;
+            }
+            return `Tiếp tục: bạn cần ${next.dbStep.action_type === 'add' ? 'thêm' : 'rót'} ${next.dbStep.target_amount} ${next.dbStep.unit} ${next.dbStep.chemical_name_vi}.`;
+        }
         const contents = aggregateContents(container);
         const current = contents.get(key(next.chemical))?.amount || 0;
         const remaining = Math.max(0, Number(next.amount || 0) - current);
@@ -403,6 +617,8 @@ export function markContainerHeated(container, temperature = 80) {
 }
 
 window.setCurrentExperimentPlan = setCurrentExperimentPlan;
+window.setCurrentExperimentSteps = setCurrentExperimentSteps;
+window.fetchExperimentSteps = fetchExperimentSteps;
 window.getCurrentExperimentPlan = getCurrentExperimentPlan;
 window.markExperimentHeated = markContainerHeated;
 

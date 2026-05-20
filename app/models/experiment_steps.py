@@ -6,7 +6,7 @@ class ExpermentSteps(SQLModel, table=True):
     __tablename__="experiment_steps"
 
     id_step: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    id_conv: uuid.UUID = Field(foreign_key="conversions.id_conv")
+    id_conv: Optional[uuid.UUID] = Field(default=None, foreign_key="conversions.id_conv")
     step_order: int = Field(default=0)
     id_chemical: Optional[uuid.UUID] = Field(default=None, foreign_key="chemicals.id_chemical")
     id_tool: Optional[uuid.UUID] = Field(default=None, foreign_key="tools.id_tool")
@@ -22,5 +22,5 @@ class ExpermentSteps(SQLModel, table=True):
     is_failed: bool = Field(default=False)
     experiment_id: Optional[str] = None
     reaction_id: Optional[str] = None
-    action_description: str
+    action_description: Optional[str] = None
     is_completed: bool = Field(default=False)

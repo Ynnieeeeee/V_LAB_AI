@@ -56,6 +56,23 @@ function mascotTalk(message) {
 
 window.mascotTalk = mascotTalk;
 
+async function loadExperimentStepsForConversation(idConversation) {
+    if (!idConversation) return [];
+    if (typeof window.fetchExperimentSteps === 'function') {
+        return window.fetchExperimentSteps(idConversation);
+    }
+    const sessionModuleUrl = mascotTalkScriptUrl
+        ? new URL('../threejs/ExperimentSessionManager.js', mascotTalkScriptUrl).href
+        : './assets/threejs/ExperimentSessionManager.js';
+    try {
+        const module = await import(sessionModuleUrl);
+        return module.fetchExperimentSteps(idConversation);
+    } catch (error) {
+        console.error('Experiment steps module load failed:', error);
+        return [];
+    }
+}
+
 async function sendMascotMessage(question) {
     const mascotInput = document.getElementById('mascot-input');
     const mascotSendBtn = document.getElementById('mascot-send-btn');
@@ -120,6 +137,9 @@ async function sendMascotMessage(question) {
                     .catch(() => {});
             }
         }
+        if (data.experiment_plan && newId) {
+            await loadExperimentStepsForConversation(newId);
+        }
 
         const answerText = data.answer_text || data.answer;
         if (data.experiment_plan) {
@@ -173,6 +193,7 @@ async function loadMessages(id) {
         if (!response.ok) return;
 
         const data = await response.json();
+        await loadExperimentStepsForConversation(id);
         const instructions = data.mascot_instructions || [];
         if (instructions.length > 0) {
             const recent = instructions.slice(-6);

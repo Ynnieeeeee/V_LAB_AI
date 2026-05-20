@@ -274,6 +274,86 @@ def _format_answer_from_plan(plan: dict, fallback: str = "") -> str:
         f"Hiện tượng/phản ứng dự kiến: {plan.get('success_message', 'Thí nghiệm diễn ra theo phản ứng đã chọn.')}"
     )
 
+KNOWN_CHEMICAL_DEFAULTS = [
+    ("Axit Clohidric", "hydrochloric acid", "ml", 10, 1),
+    ("Axit Sunfuric", "sulfuric acid", "ml", 5, 0.5),
+    ("Axit Nitric", "nitric acid", "ml", 5, 0.5),
+    ("Axit Axetic", "acetic acid", "ml", 5, 0.5),
+    ("Natri Hydroxit", "sodium hydroxide", "g", 0.5, 0.05),
+    ("Amoniac", "ammonia", "ml", 5, 0.5),
+    ("Natri", "sodium", "g", 0.5, 0.05),
+    ("Nước", "water", "ml", 20, 2),
+    ("Đồng(II) Sunfat", "copper(II) sulfate", "ml", 10, 1),
+    ("Bạc Nitrat", "silver nitrate", "ml", 5, 0.5),
+    ("Glucozơ", "glucose", "g", 0.5, 0.05),
+    ("Ancol Etylic", "ethanol", "ml", 5, 0.5),
+    ("Kali Pemanganat", "potassium permanganate", "g", 0.5, 0.05),
+    ("Mangan Đioxit", "manganese dioxide", "g", 0.5, 0.05),
+]
+
+def _extract_amount_for_chemical(haystack: str, chemical_name: str):
+    chemical_key = _normalize_text(chemical_name)
+    amount_re = r"(\d+(?:[\.,]\d+)?)\s*(ml|g)\b"
+    patterns = [
+        rf"{amount_re}.{{0,40}}{re.escape(chemical_key)}",
+        rf"{re.escape(chemical_key)}.{{0,40}}{amount_re}"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, haystack)
+        if match:
+            groups = match.groups()
+            return float(groups[0].replace(",", ".")), groups[1], match.start()
+    index = haystack.find(chemical_key)
+    return None, None, index
+
+def _build_generic_plan_from_text(question: str, answer_text: str):
+    haystack = _normalize_text(f"{question}\n{answer_text}")
+    found = []
+    for name_vi, name_en, default_unit, default_amount, default_tolerance in KNOWN_CHEMICAL_DEFAULTS:
+        name_key = _normalize_text(name_vi)
+        en_key = _normalize_text(name_en)
+        if name_key not in haystack and en_key not in haystack:
+            continue
+        amount, unit, index = _extract_amount_for_chemical(haystack, name_vi)
+        if amount is None:
+            amount = default_amount
+            unit = default_unit
+        tolerance = default_tolerance if unit == default_unit else (0.5 if unit == "ml" else 0.05)
+        found.append((index if index >= 0 else 9999, _chem(name_vi, name_en, amount, unit, tolerance)))
+
+    deduped = []
+    seen = set()
+    for _, chemical in sorted(found, key=lambda item: item[0]):
+        marker = chemical["name_vi"]
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(chemical)
+
+    if not deduped:
+        return None
+
+    steps = [
+        _step(index + 1, chemical["name_vi"], chemical["amount"], chemical["unit"])
+        for index, chemical in enumerate(deduped)
+    ]
+    heat_required = "dun nong" in haystack or "nhiet do" in haystack or "gia nhiet" in haystack
+    target_temp = None
+    if heat_required:
+        temp_match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(?:do c|c|°c)", haystack)
+        target_temp = float(temp_match.group(1).replace(",", ".")) if temp_match else 80
+        steps.append(_heat_step(len(steps) + 1, target_temp))
+    return _plan(
+        "rag_generated_experiment",
+        "Thí nghiệm theo hướng dẫn Mascot/RAG",
+        deduped,
+        steps,
+        "rag_validated_reaction",
+        "Thí nghiệm thành công khi thực hiện đúng hóa chất, đúng lượng và đúng thứ tự.",
+        temperature_min=target_temp,
+        heating_required=heat_required
+    )
+
 def _plan(
     experiment_id: str,
     title: str,
@@ -461,7 +541,7 @@ def build_experiment_plan(question: str, answer_text: str, selected_subject: str
             heating_required=True
         )
 
-    return None
+    return _build_generic_plan_from_text(question, answer_text)
 
 def ask_questions(question: str, selected_subject: str, history: list = None):
     """Trả lời câu hỏi"""
