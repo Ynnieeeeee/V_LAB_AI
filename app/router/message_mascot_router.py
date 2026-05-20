@@ -6,12 +6,124 @@ from app.schema.chat_response import ChatRequest
 from app.utils.get_current_user import get_current_user
 from app.models.profiles import Profiles
 from app.models.conversations import Conversations
+from app.models.chemicals import Chemicals
+from app.models.tools import Tools
+from app.models.experiment_steps import ExpermentSteps
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
+from sqlmodel import Session, select, delete, text
 from app.task.rag import ask_questions_with_plan
 from datetime import datetime
+import unicodedata
+import uuid
 
 router = APIRouter()
+
+def _norm(value: str) -> str:
+    text_value = unicodedata.normalize("NFD", str(value or "").lower())
+    text_value = "".join(ch for ch in text_value if unicodedata.category(ch) != "Mn")
+    return " ".join(text_value.replace("đ", "d").split())
+
+def _ensure_experiment_steps_columns(session: Session):
+    statements = [
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS step_order INTEGER DEFAULT 0",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS chemical_name_vi VARCHAR",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS action_type VARCHAR DEFAULT 'pour'",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_amount DOUBLE PRECISION",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS unit VARCHAR",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS tolerance DOUBLE PRECISION",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS actual_amount DOUBLE PRECISION DEFAULT 0",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS auto_stop BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS heating_required BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_temperature DOUBLE PRECISION",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS is_failed BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS experiment_id VARCHAR",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS reaction_id VARCHAR"
+    ]
+    for statement in statements:
+        session.exec(text(statement))
+
+def _as_uuid(value):
+    if not value:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError):
+        return None
+
+def _resolve_chemical(session: Session, name_vi: str):
+    if not name_vi:
+        return None
+    wanted = _norm(name_vi)
+    chemicals = session.exec(select(Chemicals)).all()
+    for chemical in chemicals:
+        names = [chemical.name_vi, chemical.formula, chemical.chemical_type]
+        if wanted in {_norm(name) for name in names}:
+            return chemical
+    for chemical in chemicals:
+        if wanted and wanted in _norm(chemical.name_vi):
+            return chemical
+    return None
+
+def _resolve_tool(session: Session, id_tool=None, chemical=None, id_conv=None):
+    parsed_id = _as_uuid(id_tool)
+    if parsed_id:
+        tool = session.get(Tools, parsed_id)
+        if tool:
+            return tool
+    if chemical and chemical.id_tool:
+        tool = session.get(Tools, chemical.id_tool)
+        if tool:
+            return tool
+    if id_conv:
+        conv_tool = session.exec(select(Tools).where(Tools.id_conv == id_conv)).first()
+        if conv_tool:
+            return conv_tool
+    return session.exec(select(Tools)).first()
+
+def _persist_experiment_plan_steps(session: Session, id_conversation, experiment_plan: dict):
+    if not experiment_plan:
+        return None
+
+    _ensure_experiment_steps_columns(session)
+    session.exec(delete(ExpermentSteps).where(ExpermentSteps.id_conv == id_conversation))
+
+    last_chemical = None
+    last_tool = None
+    for step in experiment_plan.get("steps", []):
+        chemical = _resolve_chemical(session, step.get("chemical_name_vi")) or last_chemical
+        tool = _resolve_tool(session, step.get("id_tool"), chemical, id_conversation) or last_tool
+
+        if chemical:
+            last_chemical = chemical
+            step["id_chemical"] = str(chemical.id_chemical)
+        if tool:
+            last_tool = tool
+            step["id_tool"] = str(tool.id_tool)
+
+        session.add(ExpermentSteps(
+            id_conv=id_conversation,
+            step_order=int(step.get("step_order") or 0),
+            id_chemical=chemical.id_chemical if chemical else None,
+            id_tool=tool.id_tool if tool else None,
+            chemical_name_vi=step.get("chemical_name_vi"),
+            action_type=step.get("action_type") or "pour",
+            target_amount=step.get("target_amount"),
+            unit=step.get("unit"),
+            tolerance=step.get("tolerance"),
+            actual_amount=0,
+            auto_stop=bool(step.get("auto_stop", True)),
+            heating_required=bool(step.get("heating_required", False)),
+            target_temperature=step.get("target_temperature"),
+            is_completed=False,
+            is_failed=False,
+            experiment_id=experiment_plan.get("experiment_id"),
+            reaction_id=experiment_plan.get("reaction_id"),
+            action_description=step.get("action_description") or ""
+        ))
+
+    return experiment_plan
 
 @router.post("/message/send")
 def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_user)):
@@ -49,6 +161,7 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
         rag_result = ask_questions_with_plan(req.question, selected_subject=current_subject, history=history)
         answer = rag_result["answer_text"]
         experiment_plan = rag_result["experiment_plan"]
+        experiment_plan = _persist_experiment_plan_steps(session, id_conversation, experiment_plan)
 
         mascot_message = MascotMessages(
             id_conv=id_conversation,

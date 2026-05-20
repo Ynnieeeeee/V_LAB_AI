@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_postgres import PGVector
 from langchain.agents import create_agent
 from app.config import DATABASE_URL, HF_TOKEN
+import json
 import re
 import unicodedata
         
@@ -53,17 +54,27 @@ tools = [retrieved_context]
 prompt = """
 Bạn là Trợ lý Phòng thí nghiệm Ảo (Virtual Lab AI) hỗ trợ các môn Hóa học, Vật lý, Sinh học.
 
-NHIỆM VỤ:
+NHIỆM VỤ BẮT BUỘC:
 1. Luôn sử dụng tool `retrieved_context` với đúng `subject` được cung cấp trong ngữ cảnh.
-2. Nếu người dùng yêu cầu làm thí nghiệm, bạn BẮT BUỘC phải trích xuất:
-   - Thí nghiệm: [Tên thí nghiệm]
-   - Dụng cụ & Hóa chất: (Liệt kê chi tiết)
-   - Quy trình thực hiện: (Các bước đánh số 1, 2, 3...)
-3. Chỉ trả lời dựa trên nội dung tài liệu. Nếu không tìm thấy, hãy nói: "Phòng lab hiện chưa có dữ liệu về thí nghiệm này cho môn [subject]."
+2. Nếu người dùng hỏi cách làm/thực hiện một thí nghiệm hóa học, câu trả lời phải nêu rõ:
+   - tên thí nghiệm
+   - danh sách hóa chất cần dùng
+   - khối lượng/thể tích CỤ THỂ từng hóa chất, dùng ml cho chất lỏng và g cho chất rắn
+   - dụng cụ cần dùng
+   - thứ tự các bước thực hiện
+   - điều kiện nếu có: đun nóng, nhiệt độ, chất xúc tác
+   - hiện tượng hoặc phản ứng dự kiến
+3. Không được dùng các cụm mơ hồ như "một ít", "vài giọt", "lượng vừa đủ".
+   Nếu tài liệu không nêu lượng, hãy chọn lượng an toàn cho mô phỏng:
+   - chất lỏng thường: 5-20 ml
+   - chất rắn thường: 0.1-1 g
+   - axit/bazơ mạnh: dùng lượng nhỏ và nêu sai số phù hợp
+4. Nếu câu hỏi không phải yêu cầu làm thí nghiệm, trả lời bình thường bằng tiếng Việt.
+5. Không trả markdown, không bọc ```json, không thêm văn bản ngoài nội dung trả lời.
 
-QUY TẮC:
-- Trả lời bằng tiếng Việt chuyên môn.
-- Tuyệt đối không tự bịa các bước thí nghiệm nếu tài liệu không nhắc tới.
+ĐỊNH DẠNG NỘI DUNG:
+- Nội dung phải đủ chi tiết để backend tạo JSON gồm `answer_text` và `experiment_plan`.
+- Nếu có nhắc một lượng trong answer_text thì lượng đó phải nhất quán tuyệt đối với kế hoạch thí nghiệm.
 """
 agent = create_agent(model, tools, system_prompt=prompt)
 
@@ -153,39 +164,155 @@ def _chem(name_vi: str, name_en: str, amount: float, unit: str, tolerance: float
         "role": role
     }
 
-def _step(step: int, chemical: str, amount: float, unit: str, action: str = "add_chemical") -> dict:
+def _step(
+    step: int,
+    chemical: str,
+    amount: float,
+    unit: str,
+    action_type: str = None,
+    tolerance: float = None,
+    id_chemical=None,
+    id_tool=None,
+    auto_stop: bool = True,
+    heating_required: bool = False,
+    target_temperature=None,
+    action_description: str = None
+) -> dict:
+    normalized_action = action_type or ("add" if unit == "g" else "pour")
     return {
-        "step": step,
-        "action": action,
-        "chemical": chemical,
-        "amount": amount,
-        "unit": unit
+        "step_order": step,
+        "chemical_name_vi": chemical,
+        "id_chemical": id_chemical,
+        "id_tool": id_tool,
+        "action_type": normalized_action,
+        "target_amount": amount,
+        "unit": unit,
+        "tolerance": tolerance if tolerance is not None else (0.05 if unit == "g" else 0.5),
+        "auto_stop": auto_stop,
+        "heating_required": heating_required,
+        "target_temperature": target_temperature,
+        "action_description": action_description or f"{'Thêm' if normalized_action == 'add' else 'Rót'} {amount} {unit} {chemical}."
     }
+
+def _heat_step(step: int, target_temperature: float, action_description: str = None) -> dict:
+    return {
+        "step_order": step,
+        "chemical_name_vi": None,
+        "id_chemical": None,
+        "id_tool": None,
+        "action_type": "heat",
+        "target_amount": None,
+        "unit": "°C",
+        "tolerance": 2,
+        "auto_stop": True,
+        "heating_required": True,
+        "target_temperature": target_temperature,
+        "action_description": action_description or f"Đun nóng đến khoảng {target_temperature}°C."
+    }
+
+def _legacy_step(step: dict) -> dict:
+    if step["action_type"] == "heat":
+        return {
+            "step": step["step_order"],
+            "action": "heat",
+            "temperature_min": step["target_temperature"]
+        }
+    return {
+        "step": step["step_order"],
+        "action": "add_chemical",
+        "chemical": step["chemical_name_vi"],
+        "amount": step["target_amount"],
+        "unit": step["unit"]
+    }
+
+def _extract_answer_text(raw_answer: str) -> str:
+    text = clean_repeating_text(raw_answer or "").strip()
+    if not text:
+        return text
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and parsed.get("answer_text"):
+            return clean_repeating_text(str(parsed["answer_text"]))
+    except Exception:
+        pass
+    return text
+
+def _format_answer_from_plan(plan: dict, fallback: str = "") -> str:
+    if not plan:
+        return fallback
+
+    chemicals = plan.get("required_chemicals", [])
+    chemical_lines = [
+        f"- {item['name_vi']}: {item['amount']} {item['unit']} (sai số ±{item['tolerance']} {item['unit']})"
+        for item in chemicals
+    ]
+    add_steps = []
+    heat_steps = []
+    for step in plan.get("steps", []):
+        if step["action_type"] == "heat":
+            heat_steps.append(f"{step['step_order']}. {step['action_description']}")
+        else:
+            add_steps.append(f"{step['step_order']}. {step['action_description']}")
+
+    condition_lines = []
+    conditions = plan.get("required_conditions", {})
+    if conditions.get("heating_required"):
+        condition_lines.append(f"- Cần đun nóng đến trên {conditions.get('temperature_min')}°C.")
+    catalyst = [item["name_vi"] for item in chemicals if item.get("role") == "catalyst"]
+    if catalyst:
+        condition_lines.append(f"- Chất xúc tác: {', '.join(catalyst)}.")
+    if not condition_lines:
+        condition_lines.append("- Không cần đun nóng hoặc xúc tác đặc biệt.")
+
+    steps_text = "\n".join(add_steps + heat_steps)
+    return (
+        f"Tên thí nghiệm: {plan['title']}\n\n"
+        f"Hóa chất cần dùng:\n" + "\n".join(chemical_lines) + "\n\n"
+        "Dụng cụ cần dùng: ống nghiệm hoặc cốc thủy tinh, giá đỡ, ống nhỏ giọt/đũa thủy tinh; dùng đèn cồn hoặc bếp gia nhiệt nếu bước yêu cầu đun nóng.\n\n"
+        f"Thứ tự thực hiện:\n{steps_text}\n\n"
+        "Điều kiện:\n" + "\n".join(condition_lines) + "\n\n"
+        f"Hiện tượng/phản ứng dự kiến: {plan.get('success_message', 'Thí nghiệm diễn ra theo phản ứng đã chọn.')}"
+    )
 
 def _plan(
     experiment_id: str,
     title: str,
     chemicals: list,
     steps: list,
-    success_reaction_id: str,
+    reaction_id: str,
     success_message: str,
     temperature_min=None,
     temperature_max=None,
     heating_required: bool = False,
     order_required: bool = True
 ) -> dict:
+    required_by_name = {item["name_vi"]: item for item in chemicals}
+    enriched_steps = []
+    for step in steps:
+        if step.get("chemical_name_vi") in required_by_name:
+            required = required_by_name[step["chemical_name_vi"]]
+            step = {
+                **step,
+                "tolerance": required["tolerance"],
+                "target_amount": required["amount"],
+                "unit": required["unit"]
+            }
+        enriched_steps.append(step)
+
     return {
         "experiment_id": experiment_id,
+        "reaction_id": reaction_id,
         "title": title,
+        "steps": enriched_steps,
         "required_chemicals": chemicals,
         "required_conditions": {
             "temperature_min": temperature_min,
             "temperature_max": temperature_max,
             "heating_required": heating_required,
             "order_required": order_required,
-            "steps": steps
+            "steps": [_legacy_step(step) for step in enriched_steps]
         },
-        "success_reaction_id": success_reaction_id,
+        "success_reaction_id": reaction_id,
         "success_message": success_message,
         "fail_messages": _fail_messages()
     }
@@ -270,7 +397,7 @@ def build_experiment_plan(question: str, answer_text: str, selected_subject: str
                 _step(1, "Bạc Nitrat", 5, "ml"),
                 _step(2, "Amoniac", 10, "ml"),
                 _step(3, "Glucozơ", 5, "ml"),
-                {"step": 4, "action": "heat", "temperature_min": 45}
+                _heat_step(4, 45, "Đun nóng nhẹ đến trên 45°C để glucozơ khử phức bạc.")
             ],
             "silver_mirror_from_tollens_glucose_heat",
             "Thí nghiệm thành công: Glucozơ khử phức bạc amoniac tạo lớp bạc bám trong ống nghiệm.",
@@ -291,7 +418,7 @@ def build_experiment_plan(question: str, answer_text: str, selected_subject: str
                 _step(1, "Axit Axetic", 5, "ml"),
                 _step(2, "Ancol Etylic", 5, "ml"),
                 _step(3, "Axit Sunfuric", 2, "ml"),
-                {"step": 4, "action": "heat", "temperature_min": 80}
+                _heat_step(4, 80, "Đun nóng hỗn hợp đến trên 80°C để phản ứng este hóa xảy ra.")
             ],
             "esterification_acetic_ethanol",
             "Thí nghiệm thành công: tạo ethyl acetate và dung dịch tách thành hai lớp.",
@@ -326,7 +453,7 @@ def build_experiment_plan(question: str, answer_text: str, selected_subject: str
             [
                 _step(1, "Mangan Đioxit", 0.5, "g"),
                 _step(2, "Axit Clohidric", 10, "ml"),
-                {"step": 3, "action": "heat", "temperature_min": 45}
+                _heat_step(3, 45, "Đun nóng đến trên 45°C để MnO2 phản ứng với HCl.")
             ],
             "mno2_hcl_heat_chlorine",
             "Thí nghiệm thành công: MnO2 phản ứng với HCl khi đun nóng tạo khí clo.",
@@ -366,7 +493,7 @@ def ask_questions(question: str, selected_subject: str, history: list = None):
         answer = response["messages"][-1].content
         
         # Áp dụng bộ lọc dọn dẹp các đoạn text lặp vô hạn
-        answer = clean_repeating_text(answer)
+        answer = _extract_answer_text(answer)
                 
         return answer
     except Exception as e:
@@ -375,9 +502,11 @@ def ask_questions(question: str, selected_subject: str, history: list = None):
 
 def ask_questions_with_plan(question: str, selected_subject: str, history: list = None):
     answer = ask_questions(question, selected_subject=selected_subject, history=history)
+    plan = build_experiment_plan(question, answer, selected_subject)
+    answer_text = _format_answer_from_plan(plan, answer) if plan else answer
     return {
-        "answer_text": answer,
-        "experiment_plan": build_experiment_plan(question, answer, selected_subject)
+        "answer_text": answer_text,
+        "experiment_plan": plan
     }
 
 
