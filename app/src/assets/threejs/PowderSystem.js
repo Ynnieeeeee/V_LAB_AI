@@ -53,8 +53,11 @@ export class PowderSystem {
 
         this.points = new THREE.Points(this.geometry, this.material);
         this.points.name = 'powder_pouring_stream';
+        this.points.userData.isPowder = true;
+        this.points.userData.isParticle = true;
         this.points.userData.notDraggable = true;
         this.points.userData.ignoreRaycast = true;
+        this.points.raycast = () => null;
         this.scene.add(this.points);
     }
 
@@ -192,8 +195,18 @@ export class PowderSystem {
         const deposit = new THREE.Points(geometry, material);
         deposit.name = 'solid_powder_inside_container';
         deposit.userData.isReactionEffect = true;
+        deposit.userData.isPowder = true;
+        deposit.userData.isParticle = true;
         deposit.userData.notDraggable = true;
         deposit.userData.ignoreRaycast = true;
+        deposit.raycast = () => null;
+        layer.userData.notDraggable = true;
+        layer.userData.ignoreRaycast = true;
+        layer.traverse?.(child => {
+            child.userData.notDraggable = true;
+            child.userData.ignoreRaycast = true;
+            child.raycast = () => null;
+        });
         layer.add(deposit);
         return deposit;
     }

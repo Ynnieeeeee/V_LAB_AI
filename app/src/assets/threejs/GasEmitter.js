@@ -77,6 +77,8 @@ export class GasEmitter {
         points.userData.origin = position.clone();
         points.userData.radius = radius;
         points.userData.mode = mode;
+        points.userData.isParticle = true;
+        points.raycast = () => null;
 
         this.group.add(points);
         this.emitters.add(points);

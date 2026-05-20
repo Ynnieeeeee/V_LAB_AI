@@ -28,15 +28,48 @@ export class PrecipitateSystem {
     }
 
     getCavityInfo(container) {
+        container.updateMatrixWorld(true);
+
+        // Ưu tiên cavityPoints đã được PouringEffect detect theo local-space.
+        // Cách này chính xác hơn Box3 toàn model, vì Box3 thường bao cả thành/cạnh ngoài của cốc.
+        const points = container.userData?.cavityPoints || [];
+        if (points.length > 0) {
+            const box = new THREE.Box3();
+            let minY = Infinity;
+            let maxY = -Infinity;
+
+            points.forEach(p => {
+                if (!Number.isFinite(p.lx) || !Number.isFinite(p.lz)) return;
+                box.expandByPoint(new THREE.Vector3(p.lx, 0, p.lz));
+                minY = Math.min(minY, p.lyBottom);
+                maxY = Math.max(maxY, p.lyTop);
+            });
+
+            if (!box.isEmpty() && Number.isFinite(minY) && Number.isFinite(maxY)) {
+                const liquidLevel = THREE.MathUtils.clamp(container.userData?.liquidLevel ?? 0.35, 0.05, 0.9);
+                const surfaceY = THREE.MathUtils.lerp(minY, maxY, liquidLevel);
+                return {
+                    centerX: (box.min.x + box.max.x) * 0.5,
+                    centerZ: (box.min.z + box.max.z) * 0.5,
+                    bottomY: minY + 0.018,
+                    surfaceY: Math.max(minY + 0.055, surfaceY - 0.012),
+                    // Thu nhỏ bán kính để hạt không lọt ra ngoài thành dụng cụ.
+                    radiusX: Math.max((box.max.x - box.min.x) * 0.18, 0.018),
+                    radiusZ: Math.max((box.max.z - box.min.z) * 0.18, 0.018),
+                    height: Math.max(0.04, surfaceY - minY)
+                };
+            }
+        }
+
+        // Fallback: dùng bounding box nhưng thu nhỏ mạnh, chỉ dùng khi chưa có cavityPoints.
         const box = new THREE.Box3();
         const inv = container.matrixWorld.clone().invert();
-        container.updateMatrixWorld(true);
 
         let hasMesh = false;
         container.traverse(child => {
             if (!child.isMesh) return;
             if (child.name === 'fluid_volume') return;
-            if (child.userData?.isReactionEffect) return;
+            if (child.userData?.isReactionEffect || child.userData?.isInternalChemicalVisual) return;
             const childBox = new THREE.Box3().setFromObject(child);
             if (!childBox.isEmpty()) {
                 box.union(childBox);
@@ -55,16 +88,17 @@ export class PrecipitateSystem {
         const sizeZ = Math.max(0.04, Math.abs(max.z - min.z));
 
         const liquidLevel = THREE.MathUtils.clamp(container.userData?.liquidLevel ?? 0.35, 0.05, 0.9);
-        const bottomY = Math.min(min.y, max.y) + sizeY * 0.10;
-        const surfaceY = bottomY + sizeY * liquidLevel * 0.62;
+        const centerY = (min.y + max.y) * 0.5;
+        const bottomY = centerY - sizeY * 0.18;
+        const surfaceY = bottomY + sizeY * liquidLevel * 0.28;
 
         return {
             centerX: (min.x + max.x) * 0.5,
             centerZ: (min.z + max.z) * 0.5,
             bottomY,
             surfaceY,
-            radiusX: sizeX * 0.28,
-            radiusZ: sizeZ * 0.28,
+            radiusX: sizeX * 0.14,
+            radiusZ: sizeZ * 0.14,
             height: Math.max(0.04, surfaceY - bottomY)
         };
     }
@@ -74,7 +108,7 @@ export class PrecipitateSystem {
 
         const color = options.color || options.precipitateColor || '#ffffff';
         const amount = Math.floor(options.amount ?? 620);
-        const size = options.size ?? 0.011;
+        const size = options.size ?? 0.014;
         const layer = this.ensureLayer(container);
         if (!layer) return null;
 
@@ -101,11 +135,12 @@ export class PrecipitateSystem {
 
         const material = new THREE.PointsMaterial({
             color,
-            size,
+            size: options.size ?? 0.018,
             sizeAttenuation: true,
             transparent: true,
-            opacity: options.opacity ?? 0.96,
-            depthWrite: true
+            opacity: options.opacity ?? 1.0,
+            depthWrite: true,
+            depthTest: true
         });
 
         const points = new THREE.Points(geometry, material);
@@ -117,8 +152,22 @@ export class PrecipitateSystem {
         points.userData.cavityInfo = info;
         points.userData.settling = options.settling !== false;
         points.userData.life = 0;
+        points.userData.isPowder = true;
+        points.userData.isParticle = true;
+        points.raycast = () => null;
+        layer.userData.notDraggable = true;
+        layer.userData.ignoreRaycast = true;
 
+        points.renderOrder = options.renderOrder ?? 12;
+        layer.renderOrder = options.renderOrder ?? 12;
         layer.add(points);
+        layer.traverse?.(child => {
+            child.userData.isReactionEffect = true;
+            child.userData.notDraggable = true;
+            child.userData.ignoreRaycast = true;
+            child.userData.isInternalChemicalVisual = true;
+            child.raycast = () => null;
+        });
         this.active.add(points);
         return points;
     }

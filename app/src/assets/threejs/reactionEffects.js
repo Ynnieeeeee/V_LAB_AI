@@ -10,6 +10,22 @@ const smokeTexture = loader.load(
     './assets/img/smoke.png'
 );
 
+function markEffectObject(obj) {
+    if (!obj) return obj;
+    obj.name = obj.name || 'reaction_effect';
+    obj.userData.isReactionEffect = true;
+    obj.userData.notDraggable = true;
+    obj.userData.ignoreRaycast = true;
+    obj.raycast = () => null;
+    obj.traverse?.(child => {
+        child.userData.isReactionEffect = true;
+        child.userData.notDraggable = true;
+        child.userData.ignoreRaycast = true;
+        child.raycast = () => null;
+    });
+    return obj;
+}
+
 export function applyReactionEffects(
     scene,
     reaction,
@@ -185,6 +201,7 @@ export function spawnFireParticles(
             material
         );
 
+    markEffectObject(particles);
     scene.add(particles);
 
     // =====================================================
@@ -260,6 +277,7 @@ export function spawnSmoke(
 
     smoke.position.copy(position);
 
+    markEffectObject(smoke);
     scene.add(smoke);
 
     const start = performance.now();
@@ -335,6 +353,7 @@ export function spawnGasCloud(
 
     gas.position.copy(position);
 
+    markEffectObject(gas);
     scene.add(gas);
 
     const start = performance.now();
@@ -414,6 +433,7 @@ export function createShockwave(
 
     shockwave.position.copy(position);
 
+    markEffectObject(shockwave);
     scene.add(shockwave);
 
     const start = performance.now();
@@ -496,6 +516,7 @@ export function heatDistortion(
     heat.rotation.x =
         -Math.PI / 2;
 
+    markEffectObject(heat);
     scene.add(heat);
 
     const start = performance.now();
@@ -575,8 +596,10 @@ export function spawnPrecipitate(
             position.z + (Math.random() - 0.5) * 0.12
         );
 
+        markEffectObject(p);
         group.add(p);
     }
 
+    markEffectObject(group);
     scene.add(group);
 }

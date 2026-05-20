@@ -30,7 +30,9 @@ function inferVisibleEffects(data, text = '') {
         smoke: /(khói|smoke|mù|hơi trắng|white fume|fume|nh₄cl|nh4cl)/i.test(haystack),
         fire: /(cháy|bốc cháy|lửa|fire|flame|ignit)/i.test(haystack),
         explosion: /(nổ|explosion|mạnh|violent)/i.test(haystack),
-        heat: /(tỏa nhiệt|nóng|heat|exothermic)/i.test(haystack)
+        heat: /(tỏa nhiệt|nóng|heat|exothermic)/i.test(haystack),
+        foam: /(bọt|sủi|foam|effervescence)/i.test(haystack),
+        precipitate: /(↓|kết tủa|ket tua|precipitate|precipitation|insoluble|không tan|khong tan|agcl|baso₄|baso4|caco₃|caco3|cu\(oh\)₂|cu\(oh\)2|fe\(oh\)₃|fe\(oh\)3|pbcl₂|pbcl2)/i.test(haystack)
     };
 }
 
@@ -39,6 +41,7 @@ function normalizeApiReaction(data) {
         return {
             has_reaction: false,
             reason: data?.reason || 'no_reaction',
+            foam: data.foam ?? visual.foam ?? effects.foam ?? inferred.foam,
             mascotText: data?.mascot_speech || 'Không có dấu hiệu phản ứng hóa học rõ ràng.'
         };
     }
@@ -59,6 +62,38 @@ function normalizeApiReaction(data) {
     const explosion = toEffectIntensity(data.explosion, visual.explosion_effect, effects.explosion, inferred.explosion);
     const heat = toEffectIntensity(data.heat, visual.heat_effect, effects.heat, inferred.heat);
 
+    const explicitPrecipitate =
+        data.precipitate ??
+        data.precipitate_effect ??
+        data.has_precipitate ??
+        visual.precipitate ??
+        visual.precipitate_effect ??
+        effects.precipitate ??
+        effects.has_precipitate;
+
+    const precipitate = Boolean(explicitPrecipitate ?? inferred.precipitate);
+
+    const inferredPrecipitateColor =
+        /xanh lam|xanh dương|blue|cu\(oh\)₂|cu\(oh\)2/i.test([
+            data?.mascot_speech,
+            data?.mascotText,
+            data?.equation,
+            ...(data?.products || [])
+        ].join(' ').toLowerCase()) ? '#4fc3f7' :
+        /nâu đỏ|đỏ nâu|brown|fe\(oh\)₃|fe\(oh\)3/i.test([
+            data?.mascot_speech,
+            data?.mascotText,
+            data?.equation,
+            ...(data?.products || [])
+        ].join(' ').toLowerCase()) ? '#8b4a2b' :
+        /vàng|yellow|pbi₂|pbi2|agi/i.test([
+            data?.mascot_speech,
+            data?.mascotText,
+            data?.equation,
+            ...(data?.products || [])
+        ].join(' ').toLowerCase()) ? '#ffd54f' :
+        '#ffffff';
+
     return {
         has_reaction: true,
         color: resultColor,
@@ -67,8 +102,8 @@ function normalizeApiReaction(data) {
         fire,
         explosion,
         heat,
-        precipitate: Boolean(data.precipitate ?? visual.precipitate ?? effects.precipitate),
-        precipitateColor: data.precipitateColor || data.precipitate_color || visual.precipitate_color || effects.precipitateColor || '#ffffff',
+        precipitate,
+        precipitateColor: data.precipitateColor || data.precipitate_color || visual.precipitateColor || visual.precipitate_color || effects.precipitateColor || effects.precipitate_color || inferredPrecipitateColor,
         result_chemical_type: data.reaction_data?.result_chemical_type || data.result_chemical_type || 'generic_solution',
         equation: data.reaction_data?.equation || data.equation || '',
         products: data.reaction_data?.products || data.products || [],
@@ -79,50 +114,73 @@ function normalizeApiReaction(data) {
 
 // Fallback nhỏ khi backend chưa chạy. Chỉ giữ các phản ứng chắc chắn, không đoán rộng.
 const VERIFIED_FALLBACK_RULES = [
+    // IỐT
+    // =====================================================
+
     {
-        names: ['Đồng(II) Sunfat', 'Natri Hydroxit'],
+        names: ['Iốt', 'Glucozơ'],
         result: {
             has_reaction: true,
-            precipitate: true,
-            precipitateColor: '#4fc3f7',
-            color: '#9bd6ff',
-            equation: 'CuSO₄ + 2NaOH → Cu(OH)₂↓ + Na₂SO₄',
-            mascotText: 'Đã tạo kết tủa Đồng(II) hiđroxit Cu(OH)₂ màu xanh lam.'
+            color: '#c58a3d',
+            heat: false,
+            equation: 'I₂ bị khử bởi glucozơ',
+            mascotText: 'Màu nâu của iốt nhạt dần.'
         }
     },
+
     {
-        names: ['Bari Clorua', 'Axit Sunfuric'],
+        names: ['Iốt', 'Amoniac'],
         result: {
             has_reaction: true,
-            precipitate: true,
-            precipitateColor: '#ffffff',
-            color: '#f8f8ff',
-            equation: 'BaCl₂ + H₂SO₄ → BaSO₄↓ + 2HCl',
-            mascotText: 'Xuất hiện kết tủa Bari sunfat BaSO₄ màu trắng.'
+            explosion: true,
+            color: '#553311',
+            equation: 'Tạo NI₃',
+            mascotText: 'Tạo hợp chất NI₃ nhạy nổ.'
         }
     },
+
+    // =====================================================
+    // ETANOL
+    // =====================================================
+
     {
-        names: ['Bạc Nitrat', 'Axit Clohidric'],
+        names: ['Ancol Etylic', 'Oxi'],
         result: {
             has_reaction: true,
-            precipitate: true,
-            precipitateColor: '#f5f5f5',
-            color: '#ffffff',
-            equation: 'AgNO₃ + HCl → AgCl↓ + HNO₃',
-            mascotText: 'Ion Ag⁺ gặp ion Cl⁻ tạo kết tủa AgCl màu trắng.'
-        }
-    },
-    {
-        names: ['Natri', 'Nước'],
-        result: {
-            has_reaction: true,
-            gas: true,
             fire: true,
             heat: true,
-            explosion: true,
-            color: '#fff7cc',
-            equation: '2Na + 2H₂O → 2NaOH + H₂↑',
-            mascotText: 'Natri phản ứng mạnh với nước, tạo NaOH và khí H₂; phản ứng tỏa nhiệt.'
+            equation: 'C₂H₅OH + 3O₂ → 2CO₂ + 3H₂O',
+            mascotText: 'Ancol Etylic cháy tạo ngọn lửa xanh.'
+        }
+    },
+
+    // =====================================================
+    // AXIT AXETIC
+    // =====================================================
+
+    {
+        names: ['Axit Axetic', 'Natri Hydroxit'],
+        result: {
+            has_reaction: true,
+            heat: true,
+            color: '#ffffff',
+            equation: 'CH₃COOH + NaOH → CH₃COONa + H₂O',
+            mascotText: 'Phản ứng trung hòa tạo Natri Axetat.'
+        }
+    },
+
+    // =====================================================
+    // BENZEN
+    // =====================================================
+
+    {
+        names: ['Benzen', 'Axit Nitric'],
+        result: {
+            has_reaction: true,
+            heat: true,
+            color: '#f5e28a',
+            equation: 'C₆H₆ + HNO₃ → C₆H₅NO₂ + H₂O',
+            mascotText: 'Xảy ra phản ứng nitro hóa benzen.'
         }
     }
 ];

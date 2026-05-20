@@ -46,6 +46,11 @@ export class PouringEffect {
 
         this.particleMaterial = this._createParticleMaterial();
         this.particleSystem   = new THREE.Points(this.particleGeometry, this.particleMaterial);
+        this.particleSystem.name = 'liquid_pouring_particles';
+        this.particleSystem.userData.isParticle = true;
+        this.particleSystem.userData.notDraggable = true;
+        this.particleSystem.userData.ignoreRaycast = true;
+        this.particleSystem.raycast = () => null;
         this.particleSystem.renderOrder = 999;
         this.scene.add(this.particleSystem);
 
@@ -82,6 +87,12 @@ export class PouringEffect {
         this.powderGeometry.setAttribute('size', new THREE.BufferAttribute(this.powderSizes, 1));
         this.powderMaterial = this._createPowderMaterial();
         this.powderSystem = new THREE.Points(this.powderGeometry, this.powderMaterial);
+        this.powderSystem.name = 'powder_pouring_particles';
+        this.powderSystem.userData.isPowder = true;
+        this.powderSystem.userData.isParticle = true;
+        this.powderSystem.userData.notDraggable = true;
+        this.powderSystem.userData.ignoreRaycast = true;
+        this.powderSystem.raycast = () => null;
         this.powderSystem.renderOrder = 1000;
         this.scene.add(this.powderSystem);
         this.activePowderParticles = 0;
@@ -181,7 +192,10 @@ export class PouringEffect {
         // CHỈ scan mesh dụng cụ
         const meshes = [];
         tool.traverse(o => {
-            if (o.isMesh) meshes.push(o);
+            if (!o.isMesh) return;
+            if (o.name === 'fluid_volume') return;
+            if (o.userData?.isLiquid || o.userData?.isPowder || o.userData?.isParticle || o.userData?.isReactionEffect || o.userData?.ignoreRaycast) return;
+            meshes.push(o);
         });
 
         const box = new THREE.Box3().setFromObject(tool);
@@ -253,6 +267,9 @@ export class PouringEffect {
 
         const liquidGroup = new THREE.Group();
         liquidGroup.name  = 'liquid_group';
+        liquidGroup.userData.isLiquid = true;
+        liquidGroup.userData.notDraggable = true;
+        liquidGroup.userData.ignoreRaycast = true;
         target.add(liquidGroup); // Gắn trực tiếp vào target
 
         const resolution = 48;
@@ -268,6 +285,7 @@ export class PouringEffect {
             clearcoat: 0.2, // Giảm bóng lóng lánh
             clearcoatRoughness: 0.3, // Làm nhòe vệt bóng
             envMapIntensity: 1.0,
+            depthWrite: false, // Cho phép nhìn thấy kết tủa/hạt rắn bên trong dung dịch trong suốt.
         });
 
         material.onBeforeCompile = (shader) => {
@@ -305,6 +323,11 @@ export class PouringEffect {
             false, false, 100000
         );
         volume.name = "fluid_volume";
+        volume.renderOrder = 10;
+        volume.userData.isLiquid = true;
+        volume.userData.notDraggable = true;
+        volume.userData.ignoreRaycast = true;
+        volume.raycast = () => null;
 
         volume.position.set(0, 0, 0);
         volume.scale.set(1, 1, 1);
@@ -315,7 +338,9 @@ export class PouringEffect {
         target.userData.liquidColor = this.color.clone();
 
         this.volumes.set(target, volume);
-        target.userData.liquidLevel = 0;
+        if (target.userData.liquidLevel === undefined) {
+            target.userData.liquidLevel = 0;
+        }
         return volume;
     }
 
@@ -542,6 +567,10 @@ export class PouringEffect {
                 0.08
             );
 
+            volume.material.emissive =
+                volume.material.color.clone()
+                    .multiplyScalar(0.08);
+
             // Đồng bộ màu hiện tại
             target.userData.liquidColor =
                 volume.material.color.clone();
@@ -669,6 +698,11 @@ export class PouringEffect {
     spawnSmokeEffect(pos, target = null) {
         for (let i = 0; i < 2; i++) { // Mỗi khung hình sinh ra 2 hạt ngẫu nhiên
             const p = new THREE.Mesh(this.smokeGeometry, this.smokeMaterial.clone());
+            p.name = 'smoke_particle_effect';
+            p.userData.isReactionEffect = true;
+            p.userData.notDraggable = true;
+            p.userData.ignoreRaycast = true;
+            p.raycast = () => null;
             const spread = target ? Math.max(0.08, Math.min(0.22, new THREE.Box3().setFromObject(target).getSize(new THREE.Vector3()).x * 0.18)) : 0.15;
             p.position.set(
                 pos.x + (Math.random() - 0.5) * spread,

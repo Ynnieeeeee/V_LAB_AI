@@ -94,6 +94,8 @@ export class ReactionManager {
             result.effects.push('gas');
         }
 
+        if (fx.foam) { result.foam = this.gasEmitter.bubbles(container, { position, amount: 140, color: '#ffffff' }); }
+
         const smokeIntensity = this.normalizeIntensity(fx.smoke, 1);
         if (smokeIntensity > 0) {
             result.smoke = this.gasEmitter.smoke(container, {
