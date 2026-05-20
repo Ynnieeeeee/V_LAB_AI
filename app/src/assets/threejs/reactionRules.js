@@ -1,5 +1,7 @@
 // Reaction client: ưu tiên backend deterministic engine theo ID hóa chất.
-// Không còn dùng rule quá rộng kiểu "salt_solution + strong_base" vì dễ sai.
+// Có local deterministic database để chạy đủ phản ứng khi backend chưa sẵn sàng.
+import { findLocalReaction } from './ReactionDatabase.js';
+
 
 function toEffectIntensity(...values) {
     for (const value of values) {
@@ -37,18 +39,20 @@ function inferVisibleEffects(data, text = '') {
 }
 
 function normalizeApiReaction(data) {
+    const visual = data?.visual || {};
+    const effectList = Array.isArray(data?.effects) ? data.effects : [];
+    const effects = Array.isArray(data?.effects) ? {} : (data?.effects || {});
+    const effectByType = (type) => effectList.find(fx => fx?.type === type);
+    const inferred = inferVisibleEffects(data || {});
+
     if (!data || !data.has_reaction) {
         return {
             has_reaction: false,
             reason: data?.reason || 'no_reaction',
-            foam: data.foam ?? visual.foam ?? effects.foam ?? inferred.foam,
+            foam: data?.foam ?? visual.foam ?? effects.foam ?? inferred.foam,
             mascotText: data?.mascot_speech || 'Không có dấu hiệu phản ứng hóa học rõ ràng.'
         };
     }
-
-    const visual = data.visual || {};
-    const effects = data.effects || {};
-    const inferred = inferVisibleEffects(data);
 
     const resultColor =
         data.color ||
@@ -56,11 +60,18 @@ function normalizeApiReaction(data) {
         visual.color ||
         '#ffffff';
 
-    const gas = toEffectIntensity(data.gas, visual.gas_effect, effects.gas, inferred.gas);
-    const smoke = toEffectIntensity(data.smoke, visual.smoke_effect, effects.smoke, inferred.smoke);
-    const fire = toEffectIntensity(data.fire, visual.fire_effect, effects.fire, inferred.fire);
+    const gasEffect = effectByType('gas');
+    const smokeEffect = effectByType('smoke');
+    const fireEffect = effectByType('fire');
+    const heatEffect = effectByType('heat');
+    const foamEffect = effectByType('foam');
+    const precipitateEffect = effectByType('precipitate');
+
+    const gas = toEffectIntensity(data.gas, gasEffect, visual.gas_effect, effects.gas, inferred.gas);
+    const smoke = toEffectIntensity(data.smoke, smokeEffect, visual.smoke_effect, effects.smoke, inferred.smoke);
+    const fire = toEffectIntensity(data.fire, fireEffect, visual.fire_effect, effects.fire, inferred.fire);
     const explosion = toEffectIntensity(data.explosion, visual.explosion_effect, effects.explosion, inferred.explosion);
-    const heat = toEffectIntensity(data.heat, visual.heat_effect, effects.heat, inferred.heat);
+    const heat = toEffectIntensity(data.heat, heatEffect, visual.heat_effect, effects.heat, inferred.heat);
 
     const explicitPrecipitate =
         data.precipitate ??
@@ -69,6 +80,7 @@ function normalizeApiReaction(data) {
         visual.precipitate ??
         visual.precipitate_effect ??
         effects.precipitate ??
+        precipitateEffect ??
         effects.has_precipitate;
 
     const precipitate = Boolean(explicitPrecipitate ?? inferred.precipitate);
@@ -102,11 +114,23 @@ function normalizeApiReaction(data) {
         fire,
         explosion,
         heat,
+        foam: data.foam ?? visual.foam ?? effects.foam ?? Boolean(foamEffect) ?? inferred.foam,
         precipitate,
-        precipitateColor: data.precipitateColor || data.precipitate_color || visual.precipitateColor || visual.precipitate_color || effects.precipitateColor || effects.precipitate_color || inferredPrecipitateColor,
+        precipitateColor: data.precipitateColor || data.precipitate_color || precipitateEffect?.color || visual.precipitateColor || visual.precipitate_color || effects.precipitateColor || effects.precipitate_color || inferredPrecipitateColor,
+        gasColor: data.gasColor || data.gas_color || gasEffect?.color || visual.gasColor || visual.gas_color || effects.gasColor || effects.gas_color,
+        smokeColor: data.smokeColor || data.smoke_color || smokeEffect?.color || visual.smokeColor || visual.smoke_color || effects.smokeColor || effects.smoke_color,
+        dissolvePrecipitate: Boolean(data.dissolvePrecipitate || data.dissolve_precipitate || visual.dissolvePrecipitate || effectByType('dissolvePrecipitate')),
+        mirrorCoating: Boolean(data.mirrorCoating || data.mirror_coating || visual.mirrorCoating || effectByType('mirrorSilver')),
+        twoLayerLiquid: Boolean(data.twoLayerLiquid || data.two_layer_liquid || visual.twoLayerLiquid || effectByType('phaseSeparation')),
+        decolorize: Boolean(data.decolorize || visual.decolorize || effectByType('decolorize')),
+        transparency: data.transparency ?? visual.transparency,
+        result_chemical_id: data.reaction_data?.result_chemical_id || data.result_chemical_id,
         result_chemical_type: data.reaction_data?.result_chemical_type || data.result_chemical_type || 'generic_solution',
         equation: data.reaction_data?.equation || data.equation || '',
         products: data.reaction_data?.products || data.products || [],
+        effects: effectList.length ? effectList : effects,
+        consumes: data.consumes || data.reaction_data?.consumes || {},
+        producesState: data.producesState || data.produces_state || data.reaction_data?.producesState || {},
         mascotText: data.mascot_speech || data.mascotText || 'Phản ứng hóa học đã xảy ra.',
         raw: data
     };
@@ -203,8 +227,16 @@ export async function detectReaction(source, target) {
     const sourceId = source?.userData?.id_chemical || source?.userData?.current_chemical_id;
     const targetId = target?.userData?.current_chemical_id || target?.userData?.id_chemical;
 
+    // Local database được kiểm tra trước để hỗ trợ phản ứng nhiều giai đoạn dựa trên contents/products.
+    const local = findLocalReaction(source, target);
+    if (local?.has_reaction) return normalizeApiReaction(local);
+
+    // Nếu thiếu ID, vẫn cho phép fallback theo tên/contents thay vì chặn hoàn toàn.
     if (!sourceId || !targetId || sourceId === targetId) {
-        return { has_reaction: false, reason: 'missing_or_same_chemical_id' };
+        return fallbackByName(
+            source?.userData?.name_vi || source?.userData?.chemicalName || source?.userData?.current_chemical_name,
+            target?.userData?.chemicalName || target?.userData?.name_vi || target?.userData?.current_chemical_name
+        );
     }
 
     try {
@@ -212,12 +244,14 @@ export async function detectReaction(source, target) {
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        return normalizeApiReaction(data);
+        const normalized = normalizeApiReaction(data);
+        if (normalized?.has_reaction) return normalized;
+        return local;
     } catch (error) {
-        console.warn('Backend reaction API unavailable, using verified fallback:', error);
-        return fallbackByName(
-            source?.userData?.name_vi || source?.userData?.chemicalName,
-            target?.userData?.chemicalName || target?.userData?.name_vi
+        console.warn('Backend reaction API unavailable, using local reaction database:', error);
+        return local?.has_reaction ? normalizeApiReaction(local) : fallbackByName(
+            source?.userData?.name_vi || source?.userData?.chemicalName || source?.userData?.current_chemical_name,
+            target?.userData?.chemicalName || target?.userData?.name_vi || target?.userData?.current_chemical_name
         );
     }
 }

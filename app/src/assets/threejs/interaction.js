@@ -9,7 +9,10 @@ import {
     spawnGasCloud,
     createShockwave,
     heatDistortion,
-    spawnPrecipitate
+    spawnPrecipitate,
+    spawnFoam,
+    phaseSeparation as applyPhaseSeparation,
+    decolorizeLiquid
 } from './reactionEffects.js';
 const THREE = three;
 
@@ -54,6 +57,102 @@ function getChemicalColor(obj) {
 
 function getPhysicalState(obj) {
     return obj?.userData?.current_physical_state || obj?.userData?.physical_state || obj?.userData?.physicalState || obj?.userData?.state || 'Lỏng';
+}
+
+function rememberContainerContents(container, ...items) {
+    if (!container?.userData) return;
+    const set = new Set(container.userData.contents || []);
+    items.flat().filter(Boolean).forEach(item => set.add(String(item)));
+    container.userData.contents = Array.from(set);
+}
+
+function addContainerComposition(container, ...items) {
+    if (!container?.userData) return;
+    if (!container.userData.composition) container.userData.composition = {};
+    items.flat().filter(Boolean).forEach(item => {
+        const key = String(item);
+        container.userData.composition[key] = (Number(container.userData.composition[key]) || 0) + 1;
+    });
+}
+
+function applyReactionState(container, reaction) {
+    if (!container?.userData || !reaction) return;
+    const state = reaction.producesState || reaction.produces_state || {};
+    Object.entries(state).forEach(([key, value]) => {
+        if (value === null) {
+            delete container.userData[key];
+        } else {
+            container.userData[key] = value;
+        }
+    });
+    if (state.precipitateSpecies) {
+        container.userData.hasPrecipitate = true;
+        container.userData.precipitateSpecies = state.precipitateSpecies;
+    }
+    if (state.complexIon) {
+        rememberContainerContents(container, state.complexIon);
+        addContainerComposition(container, state.complexIon);
+    }
+}
+
+function removeInternalLayer(container, layerName) {
+    const layer = container?.getObjectByName?.(layerName);
+    if (!layer) return;
+    layer.traverse?.(child => {
+        if (child.geometry) child.geometry.dispose?.();
+        if (child.material) {
+            if (Array.isArray(child.material)) child.material.forEach(m => m.dispose?.());
+            else child.material.dispose?.();
+        }
+    });
+    layer.parent?.remove(layer);
+}
+
+function clearPrecipitateLayer(container) {
+    removeInternalLayer(container, 'precipitateLayer');
+    if (container?.userData) {
+        container.userData.hasPrecipitate = false;
+        container.userData.precipitateColor = null;
+        container.userData.precipitateSpecies = null;
+    }
+}
+
+function createSilverMirrorCoating(container) {
+    if (!container) return null;
+    removeInternalLayer(container, 'silverMirrorLayer');
+
+    const layer = new three.Group();
+    layer.name = 'silverMirrorLayer';
+    markInternalEffect(layer, container);
+
+    const box = new three.Box3().setFromObject(container);
+    const inv = container.matrixWorld.clone().invert();
+    const min = box.min.clone().applyMatrix4(inv);
+    const max = box.max.clone().applyMatrix4(inv);
+    const sx = Math.max(0.045, Math.abs(max.x - min.x) * 0.34);
+    const sz = Math.max(0.045, Math.abs(max.z - min.z) * 0.34);
+    const h = Math.max(0.08, Math.abs(max.y - min.y) * 0.34);
+    const y = Math.min(min.y, max.y) + h * 0.72;
+
+    const geometry = new three.CylinderGeometry(sx, sx * 0.95, h, 48, 1, true);
+    geometry.scale(1, 1, sz / sx);
+    const material = new three.MeshPhysicalMaterial({
+        color: '#dfe4ea',
+        metalness: 1.0,
+        roughness: 0.03,
+        transparent: true,
+        opacity: 0.72,
+        side: three.DoubleSide,
+        envMapIntensity: 2.0
+    });
+    const mesh = new three.Mesh(geometry, material);
+    mesh.name = 'silver_mirror_inner_wall';
+    mesh.position.set((min.x + max.x) * 0.5, y, (min.z + max.z) * 0.5);
+    markInternalEffect(mesh, container);
+    layer.add(mesh);
+    container.add(layer);
+    container.userData.hasSilverMirror = true;
+    return layer;
 }
 
 function isContainerHoldingLiquid(obj) {
@@ -592,17 +691,20 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         const raw = config.raw || config.reaction || {};
         const visual = raw.visual || {};
-        const effects = raw.effects || {};
+        const effectList = Array.isArray(config.effects) ? config.effects : (Array.isArray(raw.effects) ? raw.effects : []);
+        const effects = Array.isArray(raw.effects) ? {} : (raw.effects || {});
+        const byType = (type) => effectList.find(fx => fx?.type === type);
         const container = config.container || null;
         const position = config.position || getContainerEffectPosition(container);
 
-        const fire = effectPower(config.fire, raw.fire, visual.fire_effect, effects.fire);
-        const smoke = effectPower(config.smoke, raw.smoke, visual.smoke_effect, effects.smoke);
-        const gas = effectPower(config.gas, raw.gas, visual.gas_effect, effects.gas);
+        const fire = effectPower(config.fire, byType('fire'), raw.fire, visual.fire_effect, effects.fire);
+        const smoke = effectPower(config.smoke, byType('smoke'), raw.smoke, visual.smoke_effect, effects.smoke);
+        const gas = effectPower(config.gas, byType('gas'), raw.gas, visual.gas_effect, effects.gas);
         const explosion = effectPower(config.explosion, raw.explosion, visual.explosion_effect, effects.explosion);
-        const heat = effectPower(config.heat, raw.heat, effects.heat);
+        const heat = effectPower(config.heat, byType('heat'), raw.heat, effects.heat);
+        const foam = Boolean(config.foam || raw.foam || effects.foam || byType('foam'));
 
-        console.log("REACTION FX:", { fire, smoke, gas, explosion, heat, config });
+        console.log("REACTION FX:", { fire, smoke, gas, explosion, heat, foam, config });
 
         // Các hiệu ứng bay lên khỏi miệng cốc dùng world-space.
         // Kết tủa tuyệt đối KHÔNG spawn vào scene ở world-space, vì sẽ bị lệch ra ngoài dụng cụ.
@@ -624,6 +726,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         if (heat > 0) {
             heatDistortion(scene, position, { strength: heat });
+        }
+
+        if (foam) {
+            spawnFoam(scene, position, { intensity: effectPower(config.foam, byType('foam'), 1) || 1 });
         }
     }
 
@@ -781,6 +887,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 target.userData.color = sourceColorValue;
                 target.userData.current_physical_state = sourceState;
                 target.userData.physical_state = sourceState;
+                rememberContainerContents(target, getChemicalName(source), getChemicalType(source), getChemicalId(source));
+                addContainerComposition(target, getChemicalName(source), getChemicalType(source), getChemicalId(source));
                 return null;
             }
 
@@ -833,6 +941,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         target.userData.current_physical_state = 'Lỏng';
         target.userData.physical_state = 'Lỏng';
+
+        rememberContainerContents(target, getChemicalName(source), getChemicalType(source), getChemicalId(source));
+        addContainerComposition(target, getChemicalName(source), getChemicalType(source), getChemicalId(source));
 
         return volume;
     }
@@ -899,7 +1010,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     fire: reaction.fire,
                     explosion: reaction.explosion,
                     heat: reaction.heat,
+                    foam: reaction.foam,
+                    gasColor: reaction.gasColor,
+                    smokeColor: reaction.smokeColor,
                     raw: reaction.raw || reaction,
+                    effects: reaction.effects,
                     precipitate: reaction.precipitate,
                     precipitateColor: reaction.precipitateColor
                 });
@@ -963,18 +1078,59 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     volume.userData.hasPrecipitate = true;
                 }
 
+                if (reaction.dissolvePrecipitate) {
+                    clearPrecipitateLayer(targetObject);
+                    if (volume) volume.userData.hasPrecipitate = false;
+                }
+
+                if (reaction.mirrorCoating) {
+                    createSilverMirrorCoating(targetObject);
+                }
+
+                if (reaction.decolorize && volume) {
+                    decolorizeLiquid(targetObject, reaction.color || '#ffffff');
+                }
+
+                if (reaction.twoLayerLiquid && volume) {
+                    volume.userData.twoLayerLiquid = true;
+                    targetObject.userData.twoLayerLiquid = true;
+                    applyPhaseSeparation(targetObject, {
+                        upperColor: targetObject.userData.upperLayerColor || '#fff4c2',
+                        lowerColor: targetObject.userData.lowerLayerColor || '#f8f8ff'
+                    });
+                }
+
+                rememberContainerContents(
+                    targetObject,
+                    getChemicalName(source),
+                    getChemicalName(targetObject),
+                    reaction.products || [],
+                    reaction.result_chemical_id,
+                    reaction.result_chemical_type
+                );
+                addContainerComposition(
+                    targetObject,
+                    getChemicalName(source),
+                    getChemicalType(source),
+                    reaction.products || [],
+                    reaction.result_chemical_id,
+                    reaction.result_chemical_type
+                );
+                applyReactionState(targetObject, reaction);
+
                 // --- ĐỒNG BỘ TRẠNG THÁI HÓA CHẤT MỚI SAU PHẢN ỨNG ---
                 target.userData.current_chemical_type = reaction.result_chemical_type || "generic_solution";
                 target.userData.current_chemical_id = reaction.result_chemical_id ||`${sourceId}_reacted_${Date.now()}`;
                 target.userData.reactionStage = (target.userData.reactionStage || 0) + 1;
 
                 target.userData.chemicalType = reaction.result_chemical_type || "generic_solution";
-                target.userData.chemicalName = "Dung dịch phản ứng";
+                target.userData.chemicalName = (reaction.products && reaction.products[0]) || "Dung dịch phản ứng";
+                target.userData.current_chemical_name = target.userData.chemicalName;
                 target.userData.color = reaction.color;
 
                 if (volume) {
                     volume.userData.chemicalType = reaction.result_chemical_type || "generic_solution";
-                    volume.userData.chemicalName = "Dung dịch phản ứng";
+                    volume.userData.chemicalName = (reaction.products && reaction.products[0]) || "Dung dịch phản ứng";
                     volume.userData.color = reaction.color;
 
                     if (reaction.color) {

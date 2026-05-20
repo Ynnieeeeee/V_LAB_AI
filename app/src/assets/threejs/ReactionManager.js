@@ -7,7 +7,12 @@ import {
     spawnSmoke,
     spawnGasCloud,
     createShockwave,
-    heatDistortion
+    heatDistortion,
+    spawnFoam,
+    dissolvePrecipitate,
+    mirrorSilver,
+    phaseSeparation,
+    decolorizeLiquid
 } from './reactionEffects.js';
 
 /**
@@ -49,6 +54,10 @@ export class ReactionManager {
             explosion: reaction.explosion ?? visual.explosion_effect ?? effects.explosion ?? false,
             heat: reaction.heat ?? visual.heat_effect ?? effects.heat ?? false,
             foam: reaction.foam ?? visual.foam ?? effects.foam ?? false,
+            dissolvePrecipitate: Boolean(reaction.dissolvePrecipitate || reaction.dissolve_precipitate),
+            mirrorCoating: Boolean(reaction.mirrorCoating || reaction.mirrorSilver),
+            twoLayerLiquid: Boolean(reaction.twoLayerLiquid || reaction.phaseSeparation),
+            decolorize: Boolean(reaction.decolorize),
             raw: reaction
         };
     }
@@ -95,6 +104,10 @@ export class ReactionManager {
         }
 
         if (fx.foam) { result.foam = this.gasEmitter.bubbles(container, { position, amount: 140, color: '#ffffff' }); }
+        if (fx.foam) {
+            spawnFoam?.(this.scene, position, { intensity: this.normalizeIntensity(fx.foam, 1) || 1 });
+            result.effects.push('foam');
+        }
 
         const smokeIntensity = this.normalizeIntensity(fx.smoke, 1);
         if (smokeIntensity > 0) {
@@ -123,6 +136,26 @@ export class ReactionManager {
         if (heatStrength > 0) {
             heatDistortion?.(this.scene, position, { strength: heatStrength });
             result.effects.push('heat');
+        }
+
+        if (fx.dissolvePrecipitate) {
+            dissolvePrecipitate?.(container);
+            result.effects.push('dissolvePrecipitate');
+        }
+
+        if (fx.mirrorCoating) {
+            mirrorSilver?.(container);
+            result.effects.push('mirrorSilver');
+        }
+
+        if (fx.twoLayerLiquid) {
+            phaseSeparation?.(container);
+            result.effects.push('phaseSeparation');
+        }
+
+        if (fx.decolorize) {
+            decolorizeLiquid?.(container, fx.color || '#ffffff');
+            result.effects.push('decolorize');
         }
 
         return result;
