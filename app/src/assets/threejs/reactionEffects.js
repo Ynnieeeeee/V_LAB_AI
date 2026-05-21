@@ -1,4 +1,10 @@
 import * as THREE from "three";
+import {
+    hasGasProduct,
+    hasExplicitSmoke,
+    shouldEmitSmokeOrGas,
+    reactionGasDebug
+} from './reactionGasUtils.js';
 
 const loader = new THREE.TextureLoader();
 
@@ -26,6 +32,16 @@ function markEffectObject(obj) {
     return obj;
 }
 
+function effectIntensity(value, fallback = 1) {
+    if (value === true) return fallback;
+    if (typeof value === 'number') return value;
+    if (typeof value === 'object' && value !== null) {
+        const nested = value.intensity ?? value.power ?? value.strength ?? value.density ?? value.toxicity ?? value.value;
+        return effectIntensity(nested, fallback);
+    }
+    return 0;
+}
+
 export function applyReactionEffects(
     scene,
     reaction,
@@ -35,22 +51,25 @@ export function applyReactionEffects(
     if (!reaction) return;
 
     const effects = reaction.effects || reaction;
+    const gasAllowed = shouldEmitSmokeOrGas(reaction);
 
     console.log(
         "APPLY REACTION EFFECTS:",
         effects
     );
+    console.debug('[ReactionFX] applyReactionEffects gas gate', reactionGasDebug(reaction));
 
     // =====================================================
     // FIRE
     // =====================================================
 
-    if (effects.fire > 0.4) {
+    const firePower = effectIntensity(effects.fire);
+    if (firePower > 0.4) {
 
         spawnFireParticles(
             scene,
             position,
-            effects.fire
+            firePower
         );
     }
 
@@ -58,12 +77,13 @@ export function applyReactionEffects(
     // SMOKE
     // =====================================================
 
-    if (effects.smoke > 0.3) {
+    const smokePower = effectIntensity(effects.smoke);
+    if (gasAllowed && hasExplicitSmoke(reaction) && smokePower > 0.3) {
 
         spawnSmoke(
             scene,
             position,
-            effects.smoke
+            smokePower
         );
     }
 
@@ -71,12 +91,13 @@ export function applyReactionEffects(
     // GAS
     // =====================================================
 
-    if (effects.gas > 0.3) {
+    const gasPower = effectIntensity(effects.gas) || (hasGasProduct(reaction) ? 1 : 0);
+    if (gasAllowed && gasPower > 0.3) {
 
         spawnGasCloud(
             scene,
             position,
-            effects.gas
+            gasPower
         );
     }
 
@@ -118,7 +139,7 @@ export function applyReactionEffects(
         );
     }
 
-    if (effects.foam) {
+    if (gasAllowed && effects.foam) {
         spawnFoam(scene, position, effects.foam);
     }
 

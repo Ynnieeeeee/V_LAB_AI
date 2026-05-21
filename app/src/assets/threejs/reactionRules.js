@@ -1,6 +1,13 @@
 // Reaction client: ưu tiên backend deterministic engine theo ID hóa chất.
 // Có local deterministic database để chạy đủ phản ứng khi backend chưa sẵn sàng.
 import { findLocalReaction } from './ReactionDatabase.js';
+import {
+    hasGasProduct,
+    hasExplicitGas,
+    hasExplicitSmoke,
+    shouldEmitSmokeOrGas,
+    reactionGasDebug
+} from './reactionGasUtils.js';
 
 
 function toEffectIntensity(...values) {
@@ -28,8 +35,8 @@ function inferVisibleEffects(data, text = '') {
     ].join(' ').toLowerCase();
 
     return {
-        gas: /(h₂|h2|co₂|co2|khí|gas|bong bóng|bọt khí|↑)/i.test(haystack),
-        smoke: /(khói|smoke|mù|hơi trắng|white fume|fume|nh₄cl|nh4cl)/i.test(haystack),
+        gas: false,
+        smoke: false,
         fire: /(cháy|bốc cháy|lửa|fire|flame|ignit)/i.test(haystack),
         explosion: /(nổ|explosion|mạnh|violent)/i.test(haystack),
         heat: /(tỏa nhiệt|nóng|heat|exothermic)/i.test(haystack),
@@ -67,9 +74,14 @@ function normalizeApiReaction(data) {
     const foamEffect = effectByType('foam');
     const precipitateEffect = effectByType('precipitate');
 
-    const gas = toEffectIntensity(data.gas, gasEffect, visual.gas_effect, effects.gas, inferred.gas);
-    const smoke = toEffectIntensity(data.smoke, smokeEffect, visual.smoke_effect, effects.smoke, inferred.smoke);
-    const fire = toEffectIntensity(data.fire, fireEffect, visual.fire_effect, effects.fire, inferred.fire);
+    const gasAllowed = shouldEmitSmokeOrGas(data);
+    const gas = gasAllowed
+        ? toEffectIntensity(data.gas, gasEffect, visual.gas_effect, effects.gas, hasGasProduct(data))
+        : 0;
+    const smoke = gasAllowed
+        ? toEffectIntensity(data.smoke, smokeEffect, visual.smoke_effect, effects.smoke)
+        : 0;
+    const fire = toEffectIntensity(data.fire, fireEffect, visual.fire_effect, effects.fire);
     const explosion = toEffectIntensity(data.explosion, visual.explosion_effect, effects.explosion, inferred.explosion);
     const heat = toEffectIntensity(data.heat, heatEffect, visual.heat_effect, effects.heat, inferred.heat);
 
@@ -106,6 +118,14 @@ function normalizeApiReaction(data) {
         ].join(' ').toLowerCase()) ? '#ffd54f' :
         '#ffffff';
 
+    console.debug('[ReactionFX] normalized reaction gas gate', {
+        ...reactionGasDebug(data),
+        explicitGas: hasExplicitGas(data),
+        explicitSmoke: hasExplicitSmoke(data),
+        normalizedGas: gas,
+        normalizedSmoke: smoke,
+        normalizedFoam: gasAllowed && (data.foam ?? visual.foam ?? effects.foam ?? Boolean(foamEffect) ?? inferred.foam)
+    });
     return {
         has_reaction: true,
         color: resultColor,
@@ -114,7 +134,7 @@ function normalizeApiReaction(data) {
         fire,
         explosion,
         heat,
-        foam: data.foam ?? visual.foam ?? effects.foam ?? Boolean(foamEffect) ?? inferred.foam,
+        foam: gasAllowed && (data.foam ?? visual.foam ?? effects.foam ?? Boolean(foamEffect) ?? inferred.foam),
         precipitate,
         precipitateColor: data.precipitateColor || data.precipitate_color || precipitateEffect?.color || visual.precipitateColor || visual.precipitate_color || effects.precipitateColor || effects.precipitate_color || inferredPrecipitateColor,
         gasColor: data.gasColor || data.gas_color || gasEffect?.color || visual.gasColor || visual.gas_color || effects.gasColor || effects.gas_color,

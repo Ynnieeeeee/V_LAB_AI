@@ -99,6 +99,22 @@ function stepIsChemicalAction(step) {
     return action === 'pour' || action === 'add' || action === 'add_chemical';
 }
 
+function hasQuantityTarget(item) {
+    const amount = item?.target_amount ?? item?.amount;
+    return amount !== null
+        && amount !== undefined
+        && Number.isFinite(Number(amount))
+        && !!item?.unit;
+}
+
+function targetAmountOrNull(item) {
+    return hasQuantityTarget(item) ? Number(item.target_amount ?? item.amount) : null;
+}
+
+function toleranceOrNull(item) {
+    return item?.tolerance === null || item?.tolerance === undefined ? null : Number(item.tolerance);
+}
+
 function activeChemicalSteps() {
     if (currentExperimentSteps.length) {
         return currentExperimentSteps
@@ -107,9 +123,9 @@ function activeChemicalSteps() {
                 step: step.step_order,
                 chemical: step.chemical_name_vi,
                 canonical_id: step.canonical_id,
-                amount: Number(step.target_amount || 0),
+                amount: targetAmountOrNull(step),
                 unit: step.unit,
-                tolerance: Number(step.tolerance || 0),
+                tolerance: toleranceOrNull(step),
                 actual_amount: Number(step.actual_amount || 0),
                 is_completed: !!step.is_completed,
                 dbStep: step
@@ -134,6 +150,7 @@ function updateCurrentStep(container = null) {
 function nextIncompleteStep(container) {
     if (currentExperimentSteps.length) {
         return plannedAddSteps().find(step => {
+            if (!hasQuantityTarget(step)) return !step.is_completed;
             const required = Number(step.amount || 0);
             const current = Number(step.actual_amount || 0);
             return current < required;
@@ -141,6 +158,7 @@ function nextIncompleteStep(container) {
     }
     const contents = aggregateContents(container);
     return plannedAddSteps().find(step => {
+        if (!hasQuantityTarget(step)) return !contents.has(key(step.chemical));
         const required = Number(step.amount || 0);
         const tolerance = findRequiredChemical(step.chemical)?.tolerance ?? 0;
         const current = contents.get(key(step.chemical))?.amount || 0;
@@ -185,7 +203,7 @@ function setQuantityControlValue(amount, unit) {
 function syncQuantityForNextStep(container = null) {
     if (!currentExperimentPlan) return;
     const step = nextIncompleteStep(container) || plannedAddSteps()[0];
-    if (step) setQuantityControlValue(step.amount, step.unit);
+    if (step && hasQuantityTarget(step)) setQuantityControlValue(step.amount, step.unit);
 }
 
 function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
@@ -195,9 +213,9 @@ function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
         canonical_id: step.canonical_id,
         name_vi: step.chemical_name_vi,
         name_en: step.chemical_name_vi,
-        amount: Number(step.target_amount || 0),
+        amount: targetAmountOrNull(step),
         unit: step.unit,
-        tolerance: Number(step.tolerance || 0),
+        tolerance: toleranceOrNull(step),
         role: 'reactant'
     }));
     const legacySteps = steps.map(step => ({
@@ -205,7 +223,7 @@ function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
         action: step.action_type === 'heat' ? 'heat' : 'add_chemical',
         chemical: step.chemical_name_vi,
         canonical_id: step.canonical_id,
-        amount: Number(step.target_amount || 0),
+        amount: targetAmountOrNull(step),
         unit: step.unit,
         temperature_min: step.target_temperature
     }));
@@ -379,7 +397,8 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
     const sameAsCurrentStep = !dbStep || key(dbStep.chemical_name_vi) === key(name);
     const hasDbTarget = dbStep?.target_amount !== null
         && dbStep?.target_amount !== undefined
-        && Number.isFinite(Number(dbStep.target_amount));
+        && Number.isFinite(Number(dbStep.target_amount))
+        && !!dbStep.unit;
     const remaining = hasDbTarget
         ? Math.max(0, Number(dbStep.target_amount) - Number(dbStep.actual_amount || 0))
         : Infinity;
@@ -435,10 +454,12 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
         dbStep.actual_amount = hasDbTarget
             ? Math.min(Number(dbStep.target_amount), nextActualAmount)
             : nextActualAmount;
-        dbStep.is_completed = hasDbTarget && Number(dbStep.actual_amount || 0) >= Number(dbStep.target_amount);
+        dbStep.is_completed = hasDbTarget
+            ? Number(dbStep.actual_amount || 0) >= Number(dbStep.target_amount)
+            : Number(dbStep.actual_amount || 0) > 0;
         completedStep = dbStep;
         autoStopped = hasDbTarget && !!dbStep.auto_stop && dbStep.is_completed;
-        syncStepActualAmount(dbStep, autoStopped);
+        syncStepActualAmount(dbStep, autoStopped || (!hasDbTarget && dbStep.is_completed));
     }
 
     syncQuantityForNextStep(target);
@@ -539,11 +560,21 @@ function validateAmounts(container) {
     for (const item of required) {
         const name = item.name_vi || item.name_en;
         const current = contents.get(key(name))?.amount || 0;
-        const amount = Number(item.amount || 0);
-        const tolerance = Number(item.tolerance || 0);
+        const hasAmountTarget = hasQuantityTarget(item);
         if (current <= 0) {
-            return fail('missing_chemical', `Bạn chưa lấy ${name}. Cần ${amount} ${item.unit}.`);
+            return fail(
+                'missing_chemical',
+                hasAmountTarget
+                    ? `Bạn chưa lấy ${name}. Cần ${item.amount} ${item.unit}.`
+                    : `Bạn chưa thêm ${name}. Cơ sở dữ liệu chưa có định lượng cho chất này.`
+            );
         }
+        if (!hasAmountTarget) {
+            continue;
+        }
+
+        const amount = Number(item.amount);
+        const tolerance = Number(item.tolerance || 0);
         if (current < amount - tolerance) {
             const missing = Math.max(0, amount - current);
             return fail('wrong_amount', `Bạn đã lấy ${current.toFixed(2)} ${item.unit} ${name}, cần thêm khoảng ${missing.toFixed(2)} ${item.unit}.`);
@@ -597,6 +628,12 @@ export function describeNextRequirement(container) {
         }
         const contents = aggregateContents(container);
         const current = contents.get(key(next.chemical))?.amount || 0;
+        if (!hasQuantityTarget(next)) {
+            if (current > 0) {
+                return `Đã thêm ${next.chemical}. Cơ sở dữ liệu chưa có định lượng cho bước này.`;
+            }
+            return `Tiếp tục: thêm ${next.chemical}. Chưa có dữ liệu định lượng trong cơ sở dữ liệu.`;
+        }
         const remaining = Math.max(0, Number(next.amount || 0) - current);
         if (current > 0) {
             return `Đúng rồi. Bạn đã lấy ${current} ${next.unit} ${next.chemical}, cần thêm khoảng ${remaining.toFixed(2)} ${next.unit}.`;

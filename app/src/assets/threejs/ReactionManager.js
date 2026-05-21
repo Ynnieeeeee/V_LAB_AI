@@ -14,6 +14,12 @@ import {
     phaseSeparation,
     decolorizeLiquid
 } from './reactionEffects.js';
+import {
+    hasGasProduct,
+    hasExplicitSmoke,
+    shouldEmitSmokeOrGas,
+    reactionGasDebug
+} from './reactionGasUtils.js';
 
 /**
  * ReactionManager
@@ -43,17 +49,19 @@ export class ReactionManager {
     normalizeReaction(reaction = {}) {
         const visual = reaction.visual || {};
         const effects = reaction.effects || {};
+        const gasAllowed = shouldEmitSmokeOrGas(reaction);
         return {
             hasReaction: Boolean(reaction.has_reaction ?? reaction.hasReaction ?? reaction.has_reaction === undefined),
             color: reaction.color || visual.result_color || visual.color,
             precipitate: Boolean(reaction.precipitate ?? visual.precipitate ?? effects.precipitate),
             precipitateColor: reaction.precipitateColor || reaction.precipitate_color || visual.precipitate_color || effects.precipitateColor || '#ffffff',
-            gas: reaction.gas ?? visual.gas_effect ?? effects.gas ?? false,
-            smoke: reaction.smoke ?? visual.smoke_effect ?? effects.smoke ?? false,
+            gas: gasAllowed ? (reaction.gas ?? visual.gas_effect ?? effects.gas ?? hasGasProduct(reaction)) : false,
+            smoke: gasAllowed ? (reaction.smoke ?? visual.smoke_effect ?? effects.smoke ?? false) : false,
+            vapor: gasAllowed ? (reaction.vapor ?? visual.vapor_effect ?? effects.vapor ?? false) : false,
             fire: reaction.fire ?? visual.fire_effect ?? effects.fire ?? false,
             explosion: reaction.explosion ?? visual.explosion_effect ?? effects.explosion ?? false,
             heat: reaction.heat ?? visual.heat_effect ?? effects.heat ?? false,
-            foam: reaction.foam ?? visual.foam ?? effects.foam ?? false,
+            foam: gasAllowed && (reaction.foam ?? visual.foam ?? effects.foam ?? false),
             dissolvePrecipitate: Boolean(reaction.dissolvePrecipitate || reaction.dissolve_precipitate),
             mirrorCoating: Boolean(reaction.mirrorCoating || reaction.mirrorSilver),
             twoLayerLiquid: Boolean(reaction.twoLayerLiquid || reaction.phaseSeparation),
@@ -80,6 +88,11 @@ export class ReactionManager {
 
         const position = this.getContainerMouthPosition(container, options.position);
         const result = { position, effects: [] };
+        const gasAllowed = shouldEmitSmokeOrGas(reaction);
+        console.debug('[ReactionFX] ReactionManager gas gate', {
+            ...reactionGasDebug(reaction),
+            effectActuallyTriggered: []
+        });
 
         // Kết tủa phải nằm trong dụng cụ, dùng local child layer.
         if (fx.precipitate) {
@@ -92,7 +105,7 @@ export class ReactionManager {
 
         // Bọt khí nhẹ nằm gần mặt dung dịch, gas cloud bay lên.
         const gasIntensity = this.normalizeIntensity(fx.gas, 1);
-        if (gasIntensity > 0) {
+        if (gasAllowed && gasIntensity > 0) {
             result.gas = this.gasEmitter.bubbles(container, {
                 position,
                 amount: Math.floor(80 * Math.min(2, gasIntensity)),
@@ -103,14 +116,14 @@ export class ReactionManager {
             result.effects.push('gas');
         }
 
-        if (fx.foam) { result.foam = this.gasEmitter.bubbles(container, { position, amount: 140, color: '#ffffff' }); }
-        if (fx.foam) {
+        if (gasAllowed && fx.foam) { result.foam = this.gasEmitter.bubbles(container, { position, amount: 140, color: '#ffffff' }); }
+        if (gasAllowed && fx.foam) {
             spawnFoam?.(this.scene, position, { intensity: this.normalizeIntensity(fx.foam, 1) || 1 });
             result.effects.push('foam');
         }
 
-        const smokeIntensity = this.normalizeIntensity(fx.smoke, 1);
-        if (smokeIntensity > 0) {
+        const smokeIntensity = this.normalizeIntensity(fx.smoke || fx.vapor, 1);
+        if (gasAllowed && hasExplicitSmoke(reaction) && smokeIntensity > 0) {
             result.smoke = this.gasEmitter.smoke(container, {
                 position,
                 amount: Math.floor(70 * Math.min(2, smokeIntensity)),
@@ -158,6 +171,10 @@ export class ReactionManager {
             result.effects.push('decolorize');
         }
 
+        console.debug('[ReactionFX] ReactionManager triggered effects', {
+            ...reactionGasDebug(reaction),
+            effectActuallyTriggered: result.effects
+        });
         return result;
     }
 

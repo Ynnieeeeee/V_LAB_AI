@@ -23,6 +23,12 @@ import {
     phaseSeparation as applyPhaseSeparation,
     decolorizeLiquid
 } from './reactionEffects.js';
+import {
+    hasGasProduct,
+    hasExplicitSmoke,
+    shouldEmitSmokeOrGas,
+    reactionGasDebug
+} from './reactionGasUtils.js';
 const THREE = three;
 
 function isSolidChemical(obj) {
@@ -705,15 +711,29 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const byType = (type) => effectList.find(fx => fx?.type === type);
         const container = config.container || null;
         const position = config.position || getContainerEffectPosition(container);
+        const gasAllowed = shouldEmitSmokeOrGas(config);
 
         const fire = effectPower(config.fire, byType('fire'), raw.fire, visual.fire_effect, effects.fire);
-        const smoke = effectPower(config.smoke, byType('smoke'), raw.smoke, visual.smoke_effect, effects.smoke);
-        const gas = effectPower(config.gas, byType('gas'), raw.gas, visual.gas_effect, effects.gas);
+        const smoke = gasAllowed
+            ? effectPower(config.smoke, byType('smoke'), raw.smoke, raw.vapor, visual.smoke_effect, visual.vapor_effect, effects.smoke, effects.vapor)
+            : 0;
+        const gas = gasAllowed
+            ? effectPower(config.gas, byType('gas'), raw.gas, visual.gas_effect, effects.gas, hasGasProduct(config))
+            : 0;
         const explosion = effectPower(config.explosion, raw.explosion, visual.explosion_effect, effects.explosion);
         const heat = effectPower(config.heat, byType('heat'), raw.heat, effects.heat);
-        const foam = Boolean(config.foam || raw.foam || effects.foam || byType('foam'));
+        const foam = gasAllowed && Boolean(config.foam || raw.foam || effects.foam || byType('foam'));
 
-        console.log("REACTION FX:", { fire, smoke, gas, explosion, heat, foam, config });
+        console.debug("[ReactionFX] interaction gas gate", {
+            ...reactionGasDebug(config),
+            fire,
+            smoke,
+            gas,
+            explosion,
+            heat,
+            foam,
+            effectActuallyTriggered: []
+        });
 
         // Các hiệu ứng bay lên khỏi miệng cốc dùng world-space.
         // Kết tủa tuyệt đối KHÔNG spawn vào scene ở world-space, vì sẽ bị lệch ra ngoài dụng cụ.
@@ -721,11 +741,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             spawnFireParticles(scene, position, { intensity: fire });
         }
 
-        if (smoke > 0) {
+        if (gasAllowed && hasExplicitSmoke(config) && smoke > 0) {
             spawnSmoke(scene, position, { density: smoke });
         }
 
-        if (gas > 0) {
+        if (gasAllowed && gas > 0) {
             spawnGasCloud(scene, position, { toxicity: gas });
         }
 
@@ -737,9 +757,20 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             heatDistortion(scene, position, { strength: heat });
         }
 
-        if (foam) {
+        if (gasAllowed && foam) {
             spawnFoam(scene, position, { intensity: effectPower(config.foam, byType('foam'), 1) || 1 });
         }
+        console.debug("[ReactionFX] interaction triggered effects", {
+            ...reactionGasDebug(config),
+            effectActuallyTriggered: [
+                fire > 0 ? 'fire' : null,
+                gasAllowed && hasExplicitSmoke(config) && smoke > 0 ? 'smoke' : null,
+                gasAllowed && gas > 0 ? 'gas' : null,
+                explosion > 0 ? 'explosion' : null,
+                heat > 0 ? 'heat' : null,
+                gasAllowed && foam ? 'foam' : null
+            ].filter(Boolean)
+        });
     }
 
 
@@ -1105,9 +1136,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     volume.material.needsUpdate = true;
                 }
 
-                // hiệu ứng khí
-                volume.userData.hasGasEffect =
-                    reaction.gas || reaction.smoke;
+                // hiệu ứng khí chỉ bật khi phản ứng có sản phẩm khí/flag gas-smoke-vapor rõ ràng.
+                volume.userData.hasGasEffect = shouldEmitSmokeOrGas(reaction);
 
                 // cháy
                 volume.userData.hasFireEffect =
