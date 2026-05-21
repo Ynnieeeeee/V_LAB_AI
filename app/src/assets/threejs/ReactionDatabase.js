@@ -204,6 +204,10 @@ function effect(type, options = {}) {
 export const LOCAL_REACTION_RULES = [
     {
         id: 'silver_mirror_from_tollens_glucose_heat',
+        name: 'Phản ứng tráng bạc',
+        aliases: ['phản ứng tráng bạc', 'tráng bạc', 'tráng gương', 'gương bạc', 'Tollens', 'thuốc thử Tollens', 'bạc amoniac', 'silver mirror'],
+        keywords: ['AgNO3', 'NH3', 'aldehyde', 'andehit', 'glucose', 'glucozơ', '[Ag(NH3)2]OH', 'bạc amoniac'],
+        phenomenon: 'Xuất hiện lớp bạc sáng bám trên thành ống nghiệm',
         priority: 140,
         reactants: ['Glucozơ'],
         requiredExistingSpecies: ['[Ag(NH3)2]OH'],
@@ -365,6 +369,10 @@ export const LOCAL_REACTION_RULES = [
     },
     {
         id: 'ba_cl2_h2so4',
+        name: 'Phản ứng Bari Clorua và Axit Sunfuric',
+        aliases: ['bari clorua axit sunfuric', 'BaCl2 H2SO4', 'bari sunfat', 'BaSO4'],
+        keywords: ['BaCl2', 'H2SO4', 'BaSO4', 'kết tủa trắng'],
+        phenomenon: 'Xuất hiện kết tủa trắng đặc Bari Sunfat',
         priority: 80,
         reactants: ['Bari Clorua', 'Axit Sunfuric'],
         products: ['Bari Sunfat', 'Axit Clohidric'],
@@ -401,6 +409,10 @@ export const LOCAL_REACTION_RULES = [
     },
     {
         id: 'cu_so4_naoh',
+        name: 'Phản ứng Đồng(II) Sunfat và Natri Hydroxit',
+        aliases: ['đồng sunfat natri hidroxit', 'đồng sunfat natri hydroxit', 'Đồng(II) Sunfat Natri Hydroxit', 'CuSO4 NaOH', 'đồng hidroxit', 'đồng hydroxit'],
+        keywords: ['CuSO4', 'NaOH', 'Cu(OH)2', 'kết tủa xanh'],
+        phenomenon: 'Xuất hiện kết tủa xanh lam keo Đồng Hydroxit',
         priority: 80,
         reactants: ['Đồng(II) Sunfat', 'Natri Hydroxit'],
         products: ['Đồng Hydroxit', 'Natri Sunfat'],
@@ -527,6 +539,186 @@ export const LOCAL_REACTION_RULES = [
     }
 ];
 
+const REACTION_FUZZY_THRESHOLD = 2.2;
+const SEARCH_STOPWORDS = new Set([
+    'phan', 'ung', 'thi', 'nghiem', 'hoa', 'hoc', 'toi', 'muon', 'can',
+    'hay', 'giup', 'minh', 'khong', 'ton', 'tai', 've', 'voi',
+    'va', 'cua', 'tu', 'tao', 'ra', 'nhu', 'the', 'nao', 'dung', 'dich'
+]);
+
+function compactText(value) {
+    return norm(value).replace(/[^a-z0-9]+/g, '');
+}
+
+function searchTokens(value) {
+    return new Set((norm(value).match(/[a-z0-9]{2,}/g) || [])
+        .filter(token => !SEARCH_STOPWORDS.has(token)));
+}
+
+function hasPhraseOrFormula(queryNorm, queryCompact, value) {
+    const valueNorm = norm(value);
+    if (!valueNorm) return false;
+    const valueCompact = compactText(valueNorm);
+    const tokens = searchTokens(valueNorm);
+    const isFormula = /^[a-z]{1,3}\d[a-z0-9]*$/.test(valueNorm);
+    const isDistinct = tokens.size >= 2 || valueNorm.length >= 7 || isFormula;
+    if (!isDistinct) return false;
+    if (isFormula) {
+        return new RegExp(`(^|[^a-z0-9])${valueNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(queryNorm);
+    }
+    return queryNorm.includes(valueNorm) || (valueCompact && queryCompact.includes(valueCompact));
+}
+
+function displayNameFromRule(rule) {
+    if (rule.name) return rule.name;
+    const reactants = (rule.reactants || []).map(spec => alternatives(spec)[0]).filter(Boolean);
+    const products = (rule.products || rule.result?.products || []).map(spec => alternatives(spec)[0]).filter(Boolean);
+    if (reactants.length && products.length) return `Phản ứng ${reactants.join(' + ')} tạo ${products.join(' + ')}`;
+    if (reactants.length) return `Phản ứng ${reactants.join(' + ')}`;
+    return rule.id || 'Phản ứng trong ReactionDatabase.js';
+}
+
+function phenomenonFromRule(rule) {
+    return rule.phenomenon || rule.result?.mascotText || '';
+}
+
+function normalizedReaction(rule) {
+    return {
+        ...rule,
+        name: displayNameFromRule(rule),
+        aliases: Array.isArray(rule.aliases) ? rule.aliases : [],
+        keywords: Array.isArray(rule.keywords) ? rule.keywords : [],
+        reactants: Array.isArray(rule.reactants) ? rule.reactants : [],
+        products: Array.isArray(rule.products) ? rule.products : (rule.result?.products || []),
+        phenomenon: phenomenonFromRule(rule)
+    };
+}
+
+export const REACTION_SEARCH_RULES = LOCAL_REACTION_RULES.map(normalizedReaction);
+
+export function hasExactKeywordMatch(query, reaction) {
+    const normalizedQuery = norm(query);
+    const compactQuery = compactText(query);
+    const rule = normalizedReaction(reaction);
+    const values = [
+        rule.name,
+        rule.phenomenon,
+        ...(rule.aliases || []),
+        ...(rule.keywords || [])
+    ];
+
+    if (values.some(value => hasPhraseOrFormula(normalizedQuery, compactQuery, value))) return true;
+
+    const matchedChemicals = [];
+    for (const spec of [...(rule.reactants || []), ...(rule.requiredExistingSpecies || []), ...(rule.products || [])]) {
+        for (const option of alternatives(spec)) {
+            const canonical = normalizeChemicalName(option);
+            const candidateValues = [option, canonical];
+            for (const [alias, target] of CANONICAL.entries()) {
+                if (norm(target) === norm(canonical)) candidateValues.push(alias);
+            }
+            if (candidateValues.some(value => hasPhraseOrFormula(normalizedQuery, compactQuery, value))) {
+                matchedChemicals.push(canonical);
+                break;
+            }
+        }
+    }
+    return new Set(matchedChemicals.map(norm)).size >= 2;
+}
+
+export function scoreReaction(query, reaction) {
+    const normalizedQuery = norm(query);
+    const compactQuery = compactText(query);
+    const queryTokens = searchTokens(query);
+    const rule = normalizedReaction(reaction);
+    const searchText = norm([
+        rule.id?.replace(/_/g, ' '),
+        rule.name,
+        ...(rule.aliases || []),
+        ...(rule.keywords || []),
+        ...(rule.reactants || []),
+        ...(rule.requiredExistingSpecies || []),
+        ...(rule.products || []),
+        rule.phenomenon,
+        rule.result?.mascotText,
+        rule.result?.equation,
+        ...(rule.effects || []).map(fx => fx.type)
+    ].filter(Boolean).join(' '));
+    const compactSearch = compactText(searchText);
+
+    let score = 0;
+    for (const token of queryTokens) {
+        if (token.length <= 2) {
+            if (new RegExp(`(^|[^a-z0-9])${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(searchText)) score += 1;
+        } else if (searchText.includes(token) || compactSearch.includes(compactText(token))) {
+            score += 1;
+        }
+    }
+
+    for (const value of [rule.name, ...(rule.aliases || [])]) {
+        if (hasPhraseOrFormula(normalizedQuery, compactQuery, value)) score += 8;
+    }
+    for (const value of (rule.keywords || [])) {
+        if (hasPhraseOrFormula(normalizedQuery, compactQuery, value)) score += 4;
+    }
+    for (const spec of rule.reactants || []) {
+        if (alternatives(spec).some(option => hasPhraseOrFormula(normalizedQuery, compactQuery, option))) score += 3;
+    }
+    for (const spec of rule.products || []) {
+        if (alternatives(spec).some(option => hasPhraseOrFormula(normalizedQuery, compactQuery, option))) score += 1.5;
+    }
+    if (rule.phenomenon && hasPhraseOrFormula(normalizedQuery, compactQuery, rule.phenomenon)) score += 2;
+
+    return score + Math.min(Number(rule.priority || 0), 150) / 1000;
+}
+
+function bestByScore(reactions, query) {
+    return reactions
+        .map(reaction => ({ reaction, score: scoreReaction(query, reaction) }))
+        .sort((a, b) => b.score - a.score)[0] || null;
+}
+
+function bestFuzzyMatch(query, reactions) {
+    const scored = reactions
+        .map(reaction => ({ reaction, score: scoreReaction(query, reaction) }))
+        .sort((a, b) => b.score - a.score);
+    const best = scored[0] || null;
+    return best && best.score >= REACTION_FUZZY_THRESHOLD ? best : null;
+}
+
+export function searchReactionDatabaseByQuery(query, reactions = REACTION_SEARCH_RULES) {
+    const normalizedQuery = norm(query);
+    console.log('[MascotSearch] query:', query);
+    console.log('[MascotSearch] normalized query:', normalizedQuery);
+
+    const exactKeywordMatches = reactions.filter(reaction => hasExactKeywordMatch(query, reaction));
+    console.log('[MascotSearch] exact keyword matches:', exactKeywordMatches.map(reaction => ({
+        id: reaction.id,
+        name: normalizedReaction(reaction).name
+    })));
+
+    const fuzzyScores = reactions
+        .map(reaction => ({
+            id: reaction.id,
+            name: normalizedReaction(reaction).name,
+            score: scoreReaction(query, reaction)
+        }))
+        .sort((a, b) => b.score - a.score);
+    console.log('[MascotSearch] fuzzy scores:', fuzzyScores.slice(0, 8));
+
+    if (exactKeywordMatches.length > 0) {
+        const selected = bestByScore(exactKeywordMatches, query);
+        console.log('[MascotSearch] selected reaction:', selected ? normalizedReaction(selected.reaction).name : undefined);
+        console.log('[MascotSearch] selected reason:', 'exact keyword match');
+        return selected?.reaction || null;
+    }
+
+    const fuzzy = bestFuzzyMatch(query, reactions);
+    console.log('[MascotSearch] selected reaction:', fuzzy ? normalizedReaction(fuzzy.reaction).name : undefined);
+    console.log('[MascotSearch] selected reason:', fuzzy ? `fuzzy score ${fuzzy.score}` : 'fuzzy score below threshold');
+    return fuzzy?.reaction || null;
+}
+
 function alternatives(spec) {
     return String(spec || '').split('|').map(s => s.trim()).filter(Boolean);
 }
@@ -563,10 +755,14 @@ function materializeRule(rule) {
     const out = {
         ...rule.result,
         id: rule.id,
+        name: displayNameFromRule(rule),
+        aliases: Array.isArray(rule.aliases) ? rule.aliases : [],
+        keywords: Array.isArray(rule.keywords) ? rule.keywords : [],
         reactants: rule.reactants || [],
         requiredExistingSpecies: rule.requiredExistingSpecies || [],
         conditions: rule.conditions || {},
         products: rule.products || rule.result?.products || [],
+        phenomenon: phenomenonFromRule(rule),
         effects: rule.effects || rule.result?.effects || [],
         priority: rule.priority || 0,
         consumes: rule.consumes || rule.result?.consumes || {},

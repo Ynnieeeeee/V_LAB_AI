@@ -2,6 +2,7 @@ import * as three from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { autoScaleModel, animateScale } from './utils.js';
 import { applyAdvancedPBR } from './pbr.js';
+import { applyToolMetadataToObject } from './ToolClassifier.js';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh
@@ -139,6 +140,7 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
 
     loader.load(modelUrl, (gltf) => {
         const model = gltf.scene;
+        applyToolMetadataToObject(model, tool);
 
         // Áp dụng các tính chất vật lý (Kính, Kim loại, Nhám...)
         applyAdvancedPBR(model, tool);
@@ -177,6 +179,12 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         // Lưu metadata chuẩn
         model.userData.instanceId = instanceId;
         model.userData.toolData = tool;
+        model.userData.toolType = model.userData.toolType || 'unknown';
+        model.userData.isHeatingSource = model.userData.isHeatingSource === true;
+        model.userData.heatingPower = Number(model.userData.heatingPower || 0);
+        model.userData.maxTemperature = Number(model.userData.maxTemperature || 25);
+        model.userData.isToggleable = model.userData.isToggleable === true;
+        model.userData.isOn = false;
         model.userData.originalScale = scaleFactor;
         model.userData.offsetToFloor = offsetToFloor;
 

@@ -12,6 +12,7 @@ from app.models.experiment_steps import ExpermentSteps
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select, delete, text
 from app.task.rag import ask_questions_with_plan
+from app.utils.tool_classifier import ensure_tools_metadata_columns
 from datetime import datetime
 import unicodedata
 import uuid
@@ -156,6 +157,7 @@ def _persist_experiment_plan_steps(session: Session, id_conversation, experiment
 
     try:
         _ensure_experiment_steps_columns(session)
+        ensure_tools_metadata_columns(session)
         session.exec(delete(ExpermentSteps).where(ExpermentSteps.id_conv == id_conversation))
 
         last_tool = None

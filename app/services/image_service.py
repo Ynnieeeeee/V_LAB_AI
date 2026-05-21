@@ -3,6 +3,7 @@ from app.config import SERPAPI_KEY
 from app.models.base_db import engine
 from sqlmodel import select, Session
 from app.models.tools import Tools
+from app.utils.tool_classifier import ensure_tools_metadata_columns
 
 def search_tool_image(tool_name_en: str):
     # Sử dụng query cực kỳ chi tiết để lấy ảnh sạch nhất, tránh "dính nền"
@@ -24,6 +25,8 @@ def search_tool_image(tool_name_en: str):
 
 def update_missing_images(engine):
     with Session(engine) as session:
+        ensure_tools_metadata_columns(session)
+        session.commit()
         statement = select(Tools).where(Tools.image_2d_url == None)
         pending_tools = session.exec(statement).all()
 

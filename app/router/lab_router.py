@@ -7,6 +7,7 @@ from app.models.base_db import engine, get_session
 from sqlmodel import Session, select
 from app.task.lab_task import start_3d_pipeline_task
 from app.utils.get_current_user import get_current_user
+from app.utils.tool_classifier import ensure_tools_metadata_columns
 
 router = APIRouter(prefix="/api/lab", tags=["Laboratory"])
 lab_service = LabServices()
@@ -50,7 +51,12 @@ async def generate_lab(
         response_data.append({
             "name": item["name_vi"],
             "quantity": item["quantity"],
-            "ready": item["model_3d_url"] is not None
+            "ready": item["model_3d_url"] is not None,
+            "tool_type": item.get("tool_type", "unknown"),
+            "is_heating_source": item.get("is_heating_source", False),
+            "heating_power": item.get("heating_power", 0),
+            "max_temperature": item.get("max_temperature", 25),
+            "is_toggleable": item.get("is_toggleable", False)
         })
 
         # Nếu chưa có model 3D, mới đưa vào hàng chờ Pipeline để tạo tự động
@@ -68,6 +74,9 @@ async def generate_lab(
 
 @router.get("/status")
 async def get_tool_status(id_conv: str, session: Session = Depends(get_session)):
+    ensure_tools_metadata_columns(session)
+    session.commit()
+
     # CHỈ LẤY dụng cụ của cuộc hội thoại hiện tại
     statement = select(Tools).where(
         Tools.id_conv == id_conv,

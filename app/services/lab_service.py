@@ -7,6 +7,7 @@ from app.models.conversations import Conversations
 from app.models.messages import Messages
 from app.schema.tool_response import LabToolList
 from app.models.base_db import engine
+from app.utils.tool_classifier import classify_tool_by_name, ensure_tools_metadata_columns
 from sqlmodel import select, Session
 import uuid
 
@@ -55,6 +56,8 @@ class LabServices:
 
         # Gộp tất cả vào một Session duy nhất
         with Session(engine) as session:
+            ensure_tools_metadata_columns(session)
+            session.commit()
             # 1. Lưu tin nhắn User
             user_msg = Messages(id_conv=id_conv, role="user", content=user_text)
             session.add(user_msg)
@@ -66,6 +69,7 @@ class LabServices:
                 return []
 
             for item in extracted_data.tools:
+                tool_meta = classify_tool_by_name(item.name_vi, item.name_en)
                 # tìm trong csdl: Để lấy Model 3D đã có sẵn (không lọc theo id_conv)
                 # Chỉ lọc theo tên và môn học để lấy link model
                 statement = select(Tools).where(
@@ -93,7 +97,12 @@ class LabServices:
                     metalness=template_tool.metalness if template_tool else 0.0,
                     is_glass=template_tool.is_glass if template_tool else False,
                     ior=template_tool.ior if template_tool else 1.5,
-                    transmission=template_tool.transmission if template_tool else 0.0
+                    transmission=template_tool.transmission if template_tool else 0.0,
+                    tool_type=tool_meta["tool_type"],
+                    is_heating_source=tool_meta["is_heating_source"],
+                    heating_power=tool_meta["heating_power"],
+                    max_temperature=tool_meta["max_temperature"],
+                    is_toggleable=tool_meta["is_toggleable"]
                 )
                 
                 session.add(new_tool)
@@ -106,7 +115,12 @@ class LabServices:
                     "name_en": item.name_en,
                     "quantity": item.quantity,
                     "model_3d_url": new_tool.model_3d_url,
-                    "subject_type": subject_code
+                    "subject_type": subject_code,
+                    "tool_type": new_tool.tool_type,
+                    "is_heating_source": new_tool.is_heating_source,
+                    "heating_power": new_tool.heating_power,
+                    "max_temperature": new_tool.max_temperature,
+                    "is_toggleable": new_tool.is_toggleable
                 })
             
             # 2. Lưu tin nhắn Bot

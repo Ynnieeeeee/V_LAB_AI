@@ -6,6 +6,7 @@ from app.models.base_db import engine
 from app.config import TRIPO_API_KEY
 from app.models.tools import Tools
 from app.services.vision_service import VisionService
+from app.utils.tool_classifier import ensure_tools_metadata_columns
 
 class MeshService:
     def __init__(self):
@@ -106,6 +107,8 @@ def run_3d_pipeline(engine):
     vision = VisionService()
     
     with Session(engine) as session:
+        ensure_tools_metadata_columns(session)
+        session.commit()
         statement = select(Tools).where(Tools.image_2d_url != None, Tools.model_3d_url == None)
         pending_tools = session.exec(statement).all()
 

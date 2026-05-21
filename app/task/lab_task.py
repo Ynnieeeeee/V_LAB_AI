@@ -2,6 +2,7 @@ from app.services.image_service import search_tool_image
 from app.services.mesh_service import MeshService
 from app.models.tools import Tools
 from app.models.base_db import engine
+from app.utils.tool_classifier import ensure_tools_metadata_columns
 from sqlmodel import Session
 import asyncio
 import trimesh
@@ -37,6 +38,8 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
 
     for t_id in tool_ids:
         with Session(engine) as session:
+            ensure_tools_metadata_columns(session)
+            session.commit()
             tool = session.get(Tools, t_id)
             if not tool: continue
 

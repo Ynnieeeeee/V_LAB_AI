@@ -369,9 +369,14 @@ export class PouringEffect {
             this._updateVolumeEffect(volume, target);
             
             // --- NẾU CÓ HIỆU ỨNG KHÍ, sinh bọt/khói từ MIỆNG DỤNG CỤ theo world-space ---
-            if (volume.userData.hasGasEffect) {
+            const shouldSpawnGasVisual = target
+                ? volume.userData.hasGasEffect === true && target.userData?.hasGasEffect === true
+                : volume.userData.hasGasEffect === true;
+            if (shouldSpawnGasVisual) {
                 const surfacePos = this._getContainerSurfaceWorldPosition(volume, target);
                 this.spawnSmokeEffect(surfacePos, target);
+            } else {
+                this.clearSmokeEffectForTarget(target);
             }
         });
 
@@ -696,6 +701,7 @@ export class PouringEffect {
 
     // Thêm hàm sinh hạt khí/bọt lơ lửng phía trên mặt cốc
     spawnSmokeEffect(pos, target = null) {
+        if (target && target.userData?.hasGasEffect !== true) return;
         for (let i = 0; i < 2; i++) { // Mỗi khung hình sinh ra 2 hạt ngẫu nhiên
             const p = new THREE.Mesh(this.smokeGeometry, this.smokeMaterial.clone());
             p.name = 'smoke_particle_effect';
@@ -712,9 +718,22 @@ export class PouringEffect {
             this.scene.add(p);
             this.smokeParticles.push({
                 mesh: p,
+                target,
                 velocity: new THREE.Vector3((Math.random() - 0.5) * 0.005, 0.015, (Math.random() - 0.5) * 0.005), // Bay ngược lên
                 life: 1.0 // Tuổi thọ hạt
             });
+        }
+    }
+
+    clearSmokeEffectForTarget(target = null) {
+        for (let i = this.smokeParticles.length - 1; i >= 0; i--) {
+            const p = this.smokeParticles[i];
+            if (target && p.target !== target) continue;
+            this.scene.remove(p.mesh);
+            p.mesh.geometry?.dispose?.();
+            if (Array.isArray(p.mesh.material)) p.mesh.material.forEach(material => material.dispose?.());
+            else p.mesh.material?.dispose?.();
+            this.smokeParticles.splice(i, 1);
         }
     }
 

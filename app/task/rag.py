@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 NO_EXPERIMENT_DATA_MESSAGE = "Không tìm thấy dữ liệu thí nghiệm phù hợp."
 MIN_VECTOR_SCORE = 0.08
 MIN_LEXICAL_OVERLAP = 0.05
+MIN_SPECIFIC_OVERLAP = 0.34
+MIN_REACTION_FUZZY_SCORE = 2.2
 MAX_SELECTED_CONTEXT_CHARS = 12000
 REACTION_DATABASE_PATH = Path(__file__).resolve().parents[1] / "src" / "assets" / "threejs" / "ReactionDatabase.js"
 
@@ -58,6 +60,8 @@ class KnowledgeDocument:
     score: float | None
     source_table: str
     lexical_overlap: float = 0.0
+    specific_overlap: float = 0.0
+    signal_overlap: float = 0.0
     selected_score: float = 0.0
 
 
@@ -137,6 +141,8 @@ STOPWORDS = {
     "nhan", "biet", "dieu", "che", "phan", "ung", "hoa", "hoc", "hay",
     "giup", "minh", "trong", "the", "nao", "dung", "chat", "dung", "dich",
     "khong", "co", "du", "lieu", "lien", "quan", "bat", "ky", "mot", "ve",
+    "toi", "muon", "can", "xin", "thu", "tinh", "khi", "cua", "cac", "bang",
+    "tieng", "viet", "hay", "cho", "biet", "tao", "ra", "tu", "va",
 }
 
 
@@ -154,20 +160,109 @@ def _lexical_overlap(query: str, content: str) -> float:
     return matched / len(terms)
 
 
+def _specific_query_terms(query: str) -> set[str]:
+    terms = _query_terms(query)
+    normalized_query = _normalize_text(query)
+    compact_query = _compact_key(query)
+    formula_terms = set(re.findall(r"[a-z]{1,3}\d[a-z0-9]*", normalized_query))
+    important = {
+        term for term in terms
+        if term in formula_terms
+        or len(term) >= 4
+        or term in {"h2", "o2", "co2", "cl2", "nh3", "hcl", "naoh", "agno3", "c2h4"}
+    }
+
+    if {"ethylene", "ethene", "etilen", "etylen", "c2h4"} & terms or "c2h4" in compact_query:
+        important.update({"ethylene", "ethene", "etilen", "etylen", "c2h4"})
+    if "trang bac" in normalized_query or "trang guong" in normalized_query or "tollens" in normalized_query:
+        important.update({"trang", "bac", "guong", "tollens", "agno3"})
+    return {term for term in important if term and term not in STOPWORDS}
+
+
+def _specific_overlap(query: str, content: str) -> float:
+    terms = _specific_query_terms(query)
+    if not terms:
+        return 0.0
+    content_norm = _normalize_text(content)
+    content_compact = _compact_key(content)
+    matched = 0
+    for term in terms:
+        term_compact = _compact_key(term)
+        if term in content_norm or (term_compact and term_compact in content_compact):
+            matched += 1
+    return matched / len(terms)
+
+
+def _query_signal_groups(query: str) -> list[set[str]]:
+    normalized_query = _normalize_text(query)
+    groups: list[set[str]] = []
+
+    if re.search(r"\bc2h4\b", normalized_query) or any(term in normalized_query for term in ["ethylene", "ethene", "etilen", "etylen"]):
+        groups.append({"c2h4", "ethylene", "ethene", "etilen", "etylen"})
+
+    if "trang bac" in normalized_query or "trang guong" in normalized_query or "tollens" in normalized_query:
+        groups.append({"trang bac", "trang guong", "tollens", "agno3", "bac nitrat"})
+
+    formula_terms = set(re.findall(r"\b[a-z]{1,3}\d[a-z0-9]*\b", normalized_query))
+    for formula in formula_terms:
+        if formula not in {"c2h4"}:
+            groups.append({formula})
+
+    return groups
+
+
+def _signal_overlap(query: str, content: str) -> float:
+    groups = _query_signal_groups(query)
+    if not groups:
+        return 0.0
+    content_norm = _normalize_text(content)
+    content_compact = _compact_key(content)
+    matched = 0
+    for group in groups:
+        if any(term in content_norm or _compact_key(term) in content_compact for term in group):
+            matched += 1
+    return matched / len(groups)
+
+
 def _rerank_and_select(query: str, docs: list[KnowledgeDocument], k: int = 4) -> list[KnowledgeDocument]:
     ranked = []
+    specific_terms = _specific_query_terms(query)
+    signal_groups = _query_signal_groups(query)
     for doc in docs:
         doc.lexical_overlap = _lexical_overlap(query, doc.content)
+        doc.specific_overlap = _specific_overlap(query, doc.content)
+        doc.signal_overlap = _signal_overlap(query, doc.content)
         vector_component = doc.score if doc.score is not None else 0.0
-        doc.selected_score = vector_component + doc.lexical_overlap
+        doc.selected_score = vector_component + doc.lexical_overlap + (doc.specific_overlap * 2) + (doc.signal_overlap * 2)
         ranked.append(doc)
 
     ranked.sort(key=lambda item: item.selected_score, reverse=True)
+
+    def relevant(doc: KnowledgeDocument) -> bool:
+        has_generic_match = (
+            (doc.score is not None and doc.score >= MIN_VECTOR_SCORE)
+            or doc.lexical_overlap >= MIN_LEXICAL_OVERLAP
+        )
+        if not has_generic_match:
+            return False
+        if signal_groups and doc.signal_overlap <= 0 and doc.specific_overlap < MIN_SPECIFIC_OVERLAP:
+            return False
+        if specific_terms and doc.specific_overlap < MIN_SPECIFIC_OVERLAP and doc.signal_overlap <= 0:
+            return False
+        return True
+
     selected = [
         doc for doc in ranked[:k]
-        if (doc.score is not None and doc.score >= MIN_VECTOR_SCORE) or doc.lexical_overlap >= MIN_LEXICAL_OVERLAP
+        if relevant(doc)
     ]
-    if not selected and ranked and ranked[0].selected_score > 0 and ranked[0].lexical_overlap > 0:
+    if (
+        not selected
+        and ranked
+        and not specific_terms
+        and not signal_groups
+        and ranked[0].selected_score > 0
+        and ranked[0].lexical_overlap > 0
+    ):
         selected = [ranked[0]]
     logger.info(
         "RAG top_k_results=%s",
@@ -177,6 +272,8 @@ def _rerank_and_select(query: str, docs: list[KnowledgeDocument], k: int = 4) ->
                 "source_table": doc.source_table,
                 "similarity_score": doc.score,
                 "lexical_overlap": doc.lexical_overlap,
+                "specific_overlap": doc.specific_overlap,
+                "signal_overlap": doc.signal_overlap,
                 "selected_score": doc.selected_score,
                 "metadata": doc.metadata,
             }
@@ -191,6 +288,8 @@ def _rerank_and_select(query: str, docs: list[KnowledgeDocument], k: int = 4) ->
                 "source_table": doc.source_table,
                 "similarity_score": doc.score,
                 "lexical_overlap": doc.lexical_overlap,
+                "specific_overlap": doc.specific_overlap,
+                "signal_overlap": doc.signal_overlap,
                 "selected_score": doc.selected_score,
             }
             for doc in ranked[:k]
@@ -287,11 +386,19 @@ def _retrieve_from_pgvector_fallback(query: str, subject: str, k: int = 8) -> li
     if not fallback_vector_store:
         return []
     try:
+        search_query = f"query: {query}"
+        subject_filter = {"subject": _subject_key(subject)}
         results = fallback_vector_store.similarity_search_with_score(
-            f"query: {query}",
+            search_query,
             k=k,
-            filter={"subject": _subject_key(subject)},
+            filter=subject_filter,
         )
+        if not results:
+            logger.info(
+                "[MascotRAG] langchain_pg_embedding no results with filter=%s; retrying without metadata filter",
+                subject_filter,
+            )
+            results = fallback_vector_store.similarity_search_with_score(search_query, k=k)
     except Exception as exc:
         logger.exception("langchain_pg_embedding fallback retrieval failed: %s", exc)
         return []
@@ -336,6 +443,16 @@ def retrieve_knowledge_documents(query: str, subject: str, k: int = 8) -> list[K
         logger.info("[MascotRAG] bg selected: %s", [_doc_brief(doc) for doc in selected])
         return selected
     logger.info("[MascotRAG] bg selected: none")
+    logger.info("[MascotRAG] trying langchain_pg_embedding fallback")
+
+    pg_docs = _retrieve_from_pgvector_fallback(query, subject, k)
+    selected = _rerank_and_select(query, pg_docs)
+    if selected:
+        logger.info("RAG selected_context_source=langchain_pg_embedding")
+        logger.info("[MascotRAG] pg selected: %s", [_doc_brief(doc) for doc in selected])
+        return selected
+
+    logger.info("[MascotRAG] pg selected: none")
     return []
 
 
@@ -345,6 +462,8 @@ def _doc_brief(doc: KnowledgeDocument) -> dict:
         "source_table": doc.source_table,
         "score": doc.score,
         "lexical_overlap": doc.lexical_overlap,
+        "specific_overlap": doc.specific_overlap,
+        "signal_overlap": doc.signal_overlap,
         "selected_score": doc.selected_score,
         "metadata": doc.metadata,
     }
@@ -374,7 +493,7 @@ def _serialize_context(docs: list[KnowledgeDocument]) -> str:
 
 @tool
 def retrieved_context(query: str, subject: str):
-    """Tìm kiếm thông tin thí nghiệm trong langchain_bg_embedding."""
+    """Tìm kiếm thông tin thí nghiệm trong langchain_bg_embedding, rồi fallback sang langchain_pg_embedding."""
     return _serialize_context(retrieve_knowledge_documents(query, subject, k=8))
 
 
@@ -392,7 +511,63 @@ agent = create_agent(model, [retrieved_context], system_prompt=prompt)
 
 
 CHEMICAL_REGISTRY_CACHE: dict[str, dict] = {"chemicals": {}, "loaded": False}
-REACTION_DATABASE_CACHE: dict[str, object] = {"rules": None, "aliases": None}
+REACTION_DATABASE_CACHE: dict[str, object] = {
+    "rules": None,
+    "rules_mtime": None,
+    "aliases": None,
+    "aliases_mtime": None,
+}
+
+REACTION_RULE_METADATA: dict[str, dict] = {
+    "silver_mirror_from_tollens_glucose_heat": {
+        "name": "Phản ứng tráng bạc",
+        "aliases": [
+            "phản ứng tráng bạc",
+            "tráng bạc",
+            "tráng gương",
+            "gương bạc",
+            "Tollens",
+            "thuốc thử Tollens",
+            "bạc amoniac",
+            "silver mirror",
+        ],
+        "keywords": [
+            "AgNO3",
+            "NH3",
+            "aldehyde",
+            "andehit",
+            "glucose",
+            "glucozơ",
+            "[Ag(NH3)2]OH",
+            "bạc amoniac",
+        ],
+        "phenomenon": "Xuất hiện lớp bạc sáng bám trên thành ống nghiệm.",
+    },
+    "ba_cl2_h2so4": {
+        "name": "Phản ứng Bari Clorua và Axit Sunfuric",
+        "aliases": [
+            "bari clorua axit sunfuric",
+            "BaCl2 H2SO4",
+            "bari sunfat",
+            "BaSO4",
+        ],
+        "keywords": ["BaCl2", "H2SO4", "BaSO4", "kết tủa trắng"],
+        "phenomenon": "Xuất hiện kết tủa trắng đặc Bari Sunfat.",
+    },
+    "cu_so4_naoh": {
+        "name": "Phản ứng Đồng(II) Sunfat và Natri Hydroxit",
+        "aliases": [
+            "đồng sunfat natri hidroxit",
+            "đồng sunfat natri hydroxit",
+            "Đồng(II) Sunfat Natri Hydroxit",
+            "CuSO4 NaOH",
+            "đồng hidroxit",
+            "đồng hydroxit",
+        ],
+        "keywords": ["CuSO4", "NaOH", "Cu(OH)2", "kết tủa xanh"],
+        "phenomenon": "Xuất hiện kết tủa xanh lam keo Đồng Hydroxit.",
+    },
+}
 
 
 def _chemical_alias_candidates(row_data: dict) -> list[str]:
@@ -933,6 +1108,63 @@ def validate_plan_against_documents(plan: dict | None, docs: list[KnowledgeDocum
     return result
 
 
+def _plan_search_text(plan: dict | None) -> str:
+    if not plan:
+        return ""
+    values = [
+        plan.get("experiment_id"),
+        plan.get("reaction_id"),
+        plan.get("success_reaction_id"),
+        plan.get("title"),
+        plan.get("phenomenon"),
+        plan.get("success_message"),
+        *(plan.get("required_tools") or []),
+    ]
+    for chemical in plan.get("required_chemicals") or []:
+        values.extend([
+            chemical.get("name_vi"),
+            chemical.get("name_en"),
+            chemical.get("canonical_id"),
+        ])
+    for step in plan.get("steps") or []:
+        values.extend([
+            step.get("chemical_name_vi"),
+            step.get("canonical_id"),
+            step.get("action_description"),
+        ])
+    return " ".join(str(value) for value in values if value)
+
+
+def validate_plan_matches_query(plan: dict | None, query: str) -> dict:
+    if not plan:
+        return {"ok": True, "issues": []}
+    specific_terms = _specific_query_terms(query)
+    signal_groups = _query_signal_groups(query)
+    if not specific_terms and not signal_groups:
+        return {"ok": True, "issues": []}
+
+    plan_text = _plan_search_text(plan)
+    specific = _specific_overlap(query, plan_text)
+    signal = _signal_overlap(query, plan_text)
+    issues = []
+    if signal_groups and signal <= 0 and specific < MIN_SPECIFIC_OVERLAP:
+        issues.append(
+            f"plan không khớp tín hiệu câu hỏi: signal_overlap={signal:.2f}, specific_overlap={specific:.2f}"
+        )
+    if specific_terms and specific < MIN_SPECIFIC_OVERLAP and signal <= 0:
+        issues.append(
+            f"plan thiếu từ khóa đặc trưng của câu hỏi: {sorted(specific_terms)}"
+        )
+    result = {
+        "ok": not issues,
+        "issues": issues,
+        "specific_overlap": specific,
+        "signal_overlap": signal,
+    }
+    logger.info("RAG consistency plan_vs_user_query=%s", result)
+    return result
+
+
 def _find_balanced_end(source: str, start: int, open_char: str, close_char: str) -> int:
     depth = 0
     quote = None
@@ -1033,12 +1265,17 @@ def _parse_reaction_rule(rule_source: str) -> dict | None:
         return None
     conditions_source = _js_object_field(rule_source, "conditions") or ""
     result_data = _parse_reaction_result(rule_source)
+    metadata = REACTION_RULE_METADATA.get(reaction_id, {})
     return {
         "id": reaction_id,
+        "name": _js_string_field(rule_source, "name") or metadata.get("name"),
+        "aliases": _dedupe_names([*_js_array_field(rule_source, "aliases"), *(metadata.get("aliases") or [])]),
+        "keywords": _dedupe_names([*_js_array_field(rule_source, "keywords"), *(metadata.get("keywords") or [])]),
         "priority": _js_number_field(rule_source, "priority") or 0,
         "reactants": _js_array_field(rule_source, "reactants"),
         "requiredExistingSpecies": _js_array_field(rule_source, "requiredExistingSpecies"),
         "products": _js_array_field(rule_source, "products"),
+        "phenomenon": _js_string_field(rule_source, "phenomenon") or metadata.get("phenomenon"),
         "conditions": {
             "minTemperature": _js_number_field(conditions_source, "minTemperature"),
             "maxTemperature": _js_number_field(conditions_source, "maxTemperature"),
@@ -1077,7 +1314,11 @@ def _extract_reaction_rule_sources(source: str) -> list[str]:
 
 def _parse_reaction_database_rules() -> list[dict]:
     cached = REACTION_DATABASE_CACHE.get("rules")
-    if cached is not None:
+    try:
+        mtime = REACTION_DATABASE_PATH.stat().st_mtime
+    except Exception:
+        mtime = None
+    if cached is not None and REACTION_DATABASE_CACHE.get("rules_mtime") == mtime:
         return cached
     try:
         source = REACTION_DATABASE_PATH.read_text(encoding="utf-8")
@@ -1091,12 +1332,17 @@ def _parse_reaction_database_rules() -> list[dict]:
         if rule and rule.get("reactants"):
             rules.append(rule)
     REACTION_DATABASE_CACHE["rules"] = rules
+    REACTION_DATABASE_CACHE["rules_mtime"] = mtime
     return rules
 
 
 def _parse_reaction_database_aliases() -> dict[str, set[str]]:
     cached = REACTION_DATABASE_CACHE.get("aliases")
-    if cached is not None:
+    try:
+        mtime = REACTION_DATABASE_PATH.stat().st_mtime
+    except Exception:
+        mtime = None
+    if cached is not None and REACTION_DATABASE_CACHE.get("aliases_mtime") == mtime:
         return cached
     try:
         source = REACTION_DATABASE_PATH.read_text(encoding="utf-8")
@@ -1116,6 +1362,7 @@ def _parse_reaction_database_aliases() -> dict[str, set[str]]:
             continue
         aliases_by_canonical.setdefault(key, set()).update({alias, canonical})
     REACTION_DATABASE_CACHE["aliases"] = aliases_by_canonical
+    REACTION_DATABASE_CACHE["aliases_mtime"] = mtime
     return aliases_by_canonical
 
 
@@ -1189,14 +1436,16 @@ def _reaction_query_terms(query: str) -> set[str]:
         terms.update({"hidro", "hydro", "hydrogen", "h2"})
     if "ket tua" in normalized_query:
         terms.add("precipitate")
-    if "khi" in normalized_query:
-        terms.add("gas")
     return {term for term in terms if term and term not in STOPWORDS}
 
 
 def _reaction_search_text(rule: dict) -> str:
     values = [
         rule.get("id", "").replace("_", " "),
+        rule.get("name") or "",
+        *(rule.get("aliases") or []),
+        *(rule.get("keywords") or []),
+        rule.get("phenomenon") or "",
         *rule.get("reactants", []),
         *rule.get("requiredExistingSpecies", []),
         *rule.get("products", []),
@@ -1217,6 +1466,14 @@ def _score_reaction_match(rule: dict, query: str) -> float:
 
     search_text = _normalize_text(_reaction_search_text(rule))
     search_compact = _compact_key(search_text)
+    specific_terms = _specific_query_terms(query)
+    signal_groups = _query_signal_groups(query)
+    if specific_terms or signal_groups:
+        specific_match = _specific_overlap(query, search_text)
+        signal_match = _signal_overlap(query, search_text)
+        if specific_match < MIN_SPECIFIC_OVERLAP and signal_match <= 0:
+            return 0.0
+
     score = 0.0
 
     for term in query_terms:
@@ -1243,26 +1500,131 @@ def _score_reaction_match(rule: dict, query: str) -> float:
         score += 2.0
     if "ket tua" in query_norm and rule.get("result", {}).get("precipitate"):
         score += 2.0
-    if any(term in query_terms for term in {"khi", "gas", "hidro", "hydro", "h2"}) and rule.get("result", {}).get("gas"):
+    if any(term in query_terms for term in {"hidro", "hydro", "hydrogen", "h2", "co2", "o2", "cl2", "nh3", "so2", "no2"}) and rule.get("result", {}).get("gas"):
         score += 1.0
 
     priority = float(rule.get("priority") or 0)
     return score + min(priority, 150) / 1000.0
 
 
+def _field_exact_matches_query(value: str, query_norm: str, query_compact: str) -> bool:
+    value_norm = _normalize_text(value)
+    value_compact = _compact_key(value)
+    if not value_norm or value_norm in STOPWORDS:
+        return False
+    tokens = _search_tokens(value_norm)
+    is_formula = bool(re.fullmatch(r"[a-z]{1,3}\d[a-z0-9]*", value_norm))
+    is_distinct_phrase = len(tokens) >= 2 or len(value_norm) >= 7 or is_formula
+    if not is_distinct_phrase:
+        return False
+    if is_formula:
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(value_norm)}(?![a-z0-9])", query_norm))
+    return value_norm in query_norm or (value_compact and value_compact in query_compact)
+
+
+def _reaction_exact_keyword_match(rule: dict, query: str) -> tuple[bool, list[str]]:
+    query_norm = _normalize_text(query)
+    query_compact = _compact_key(query)
+    reasons: list[str] = []
+
+    for field_name in ["name", "phenomenon"]:
+        value = rule.get(field_name)
+        if value and _field_exact_matches_query(value, query_norm, query_compact):
+            reasons.append(f"{field_name}:{value}")
+
+    for field_name in ["aliases", "keywords"]:
+        for value in rule.get(field_name) or []:
+            if _field_exact_matches_query(value, query_norm, query_compact):
+                reasons.append(f"{field_name}:{value}")
+
+    chemical_matches = []
+    chemical_specs = [
+        *rule.get("reactants", []),
+        *rule.get("requiredExistingSpecies", []),
+        *rule.get("products", []),
+    ]
+    query_terms = _reaction_query_terms(query)
+    for spec in chemical_specs:
+        for option in _reaction_alternatives(spec):
+            aliases = _reaction_name_aliases(option)
+            if any(_reaction_alias_matches_query(alias, query_norm, query_compact, query_terms) for alias in aliases):
+                chemical_matches.append(option)
+                break
+
+    unique_chemical_matches = _dedupe_names(chemical_matches)
+    if len(unique_chemical_matches) >= 2:
+        reasons.append("chemicals:" + ", ".join(unique_chemical_matches))
+
+    return bool(reasons), reasons
+
+
 def search_reaction_database(question: str) -> dict | None:
     logger.info("[MascotFallback] searching ReactionDatabase.js")
-    candidates = []
+    logger.info("[MascotSearch] query: %s", question)
+    normalized_query = _normalize_text(question)
+    logger.info("[MascotSearch] normalized query: %s", normalized_query)
+
+    exact_matches = []
+    fuzzy_scores = []
     for rule in _parse_reaction_database_rules():
         score = _score_reaction_match(rule, question)
-        if score > 0:
-            candidates.append((score, rule))
+        has_exact, exact_reasons = _reaction_exact_keyword_match(rule, question)
+        fuzzy_scores.append((score, rule, exact_reasons))
+        if has_exact:
+            exact_matches.append((score, rule, exact_reasons))
+
+    logger.info(
+        "[MascotSearch] exact keyword matches: %s",
+        [
+            {
+                "id": rule.get("id"),
+                "name": rule.get("name"),
+                "score": score,
+                "reasons": reasons,
+            }
+            for score, rule, reasons in exact_matches
+        ],
+    )
+
+    if exact_matches:
+        exact_matches.sort(key=lambda item: item[0], reverse=True)
+        matched_score, matched, reasons = exact_matches[0]
+        logger.info(
+            "[MascotSearch] fuzzy scores: %s",
+            [
+                {"id": rule.get("id"), "name": rule.get("name"), "score": score}
+                for score, rule, _ in sorted(fuzzy_scores, key=lambda item: item[0], reverse=True)[:8]
+            ],
+        )
+        logger.info("[MascotSearch] selected reaction: %s", matched.get("name") or matched.get("id"))
+        logger.info("[MascotSearch] selected reason: exact_keyword:%s", reasons)
+        logger.info(
+            "[MascotFallback] matched reaction: %s",
+            {
+                "id": matched.get("id"),
+                "name": matched.get("name"),
+                "score": matched_score,
+                "reactants": matched.get("reactants"),
+                "products": matched.get("products"),
+            },
+        )
+        return matched
+
+    candidates = [(score, rule) for score, rule, _ in fuzzy_scores if score > 0]
     candidates.sort(key=lambda item: item[0], reverse=True)
+    logger.info(
+        "[MascotSearch] fuzzy scores: %s",
+        [
+            {"id": rule.get("id"), "name": rule.get("name"), "score": score}
+            for score, rule in candidates[:8]
+        ],
+    )
     logger.info(
         "[MascotFallback] ReactionDatabase candidates: %s",
         [
             {
                 "id": rule.get("id"),
+                "name": rule.get("name"),
                 "score": score,
                 "reactants": rule.get("reactants"),
                 "products": rule.get("products"),
@@ -1271,14 +1633,19 @@ def search_reaction_database(question: str) -> dict | None:
             for score, rule in candidates[:8]
         ],
     )
-    if not candidates or candidates[0][0] < 1.0:
+    if not candidates or candidates[0][0] < MIN_REACTION_FUZZY_SCORE:
+        logger.info("[MascotSearch] selected reaction: None")
+        logger.info("[MascotSearch] selected reason: fuzzy_below_threshold")
         logger.info("[MascotFallback] matched reaction: none")
         return None
     matched = candidates[0][1]
+    logger.info("[MascotSearch] selected reaction: %s", matched.get("name") or matched.get("id"))
+    logger.info("[MascotSearch] selected reason: fuzzy_score:%s", candidates[0][0])
     logger.info(
         "[MascotFallback] matched reaction: %s",
         {
             "id": matched.get("id"),
+            "name": matched.get("name"),
             "score": candidates[0][0],
             "reactants": matched.get("reactants"),
             "products": matched.get("products"),
@@ -1290,6 +1657,8 @@ def search_reaction_database(question: str) -> dict | None:
 def _reaction_database_phenomenon(rule: dict) -> str:
     result_data = rule.get("result") or {}
     parts = []
+    if rule.get("phenomenon"):
+        parts.append(rule["phenomenon"])
     if result_data.get("mascotText"):
         parts.append(result_data["mascotText"])
     if result_data.get("equation"):
@@ -1300,6 +1669,8 @@ def _reaction_database_phenomenon(rule: dict) -> str:
 
 
 def _reaction_database_title(rule: dict, query: str) -> str:
+    if rule.get("name"):
+        return rule["name"]
     reactants = [_choose_reaction_alternative(spec, query) for spec in rule.get("reactants", [])]
     reactants = [name for name in reactants if name]
     products = [_choose_reaction_alternative(spec, query) for spec in rule.get("products", [])]
@@ -1433,9 +1804,13 @@ def _build_plan_from_reaction_database(rule: dict, question: str) -> dict:
             "lexical_overlap": None,
             "selected_score": None,
             "metadata": {
+                "name": rule.get("name"),
+                "aliases": rule.get("aliases"),
+                "keywords": rule.get("keywords"),
                 "reactants": rule.get("reactants"),
                 "products": rule.get("products"),
                 "conditions": rule.get("conditions"),
+                "phenomenon": rule.get("phenomenon"),
             },
         }],
     }
@@ -1448,12 +1823,23 @@ def build_plan_from_reaction_database(question: str) -> tuple[dict | None, str |
     if not rule:
         return None, None, {"ok": False, "issues": ["no_reaction_database_match"]}
     plan = _build_plan_from_reaction_database(rule, question)
+    query_validation = validate_plan_matches_query(plan, question)
+    if not query_validation["ok"]:
+        logger.info("[MascotFallback] rejected ReactionDatabase plan by query validation: %s", query_validation)
+        return None, None, {
+            "ok": False,
+            "issues": ["reaction_database_plan_not_matching_query", *query_validation.get("issues", [])],
+            "source": "ReactionDatabase.js",
+            "reaction_id": rule.get("id"),
+            "plan_vs_user_query": query_validation,
+        }
     answer_text = _format_answer_from_plan(plan)
     return plan, answer_text, {
         "ok": True,
         "issues": [],
         "source": "ReactionDatabase.js",
         "reaction_id": rule.get("id"),
+        "plan_vs_user_query": query_validation,
     }
 
 
@@ -1478,7 +1864,16 @@ def build_experiment_plan(
         return None, None, validation
 
     plan = _build_plan_from_payload(payload, docs)
+    query_validation = validate_plan_matches_query(plan, question)
+    if not query_validation["ok"]:
+        logger.info("RAG rejected extracted plan by query validation: %s", query_validation)
+        return None, None, {
+            "ok": False,
+            "issues": ["retrieved_plan_not_matching_query", *query_validation.get("issues", [])],
+            "plan_vs_user_query": query_validation,
+        }
     answer_text = _format_answer_from_plan(plan)
+    validation = {**validation, "plan_vs_user_query": query_validation}
     return plan, answer_text, validation
 
 
@@ -1538,6 +1933,7 @@ def ask_questions_with_plan(question: str, selected_subject: str, history: list 
                     "reaction_database_fallback": fallback_validation,
                     "answer_text_vs_plan": validate_answer_matches_plan(fallback_answer, fallback_plan),
                     "plan_vs_reaction_database": {"ok": True, "issues": []},
+                    "plan_vs_user_query": validate_plan_matches_query(fallback_plan, question),
                 }
                 logger.info("[MascotFallback] final source: ReactionDatabase.js")
                 logger.info("RAG consistency validation result=%s", validations)
@@ -1569,6 +1965,7 @@ def ask_questions_with_plan(question: str, selected_subject: str, history: list 
             "extraction": extraction_validation,
             "answer_text_vs_plan": validate_answer_matches_plan(answer_text, plan),
             "plan_vs_retrieved_context": validate_plan_against_documents(plan, docs),
+            "plan_vs_user_query": validate_plan_matches_query(plan, question),
         }
         logger.info("[MascotFallback] final source: langchain_bg_embedding")
         logger.info("RAG consistency validation result=%s", validations)

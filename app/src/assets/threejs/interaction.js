@@ -29,6 +29,7 @@ import {
     shouldEmitSmokeOrGas,
     reactionGasDebug
 } from './reactionGasUtils.js';
+import { canToggleHeatingSource, toggleHeatingSource } from './HeatingManager.js';
 const THREE = three;
 
 function isSolidChemical(obj) {
@@ -268,6 +269,17 @@ const movePlane = new three.Plane(new three.Vector3(0, 1, 0), 0);
 const planeIntersectPoint = new three.Vector3();
 let selectedObjectForMenu = null;
 let draggedObject = null;
+
+function toggleHeatingForObject(object) {
+    if (!canToggleHeatingSource(object)) {
+        triggerMascotSpeech('Dụng cụ này không phải nguồn nhiệt có thể bật/tắt.');
+        return false;
+    }
+    const isOn = toggleHeatingSource(object);
+    const name = object.userData.toolData?.name_tool_vi || object.userData.toolData?.name_tool_en || 'nguồn nhiệt';
+    triggerMascotSpeech(isOn ? `Đã bật ${name}.` : `Đã tắt ${name}.`);
+    return true;
+}
 
 export let pouringEffect;
 let lastPouredTarget = null;
@@ -553,6 +565,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             isInspectingRight = true;
         } else if (key === 'r') {
             isInspectingLeft = true;
+        } else if (key === 'h') {
+            const heldObj = heldObjectRight || heldObjectLeft;
+            if (heldObj) toggleHeatingForObject(heldObj);
         }
     });
 
@@ -1137,7 +1152,12 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 }
 
                 // hiệu ứng khí chỉ bật khi phản ứng có sản phẩm khí/flag gas-smoke-vapor rõ ràng.
-                volume.userData.hasGasEffect = shouldEmitSmokeOrGas(reaction);
+                const allowGasVisual = shouldEmitSmokeOrGas(reaction);
+                volume.userData.hasGasEffect = allowGasVisual;
+                targetObject.userData.hasGasEffect = allowGasVisual;
+                if (!allowGasVisual) {
+                    pouringEffect.clearSmokeEffectForTarget?.(targetObject);
+                }
 
                 // cháy
                 volume.userData.hasFireEffect =
@@ -1269,6 +1289,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     replaceIdentity: false,
                     forceSourceColor: false
                 });
+                target.userData.hasGasEffect = false;
+                pouringEffect.clearSmokeEffectForTarget?.(target);
                 target.userData.isReacting = false;
                 return;
             }
@@ -1372,6 +1394,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     // Xử lý nút Phóng to / Thu nhỏ trong Context Menu
     const zoomInBtn = document.getElementById('zoom-in-btn');
     const zoomOutBtn = document.getElementById('zoom-out-btn');
+    const toggleHeatBtn = document.getElementById('toggle-heat-btn');
 
     if (zoomInBtn) {
         zoomInBtn.onclick = () => {
@@ -1403,6 +1426,15 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         };
     }
 
+    if (toggleHeatBtn) {
+        toggleHeatBtn.onclick = () => {
+            if (selectedObjectForMenu) {
+                toggleHeatingForObject(selectedObjectForMenu);
+            }
+            contextmenu.classList.add('hidden');
+        };
+    }
+
     // Ẩn menu khi click ra ngoài
     window.addEventListener('click', (e) => {
         if (!e.target.closest('#context-menu')) {
@@ -1420,6 +1452,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (intersects.length > 0) {
             selectedObjectForMenu = resolveDraggableRoot(intersects[0].object);
             if (!selectedObjectForMenu) return;
+            if (toggleHeatBtn) {
+                toggleHeatBtn.classList.toggle('hidden', !canToggleHeatingSource(selectedObjectForMenu));
+            }
             contextmenu.style.top = `${e.clientY}px`;
             contextmenu.style.left = `${e.clientX}px`;
             contextmenu.classList.remove('hidden');

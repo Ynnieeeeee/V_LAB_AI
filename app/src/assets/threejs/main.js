@@ -8,7 +8,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
 import { initControls } from './controls.js';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation } from './interaction.js';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js';
 import { initChatEvents } from '../js/chatEvents.js';
 import { initLabLogic } from './lab_logic.js';
 import { initLights } from './lights.js';
@@ -16,6 +16,7 @@ import { initEnvironment } from './environment.js';
 import { initMascot, updateMascot } from './mascot.js';
 import { setupChemicalCabinet } from './cabinetChemical.js';
 import { pouringEffect, pouringState } from './interaction.js';
+import { createHeatingManager } from './HeatingManager.js';
 
 const scene = new three.Scene();
 scene.background = new three.Color(0x0f172a);
@@ -88,10 +89,13 @@ initInteractionEvents(camera, controlsManager, scene);
 initLights(scene, renderer);
 initEnvironment(scene);
 initMascot(scene, camera);
+const heatingManager = createHeatingManager(scene, { getObjects: () => draggableObjects });
+window.heatingManager = heatingManager;
 
 const loader = new GLTFLoader();
 const modelPath = './assets/models/';
 let chemicalCabinet = null;
+const frameClock = new three.Clock();
 
 export async function loadChemistryCabinet() {
     if (chemicalCabinet) {
@@ -133,10 +137,12 @@ loadLaboratoryModels();
 
 function animate() {
     renderer.setAnimationLoop(() => {
+        const delta = Math.min(0.05, frameClock.getDelta());
         if (controlsManager.orbit.enabled) controlsManager.orbit.update();
         const isMoving = controlsManager.updateMovement();
         if (controlsManager.fps.isLocked) updateArmsAnimation(performance.now() / 1000, isMoving);
         updateMascot();
+        heatingManager.update(delta);
         if (window.checkPouringCollision) window.checkPouringCollision();
         if (pouringEffect) pouringEffect.update(pouringState.currentPourTargetPos);
         composer.render();
