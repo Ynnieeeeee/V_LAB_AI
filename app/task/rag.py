@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import json
 import logging
+from pathlib import Path
 import re
 import unicodedata
 
@@ -17,9 +18,10 @@ from app.config import DATABASE_URL, HF_TOKEN
 logger = logging.getLogger(__name__)
 
 NO_EXPERIMENT_DATA_MESSAGE = "Không tìm thấy dữ liệu thí nghiệm phù hợp."
-MIN_VECTOR_SCORE = 0.18
-MIN_LEXICAL_OVERLAP = 0.12
+MIN_VECTOR_SCORE = 0.08
+MIN_LEXICAL_OVERLAP = 0.05
 MAX_SELECTED_CONTEXT_CHARS = 12000
+REACTION_DATABASE_PATH = Path(__file__).resolve().parents[1] / "src" / "assets" / "threejs" / "ReactionDatabase.js"
 
 llm = HuggingFaceEndpoint(
     repo_id="Qwen/Qwen2.5-7B-Instruct",
@@ -134,6 +136,7 @@ STOPWORDS = {
     "thi", "nghiem", "thuc", "hien", "lam", "cach", "cho", "voi", "va",
     "nhan", "biet", "dieu", "che", "phan", "ung", "hoa", "hoc", "hay",
     "giup", "minh", "trong", "the", "nao", "dung", "chat", "dung", "dich",
+    "khong", "co", "du", "lieu", "lien", "quan", "bat", "ky", "mot", "ve",
 }
 
 
@@ -164,6 +167,8 @@ def _rerank_and_select(query: str, docs: list[KnowledgeDocument], k: int = 4) ->
         doc for doc in ranked[:k]
         if (doc.score is not None and doc.score >= MIN_VECTOR_SCORE) or doc.lexical_overlap >= MIN_LEXICAL_OVERLAP
     ]
+    if not selected and ranked and ranked[0].selected_score > 0 and ranked[0].lexical_overlap > 0:
+        selected = [ranked[0]]
     logger.info(
         "RAG top_k_results=%s",
         [
@@ -174,6 +179,19 @@ def _rerank_and_select(query: str, docs: list[KnowledgeDocument], k: int = 4) ->
                 "lexical_overlap": doc.lexical_overlap,
                 "selected_score": doc.selected_score,
                 "metadata": doc.metadata,
+            }
+            for doc in ranked[:k]
+        ],
+    )
+    logger.info(
+        "[MascotRAG] top_k results: %s",
+        [
+            {
+                "id": doc.id,
+                "source_table": doc.source_table,
+                "similarity_score": doc.score,
+                "lexical_overlap": doc.lexical_overlap,
+                "selected_score": doc.selected_score,
             }
             for doc in ranked[:k]
         ],
@@ -193,6 +211,7 @@ def _retrieve_from_langchain_bg_embedding(query: str, subject: str, k: int = 8) 
         "limit": k,
     }
     logger.info("RAG user_query=%s embedding_query=%s", query, embedding_query)
+    logger.info("[MascotRAG] user query: %s", query)
 
     sql_variants = [
         """
@@ -240,6 +259,18 @@ def _retrieve_from_langchain_bg_embedding(query: str, subject: str, k: int = 8) 
                         {
                             "id": doc.id,
                             "score": doc.score,
+                            "metadata": doc.metadata,
+                            "preview": doc.content[:220].replace("\n", " "),
+                        }
+                        for doc in docs
+                    ],
+                )
+                logger.info(
+                    "[MascotRAG] bg embedding results: %s",
+                    [
+                        {
+                            "id": doc.id,
+                            "similarity_score": doc.score,
                             "metadata": doc.metadata,
                             "preview": doc.content[:220].replace("\n", " "),
                         }
@@ -302,13 +333,10 @@ def retrieve_knowledge_documents(query: str, subject: str, k: int = 8) -> list[K
     selected = _rerank_and_select(query, bg_docs)
     if selected:
         logger.info("RAG selected_context_source=langchain_bg_embedding")
+        logger.info("[MascotRAG] bg selected: %s", [_doc_brief(doc) for doc in selected])
         return selected
-
-    pg_docs = _retrieve_from_pgvector_fallback(query, subject, k)
-    selected = _rerank_and_select(query, pg_docs)
-    if selected:
-        logger.info("RAG selected_context_source=langchain_pg_embedding")
-    return selected
+    logger.info("[MascotRAG] bg selected: none")
+    return []
 
 
 def _doc_brief(doc: KnowledgeDocument) -> dict:
@@ -340,12 +368,13 @@ def _serialize_context(docs: list[KnowledgeDocument]) -> str:
         total += len(chunk)
     selected_context = "\n---\n".join(parts)
     logger.info("RAG selected_context=%s", selected_context[:5000])
+    logger.info("[MascotRAG] selected context: %s", selected_context[:5000])
     return selected_context
 
 
 @tool
 def retrieved_context(query: str, subject: str):
-    """Tìm kiếm thông tin thí nghiệm trong langchain_bg_embedding trước, sau đó mới tới langchain_pg_embedding."""
+    """Tìm kiếm thông tin thí nghiệm trong langchain_bg_embedding."""
     return _serialize_context(retrieve_knowledge_documents(query, subject, k=8))
 
 
@@ -363,6 +392,7 @@ agent = create_agent(model, [retrieved_context], system_prompt=prompt)
 
 
 CHEMICAL_REGISTRY_CACHE: dict[str, dict] = {"chemicals": {}, "loaded": False}
+REACTION_DATABASE_CACHE: dict[str, object] = {"rules": None, "aliases": None}
 
 
 def _chemical_alias_candidates(row_data: dict) -> list[str]:
@@ -613,6 +643,7 @@ CONTEXT:
 def _llm_extract_plan(question: str, selected_context: str) -> tuple[dict | None, str, str]:
     final_prompt = _strict_extraction_prompt(question, selected_context)
     logger.info("RAG final_prompt=%s", final_prompt[:6000])
+    logger.info("[MascotRAG] final prompt: %s", final_prompt[:6000])
     try:
         response = model.invoke([HumanMessage(content=final_prompt)])
         raw_response = response.content if hasattr(response, "content") else str(response)
@@ -620,6 +651,7 @@ def _llm_extract_plan(question: str, selected_context: str) -> tuple[dict | None
         logger.exception("RAG strict extraction LLM failed: %s", exc)
         return None, final_prompt, ""
     logger.info("RAG raw_llm_response=%s", raw_response)
+    logger.info("[MascotRAG] raw llm response: %s", raw_response)
     return _extract_json_object(raw_response), final_prompt, raw_response
 
 
@@ -639,14 +671,8 @@ def _validate_extracted_payload(payload: dict | None, selected_context: str) -> 
 
     chemicals = payload.get("chemicals") or []
     steps = payload.get("steps") or []
-    if not payload.get("experiment_name"):
-        issues.append("missing_experiment_name")
-    if not chemicals:
-        issues.append("missing_chemicals")
-    if not steps:
-        issues.append("missing_steps")
-    if not payload.get("phenomenon"):
-        issues.append("missing_phenomenon")
+    if not chemicals and not steps and not payload.get("phenomenon"):
+        issues.append("missing_experiment_data")
 
     for chemical in chemicals:
         name = chemical.get("chemical_name_vi")
@@ -654,9 +680,9 @@ def _validate_extracted_payload(payload: dict | None, selected_context: str) -> 
         unit = _normalize_unit(chemical.get("unit"))
         if not name or not _chemical_in_context(name, selected_context):
             issues.append(f"chemical_not_in_context:{name}")
-        if amount is None or not _number_in_context(amount, selected_context):
+        if amount is not None and not _number_in_context(amount, selected_context):
             issues.append(f"amount_not_in_context:{name}:{chemical.get('amount')}")
-        if not unit or not _unit_in_context(unit, selected_context):
+        if unit and not _unit_in_context(unit, selected_context):
             issues.append(f"unit_not_in_context:{name}:{chemical.get('unit')}")
 
     for step in steps:
@@ -674,6 +700,14 @@ def _validate_extracted_payload(payload: dict | None, selected_context: str) -> 
             issues.append(f"step_amount_not_in_context:{name}:{amount}")
         if unit and not _unit_in_context(unit, selected_context):
             issues.append(f"step_unit_not_in_context:{name}:{unit}")
+
+    conditions = payload.get("conditions") or {}
+    catalyst = conditions.get("catalyst")
+    if catalyst and not _chemical_in_context(catalyst, selected_context):
+        issues.append(f"catalyst_not_in_context:{catalyst}")
+    target_temperature = _coerce_float(conditions.get("target_temperature"))
+    if target_temperature is not None and not _number_in_context(target_temperature, selected_context):
+        issues.append(f"temperature_not_in_context:{target_temperature}")
 
     result = {"ok": not issues, "issues": issues}
     logger.info("RAG extracted_payload_validation=%s", result)
@@ -705,6 +739,7 @@ def _build_plan_from_payload(payload: dict, docs: list[KnowledgeDocument]) -> di
         unit = _normalize_unit(item.get("unit"))
         target_temperature = _coerce_float(item.get("target_temperature"))
         heating_required = bool(item.get("heating_required")) or action_type == "heat"
+        tolerance = _coerce_float(item.get("tolerance"))
         steps.append({
             "step_order": int(item.get("step_order") or index),
             "chemical_name_vi": record["name_vi"] if record else None,
@@ -713,7 +748,7 @@ def _build_plan_from_payload(payload: dict, docs: list[KnowledgeDocument]) -> di
             "id_tool": None,
             "target_amount": amount,
             "unit": unit,
-            "tolerance": None,
+            "tolerance": tolerance,
             "action_type": action_type,
             "auto_stop": True,
             "heating_required": heating_required,
@@ -780,20 +815,52 @@ def _format_tolerance(tolerance, unit: str | None) -> str:
     return f"sai số ±{_format_amount(tolerance)} {unit or ''}".strip()
 
 
+def _missing_quantity_text(plan: dict) -> str:
+    if plan.get("knowledge_source_priority") == "ReactionDatabase.js":
+        return "Không có dữ liệu định lượng trong cơ sở dữ liệu."
+    return "Không có dữ liệu định lượng."
+
+
+def _format_chemical_line(item: dict, plan: dict) -> str:
+    name = item.get("name_vi") or item.get("chemical_name_vi") or "Không có dữ liệu"
+    amount = item.get("amount")
+    unit = item.get("unit")
+    if amount is None or not unit:
+        return f"* {name}: {_missing_quantity_text(plan)}"
+    return (
+        f"* {name}: {_format_amount(amount)} {unit} "
+        f"({_format_tolerance(item.get('tolerance'), unit)})"
+    )
+
+
+def _format_step_description(step: dict, plan: dict) -> str:
+    description = (step.get("action_description") or "").strip()
+    if description:
+        return description
+
+    if step.get("action_type") == "heat":
+        temperature = step.get("target_temperature")
+        if temperature is not None:
+            return f"Đun nóng đến {_format_amount(temperature)}°C."
+        return "Đun nóng. Không có dữ liệu nhiệt độ."
+
+    name = step.get("chemical_name_vi") or "hóa chất"
+    amount = step.get("target_amount")
+    unit = step.get("unit")
+    verb = "Rót" if step.get("action_type") == "pour" else "Thêm"
+    if amount is None or not unit:
+        return f"{verb} {name}. {_missing_quantity_text(plan)}"
+    return f"{verb} {_format_amount(amount)} {unit} {name}."
+
+
 def _format_answer_from_plan(plan: dict) -> str:
-    chemical_lines = []
-    for item in plan.get("required_chemicals", []):
-        chemical_lines.append(
-            f"* {item.get('name_vi')}: {_format_amount(item.get('amount'))} {item.get('unit')} "
-            f"({_format_tolerance(item.get('tolerance'), item.get('unit'))})"
-        )
+    chemical_lines = [_format_chemical_line(item, plan) for item in plan.get("required_chemicals", [])]
 
     tool_lines = [f"* {tool}" for tool in plan.get("required_tools", [])] or ["* Không có dữ liệu."]
 
     step_lines = []
     for step in sorted(plan.get("steps", []), key=lambda value: value.get("step_order") or 0):
-        description = step.get("action_description") or "Không có dữ liệu."
-        step_lines.append(f"{step.get('step_order')}. {description}")
+        step_lines.append(f"{step.get('step_order')}. {_format_step_description(step, plan)}")
 
     conditions = plan.get("required_conditions") or {}
     condition_lines = []
@@ -804,9 +871,9 @@ def _format_answer_from_plan(plan: dict) -> str:
             condition_lines.append(f"* {conditions.get('text')}")
         else:
             condition_lines.append("* Cần đun nóng: Không có dữ liệu nhiệt độ.")
-    elif conditions.get("catalyst"):
+    if conditions.get("catalyst"):
         condition_lines.append(f"* Xúc tác: {conditions.get('catalyst')}.")
-    else:
+    if not condition_lines:
         condition_lines.append("* Không cần đun nóng hoặc xúc tác đặc biệt.")
 
     return (
@@ -857,13 +924,537 @@ def validate_plan_against_documents(plan: dict | None, docs: list[KnowledgeDocum
     for chemical in plan.get("required_chemicals", []):
         if not _chemical_in_context(chemical.get("name_vi"), context):
             issues.append(f"document thiếu hóa chất {chemical.get('name_vi')}")
-        if not _number_in_context(chemical.get("amount"), context):
+        if chemical.get("amount") is not None and not _number_in_context(chemical.get("amount"), context):
             issues.append(f"document thiếu lượng {chemical.get('amount')} của {chemical.get('name_vi')}")
-        if not _unit_in_context(chemical.get("unit"), context):
+        if chemical.get("unit") and not _unit_in_context(chemical.get("unit"), context):
             issues.append(f"document thiếu đơn vị {chemical.get('unit')} của {chemical.get('name_vi')}")
     result = {"ok": not issues, "issues": issues}
     logger.info("RAG consistency plan_vs_retrieved_context=%s", result)
     return result
+
+
+def _find_balanced_end(source: str, start: int, open_char: str, close_char: str) -> int:
+    depth = 0
+    quote = None
+    escaped = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _extract_balanced_source(source: str, start: int, open_char: str, close_char: str) -> str | None:
+    if start < 0 or start >= len(source) or source[start] != open_char:
+        return None
+    end = _find_balanced_end(source, start, open_char, close_char)
+    if end < 0:
+        return None
+    return source[start:end + 1]
+
+
+def _js_unquote(value: str) -> str:
+    return value.replace("\\'", "'").replace('\\"', '"').replace("\\n", "\n").strip()
+
+
+def _js_string_literals(source: str) -> list[str]:
+    matches = re.findall(r"'((?:\\'|[^'])*)'|\"((?:\\\"|[^\"])*)\"", source or "")
+    return [_js_unquote(single or double) for single, double in matches if (single or double)]
+
+
+def _js_string_field(source: str, field_name: str) -> str | None:
+    match = re.search(rf"\b{re.escape(field_name)}\s*:\s*('(?:\\'|[^'])*'|\"(?:\\\"|[^\"])*\")", source or "")
+    if not match:
+        return None
+    values = _js_string_literals(match.group(1))
+    return values[0] if values else None
+
+
+def _js_number_field(source: str, field_name: str) -> float | None:
+    match = re.search(rf"\b{re.escape(field_name)}\s*:\s*(-?\d+(?:\.\d+)?)", source or "")
+    return _coerce_float(match.group(1)) if match else None
+
+
+def _js_array_field(source: str, field_name: str) -> list[str]:
+    match = re.search(rf"\b{re.escape(field_name)}\s*:\s*\[", source or "")
+    if not match:
+        return []
+    array_source = _extract_balanced_source(source, match.end() - 1, "[", "]")
+    return _js_string_literals(array_source or "")
+
+
+def _js_object_field(source: str, field_name: str) -> str | None:
+    match = re.search(rf"\b{re.escape(field_name)}\s*:\s*\{{", source or "")
+    if not match:
+        return None
+    return _extract_balanced_source(source, match.end() - 1, "{", "}")
+
+
+def _parse_reaction_result(rule_source: str) -> dict:
+    match = re.search(r"\bresult\s*:\s*result\s*\(", rule_source or "")
+    if not match:
+        return {}
+    brace_index = rule_source.find("{", match.end())
+    result_source = _extract_balanced_source(rule_source, brace_index, "{", "}") or ""
+    effect_types = re.findall(r"effect\s*\(\s*['\"]([^'\"]+)['\"]", rule_source or "")
+    return {
+        "source": result_source,
+        "mascotText": _js_string_field(result_source, "mascotText"),
+        "equation": _js_string_field(result_source, "equation"),
+        "result_chemical_id": _js_string_field(result_source, "result_chemical_id"),
+        "result_chemical_type": _js_string_field(result_source, "result_chemical_type"),
+        "effect_types": effect_types,
+        "precipitate": "precipitate: true" in result_source or "precipitate" in effect_types,
+        "gas": "gas:" in result_source or "gas" in effect_types,
+        "heat": "heat:" in result_source or "heat" in effect_types,
+        "smoke": "smoke:" in result_source or "smoke" in effect_types,
+        "color_change": "colorChange" in effect_types or "decolorize" in effect_types,
+    }
+
+
+def _parse_reaction_rule(rule_source: str) -> dict | None:
+    reaction_id = _js_string_field(rule_source, "id")
+    if not reaction_id:
+        return None
+    conditions_source = _js_object_field(rule_source, "conditions") or ""
+    result_data = _parse_reaction_result(rule_source)
+    return {
+        "id": reaction_id,
+        "priority": _js_number_field(rule_source, "priority") or 0,
+        "reactants": _js_array_field(rule_source, "reactants"),
+        "requiredExistingSpecies": _js_array_field(rule_source, "requiredExistingSpecies"),
+        "products": _js_array_field(rule_source, "products"),
+        "conditions": {
+            "minTemperature": _js_number_field(conditions_source, "minTemperature"),
+            "maxTemperature": _js_number_field(conditions_source, "maxTemperature"),
+            "catalyst": _js_string_field(conditions_source, "catalyst"),
+            "environment": _js_string_field(conditions_source, "environment"),
+            "notEnvironment": _js_string_field(conditions_source, "notEnvironment"),
+            "proximity": _js_number_field(conditions_source, "proximity"),
+        },
+        "result": result_data,
+        "source_snippet": rule_source[:1200],
+    }
+
+
+def _extract_reaction_rule_sources(source: str) -> list[str]:
+    marker = "LOCAL_REACTION_RULES"
+    marker_index = source.find(marker)
+    if marker_index < 0:
+        return []
+    array_start = source.find("[", marker_index)
+    array_source = _extract_balanced_source(source, array_start, "[", "]") or ""
+    rule_sources = []
+    index = 0
+    while index < len(array_source):
+        if array_source[index] != "{":
+            index += 1
+            continue
+        rule_source = _extract_balanced_source(array_source, index, "{", "}")
+        if not rule_source:
+            index += 1
+            continue
+        if re.search(r"\bid\s*:\s*['\"]", rule_source):
+            rule_sources.append(rule_source)
+        index += len(rule_source)
+    return rule_sources
+
+
+def _parse_reaction_database_rules() -> list[dict]:
+    cached = REACTION_DATABASE_CACHE.get("rules")
+    if cached is not None:
+        return cached
+    try:
+        source = REACTION_DATABASE_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.exception("[MascotFallback] cannot read ReactionDatabase.js: %s", exc)
+        return []
+
+    rules = []
+    for rule_source in _extract_reaction_rule_sources(source):
+        rule = _parse_reaction_rule(rule_source)
+        if rule and rule.get("reactants"):
+            rules.append(rule)
+    REACTION_DATABASE_CACHE["rules"] = rules
+    return rules
+
+
+def _parse_reaction_database_aliases() -> dict[str, set[str]]:
+    cached = REACTION_DATABASE_CACHE.get("aliases")
+    if cached is not None:
+        return cached
+    try:
+        source = REACTION_DATABASE_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+
+    aliases_by_canonical: dict[str, set[str]] = {}
+    canonical_match = re.search(r"const\s+CANONICAL\s*=\s*new\s+Map\s*\(\s*\[", source)
+    if not canonical_match:
+        return aliases_by_canonical
+    array_source = _extract_balanced_source(source, canonical_match.end() - 1, "[", "]") or ""
+    for alias, canonical in re.findall(r"\[\s*'((?:\\'|[^'])*)'\s*,\s*'((?:\\'|[^'])*)'\s*\]", array_source):
+        alias = _js_unquote(alias)
+        canonical = _js_unquote(canonical)
+        key = _compact_key(canonical)
+        if not key:
+            continue
+        aliases_by_canonical.setdefault(key, set()).update({alias, canonical})
+    REACTION_DATABASE_CACHE["aliases"] = aliases_by_canonical
+    return aliases_by_canonical
+
+
+def _reaction_name_aliases(name: str) -> set[str]:
+    aliases = {name}
+    alias_map = _parse_reaction_database_aliases()
+    key = _compact_key(name)
+    aliases.update(alias_map.get(key, set()))
+
+    record = _resolve_chemical_from_context(name)
+    aliases.update(record.get("aliases") or [])
+    if record.get("formula"):
+        aliases.add(record["formula"])
+    return {alias for alias in aliases if alias}
+
+
+def _reaction_alternatives(spec: str) -> list[str]:
+    return [part.strip() for part in str(spec or "").split("|") if part.strip()]
+
+
+def _choose_reaction_alternative(spec: str, query: str) -> str | None:
+    alternatives = _reaction_alternatives(spec)
+    if not alternatives:
+        return None
+    query_norm = _normalize_text(query)
+    query_compact = _compact_key(query)
+    query_terms = _reaction_query_terms(query)
+    for option in alternatives:
+        for alias in _reaction_name_aliases(option):
+            if _reaction_alias_matches_query(alias, query_norm, query_compact, query_terms):
+                return option
+    return alternatives[0]
+
+
+def _search_tokens(value: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9]{2,}", _normalize_text(value)))
+    return {token for token in tokens if token not in STOPWORDS and token not in {"ii", "iii", "iv"}}
+
+
+def _reaction_alias_matches_query(alias: str, query_norm: str, query_compact: str, query_terms: set[str]) -> bool:
+    alias_norm = _normalize_text(alias)
+    alias_compact = _compact_key(alias)
+    if alias_norm and alias_norm in query_norm:
+        return True
+    if alias_compact and alias_compact in query_compact:
+        return True
+    alias_terms = _search_tokens(alias)
+    return bool(alias_terms) and alias_terms.issubset(query_terms)
+
+
+def _reaction_spec_matches_query(spec: str, query: str) -> bool:
+    query_norm = _normalize_text(query)
+    query_compact = _compact_key(query)
+    query_terms = _reaction_query_terms(query)
+    for option in _reaction_alternatives(spec):
+        for alias in _reaction_name_aliases(option):
+            if _reaction_alias_matches_query(alias, query_norm, query_compact, query_terms):
+                return True
+    return False
+
+
+def _reaction_query_terms(query: str) -> set[str]:
+    terms = set(_query_terms(query))
+    normalized_query = _normalize_text(query)
+    normalized_tokens = _search_tokens(query)
+    for aliases in _parse_reaction_database_aliases().values():
+        normalized_aliases = {_normalize_text(alias) for alias in aliases}
+        if any(alias and alias in normalized_query for alias in normalized_aliases):
+            terms.update(term for alias in aliases for term in _search_tokens(alias))
+    if normalized_tokens & {"hidro", "hydro", "hydrogen", "h2"}:
+        terms.update({"hidro", "hydro", "hydrogen", "h2"})
+    if "ket tua" in normalized_query:
+        terms.add("precipitate")
+    if "khi" in normalized_query:
+        terms.add("gas")
+    return {term for term in terms if term and term not in STOPWORDS}
+
+
+def _reaction_search_text(rule: dict) -> str:
+    values = [
+        rule.get("id", "").replace("_", " "),
+        *rule.get("reactants", []),
+        *rule.get("requiredExistingSpecies", []),
+        *rule.get("products", []),
+        rule.get("result", {}).get("mascotText") or "",
+        rule.get("result", {}).get("equation") or "",
+        " ".join(rule.get("result", {}).get("effect_types") or []),
+    ]
+    for spec in [*rule.get("reactants", []), *rule.get("requiredExistingSpecies", []), *rule.get("products", [])]:
+        for name in _reaction_alternatives(spec):
+            values.extend(_reaction_name_aliases(name))
+    return " ".join(str(value) for value in values if value)
+
+
+def _score_reaction_match(rule: dict, query: str) -> float:
+    query_terms = _reaction_query_terms(query)
+    if not query_terms:
+        return 0.0
+
+    search_text = _normalize_text(_reaction_search_text(rule))
+    search_compact = _compact_key(search_text)
+    score = 0.0
+
+    for term in query_terms:
+        if len(term) <= 2:
+            if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", search_text):
+                score += 1.0
+        elif term in search_text or _compact_key(term) in search_compact:
+            score += 1.0
+
+    for spec in rule.get("reactants", []):
+        if _reaction_spec_matches_query(spec, query):
+            score += 3.0
+
+    for spec in rule.get("requiredExistingSpecies", []):
+        if _reaction_spec_matches_query(spec, query):
+            score += 2.0
+
+    for product in rule.get("products", []):
+        if _reaction_spec_matches_query(product, query):
+            score += 1.5
+
+    query_norm = _normalize_text(query)
+    if "nhan biet" in query_norm and rule.get("result", {}).get("precipitate"):
+        score += 2.0
+    if "ket tua" in query_norm and rule.get("result", {}).get("precipitate"):
+        score += 2.0
+    if any(term in query_terms for term in {"khi", "gas", "hidro", "hydro", "h2"}) and rule.get("result", {}).get("gas"):
+        score += 1.0
+
+    priority = float(rule.get("priority") or 0)
+    return score + min(priority, 150) / 1000.0
+
+
+def search_reaction_database(question: str) -> dict | None:
+    logger.info("[MascotFallback] searching ReactionDatabase.js")
+    candidates = []
+    for rule in _parse_reaction_database_rules():
+        score = _score_reaction_match(rule, question)
+        if score > 0:
+            candidates.append((score, rule))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    logger.info(
+        "[MascotFallback] ReactionDatabase candidates: %s",
+        [
+            {
+                "id": rule.get("id"),
+                "score": score,
+                "reactants": rule.get("reactants"),
+                "products": rule.get("products"),
+                "mascotText": rule.get("result", {}).get("mascotText"),
+            }
+            for score, rule in candidates[:8]
+        ],
+    )
+    if not candidates or candidates[0][0] < 1.0:
+        logger.info("[MascotFallback] matched reaction: none")
+        return None
+    matched = candidates[0][1]
+    logger.info(
+        "[MascotFallback] matched reaction: %s",
+        {
+            "id": matched.get("id"),
+            "score": candidates[0][0],
+            "reactants": matched.get("reactants"),
+            "products": matched.get("products"),
+        },
+    )
+    return matched
+
+
+def _reaction_database_phenomenon(rule: dict) -> str:
+    result_data = rule.get("result") or {}
+    parts = []
+    if result_data.get("mascotText"):
+        parts.append(result_data["mascotText"])
+    if result_data.get("equation"):
+        parts.append(f"Phương trình: {result_data['equation']}")
+    if not parts and rule.get("products"):
+        parts.append("Tạo sản phẩm: " + ", ".join(rule["products"]) + ".")
+    return " ".join(parts).strip() or "Không có dữ liệu."
+
+
+def _reaction_database_title(rule: dict, query: str) -> str:
+    reactants = [_choose_reaction_alternative(spec, query) for spec in rule.get("reactants", [])]
+    reactants = [name for name in reactants if name]
+    products = [_choose_reaction_alternative(spec, query) for spec in rule.get("products", [])]
+    products = [name for name in products if name]
+    if reactants and products:
+        return f"Phản ứng {' + '.join(reactants)} tạo {' + '.join(products)}"
+    if reactants:
+        return f"Phản ứng {' + '.join(reactants)}"
+    return rule.get("id") or "Phản ứng trong ReactionDatabase.js"
+
+
+def _dedupe_names(names: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for name in names:
+        key = _compact_key(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(name)
+    return result
+
+
+def _build_plan_from_reaction_database(rule: dict, question: str) -> dict:
+    reactants = [_choose_reaction_alternative(spec, question) for spec in rule.get("reactants", [])]
+    required_species = [_choose_reaction_alternative(spec, question) for spec in rule.get("requiredExistingSpecies", [])]
+    catalyst = (rule.get("conditions") or {}).get("catalyst")
+    chemical_names = _dedupe_names([name for name in [*reactants, *required_species, catalyst] if name])
+
+    chemicals = []
+    steps = []
+    for index, name in enumerate(chemical_names, start=1):
+        record = _resolve_chemical_from_context(name)
+        chemicals.append({
+            "canonical_id": record["canonical_id"],
+            "name_vi": record["name_vi"],
+            "name_en": record["name_en"],
+            "amount": None,
+            "unit": None,
+            "tolerance": None,
+            "role": "reactant",
+        })
+        steps.append({
+            "step_order": index,
+            "chemical_name_vi": record["name_vi"],
+            "canonical_id": record["canonical_id"],
+            "id_chemical": record.get("id_chemical"),
+            "id_tool": None,
+            "target_amount": None,
+            "unit": None,
+            "tolerance": None,
+            "action_type": "add",
+            "auto_stop": False,
+            "heating_required": False,
+            "target_temperature": None,
+            "action_description": f"Thêm {record['name_vi']}. Không có dữ liệu định lượng trong cơ sở dữ liệu.",
+        })
+
+    conditions = rule.get("conditions") or {}
+    target_temperature = _coerce_float(conditions.get("minTemperature"))
+    heating_required = target_temperature is not None
+    if heating_required:
+        steps.append({
+            "step_order": len(steps) + 1,
+            "chemical_name_vi": None,
+            "canonical_id": None,
+            "id_chemical": None,
+            "id_tool": None,
+            "target_amount": None,
+            "unit": None,
+            "tolerance": None,
+            "action_type": "heat",
+            "auto_stop": False,
+            "heating_required": True,
+            "target_temperature": target_temperature,
+            "action_description": f"Đun nóng đến {_format_amount(target_temperature)}°C.",
+        })
+
+    required_tools = [
+        "Ống nghiệm hoặc cốc thủy tinh",
+        "Giá đỡ",
+        "Ống nhỏ giọt/đũa thủy tinh",
+    ]
+    if heating_required:
+        required_tools.append("Dụng cụ gia nhiệt")
+
+    phenomenon = _reaction_database_phenomenon(rule)
+    plan = {
+        "experiment_id": rule.get("id"),
+        "reaction_id": rule.get("id"),
+        "title": _reaction_database_title(rule, question),
+        "steps": steps,
+        "required_chemicals": chemicals,
+        "required_tools": required_tools,
+        "required_conditions": {
+            "temperature_min": target_temperature,
+            "temperature_max": conditions.get("maxTemperature"),
+            "heating_required": heating_required,
+            "order_required": True,
+            "catalyst": catalyst,
+            "text": None,
+            "steps": [
+                {
+                    "step": step["step_order"],
+                    "action": "heat" if step["action_type"] == "heat" else "add_chemical",
+                    "chemical": step["chemical_name_vi"],
+                    "canonical_id": step["canonical_id"],
+                    "amount": step["target_amount"],
+                    "unit": step["unit"],
+                    "temperature_min": step["target_temperature"],
+                }
+                for step in steps
+            ],
+        },
+        "success_reaction_id": rule.get("id"),
+        "success_message": phenomenon,
+        "phenomenon": phenomenon,
+        "fail_messages": {
+            "wrong_chemical": "Bạn đã dùng sai hóa chất.",
+            "missing_chemical": "Bạn chưa lấy đủ hóa chất cần thiết.",
+            "wrong_amount": "Cơ sở dữ liệu phản ứng chưa có định lượng để kiểm tra lượng.",
+            "wrong_order": "Bạn đã thực hiện sai thứ tự thao tác.",
+            "wrong_temperature": "Điều kiện nhiệt độ chưa phù hợp.",
+            "wrong_reaction": "Phản ứng tạo ra không khớp thí nghiệm đã chọn.",
+        },
+        "knowledge_source_priority": "ReactionDatabase.js",
+        "source_documents": [{
+            "id": rule.get("id"),
+            "source_table": "ReactionDatabase.js",
+            "score": None,
+            "lexical_overlap": None,
+            "selected_score": None,
+            "metadata": {
+                "reactants": rule.get("reactants"),
+                "products": rule.get("products"),
+                "conditions": rule.get("conditions"),
+            },
+        }],
+    }
+    logger.info("RAG generated_experiment_plan=%s", json.dumps(plan, ensure_ascii=False))
+    return plan
+
+
+def build_plan_from_reaction_database(question: str) -> tuple[dict | None, str | None, dict]:
+    rule = search_reaction_database(question)
+    if not rule:
+        return None, None, {"ok": False, "issues": ["no_reaction_database_match"]}
+    plan = _build_plan_from_reaction_database(rule, question)
+    answer_text = _format_answer_from_plan(plan)
+    return plan, answer_text, {
+        "ok": True,
+        "issues": [],
+        "source": "ReactionDatabase.js",
+        "reaction_id": rule.get("id"),
+    }
 
 
 def build_experiment_plan(
@@ -940,17 +1531,37 @@ def ask_questions_with_plan(question: str, selected_subject: str, history: list 
             retrieved_docs=docs,
         )
         if not plan:
+            fallback_plan, fallback_answer, fallback_validation = build_plan_from_reaction_database(question)
+            if fallback_plan:
+                validations = {
+                    "extraction": extraction_validation,
+                    "reaction_database_fallback": fallback_validation,
+                    "answer_text_vs_plan": validate_answer_matches_plan(fallback_answer, fallback_plan),
+                    "plan_vs_reaction_database": {"ok": True, "issues": []},
+                }
+                logger.info("[MascotFallback] final source: ReactionDatabase.js")
+                logger.info("RAG consistency validation result=%s", validations)
+                return {
+                    "answer_text": fallback_answer,
+                    "experiment_plan": fallback_plan,
+                    "retrieved_documents": [_doc_brief(doc) for doc in docs] + fallback_plan.get("source_documents", []),
+                    "consistency_validation": validations,
+                    "is_experiment_query": True,
+                }
+
             result = {
                 "answer_text": NO_EXPERIMENT_DATA_MESSAGE,
                 "experiment_plan": None,
                 "retrieved_documents": [_doc_brief(doc) for doc in docs],
                 "consistency_validation": {
                     "extraction": extraction_validation,
+                    "reaction_database_fallback": fallback_validation,
                     "answer_text_vs_plan": {"ok": True, "issues": []},
                     "plan_vs_retrieved_context": {"ok": False, "issues": extraction_validation.get("issues", [])},
                 },
                 "is_experiment_query": True,
             }
+            logger.info("[MascotFallback] final source: none")
             logger.info("RAG consistency validation result=%s", result["consistency_validation"])
             return result
 
@@ -959,6 +1570,7 @@ def ask_questions_with_plan(question: str, selected_subject: str, history: list 
             "answer_text_vs_plan": validate_answer_matches_plan(answer_text, plan),
             "plan_vs_retrieved_context": validate_plan_against_documents(plan, docs),
         }
+        logger.info("[MascotFallback] final source: langchain_bg_embedding")
         logger.info("RAG consistency validation result=%s", validations)
         return {
             "answer_text": answer_text,

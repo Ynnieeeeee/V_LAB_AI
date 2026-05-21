@@ -377,14 +377,17 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
     const name = sourceName(source);
     const dbStep = currentDbStepForSource(source);
     const sameAsCurrentStep = !dbStep || key(dbStep.chemical_name_vi) === key(name);
-    const remaining = dbStep?.target_amount !== null && dbStep?.target_amount !== undefined
+    const hasDbTarget = dbStep?.target_amount !== null
+        && dbStep?.target_amount !== undefined
+        && Number.isFinite(Number(dbStep.target_amount));
+    const remaining = hasDbTarget
         ? Math.max(0, Number(dbStep.target_amount) - Number(dbStep.actual_amount || 0))
         : Infinity;
     const fallbackQuantity = defaultQuantityForSource(source);
     const tickAmount = dbStep && sameAsCurrentStep
         ? Math.min(flowIncrementFor(source, dbStep), remaining)
         : (dbStep ? fallbackQuantity.amount : (Number(amount) || fallbackQuantity.amount));
-    if (dbStep && sameAsCurrentStep && remaining <= 0) {
+    if (dbStep && sameAsCurrentStep && hasDbTarget && remaining <= 0) {
         return {
             recorded: false,
             dbStep,
@@ -397,7 +400,7 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
         ? numericTickAmount
         : fallbackQuantity.amount;
     const quantityUnit = dbStep && sameAsCurrentStep
-        ? dbStep.unit
+        ? (dbStep.unit || fallbackQuantity.unit)
         : (dbStep ? fallbackQuantity.unit : (unit || fallbackQuantity.unit));
     const state = ensureContainerExperimentState(target);
     const action = {
@@ -428,13 +431,13 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
     let autoStopped = false;
     let completedStep = null;
     if (dbStep && sameAsCurrentStep) {
-        dbStep.actual_amount = Math.min(
-            Number(dbStep.target_amount || 0),
-            Number(dbStep.actual_amount || 0) + quantityAmount
-        );
-        dbStep.is_completed = Number(dbStep.actual_amount || 0) >= Number(dbStep.target_amount || 0);
+        const nextActualAmount = Number(dbStep.actual_amount || 0) + quantityAmount;
+        dbStep.actual_amount = hasDbTarget
+            ? Math.min(Number(dbStep.target_amount), nextActualAmount)
+            : nextActualAmount;
+        dbStep.is_completed = hasDbTarget && Number(dbStep.actual_amount || 0) >= Number(dbStep.target_amount);
         completedStep = dbStep;
-        autoStopped = !!dbStep.auto_stop && dbStep.is_completed;
+        autoStopped = hasDbTarget && !!dbStep.auto_stop && dbStep.is_completed;
         syncStepActualAmount(dbStep, autoStopped);
     }
 
@@ -579,6 +582,12 @@ export function describeNextRequirement(container) {
     const next = nextIncompleteStep(container);
     if (next) {
         if (next.dbStep) {
+            const hasTarget = next.dbStep.target_amount !== null
+                && next.dbStep.target_amount !== undefined
+                && Number.isFinite(Number(next.dbStep.target_amount));
+            if (!hasTarget) {
+                return `Tiếp tục: thêm ${next.dbStep.chemical_name_vi}. Chưa có dữ liệu định lượng trong cơ sở dữ liệu.`;
+            }
             const current = Number(next.dbStep.actual_amount || 0);
             const remaining = Math.max(0, Number(next.dbStep.target_amount || 0) - current);
             if (current > 0) {
