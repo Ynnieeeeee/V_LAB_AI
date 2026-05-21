@@ -6,6 +6,7 @@ const STEP_SYNC_THROTTLE_MS = 250;
 
 let currentExperimentPlan = window.currentExperimentPlan || null;
 let currentExperimentSteps = window.currentExperimentSteps || [];
+let currentStep = null;
 let actionStep = 0;
 const lastStepSyncAt = new Map();
 
@@ -105,6 +106,7 @@ function activeChemicalSteps() {
             .map(step => ({
                 step: step.step_order,
                 chemical: step.chemical_name_vi,
+                canonical_id: step.canonical_id,
                 amount: Number(step.target_amount || 0),
                 unit: step.unit,
                 tolerance: Number(step.tolerance || 0),
@@ -119,6 +121,14 @@ function activeChemicalSteps() {
 
 function plannedAddSteps() {
     return activeChemicalSteps();
+}
+
+function updateCurrentStep(container = null) {
+    currentStep = nextIncompleteStep(container) || null;
+    if (!window.experimentSession) window.experimentSession = { actions: [], startedAt: Date.now() };
+    window.experimentSession.currentStep = currentStep;
+    window.currentExperimentStep = currentStep;
+    return currentStep;
 }
 
 function nextIncompleteStep(container) {
@@ -182,6 +192,7 @@ function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
     if (!steps.length) return basePlan || null;
     const chemicalSteps = steps.filter(stepIsChemicalAction);
     const requiredChemicals = chemicalSteps.map(step => ({
+        canonical_id: step.canonical_id,
         name_vi: step.chemical_name_vi,
         name_en: step.chemical_name_vi,
         amount: Number(step.target_amount || 0),
@@ -193,6 +204,7 @@ function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
         step: step.step_order,
         action: step.action_type === 'heat' ? 'heat' : 'add_chemical',
         chemical: step.chemical_name_vi,
+        canonical_id: step.canonical_id,
         amount: Number(step.target_amount || 0),
         unit: step.unit,
         temperature_min: step.target_temperature
@@ -228,12 +240,14 @@ export function setCurrentExperimentPlan(plan) {
     window.experimentSession = {
         plan: currentExperimentPlan,
         steps: currentExperimentSteps,
+        currentStep: null,
         actions: [],
         startedAt: Date.now()
     };
     actionStep = 0;
     setQuantityControlVisible(!!currentExperimentPlan);
     syncQuantityForNextStep();
+    updateCurrentStep();
     return currentExperimentPlan;
 }
 
@@ -257,6 +271,7 @@ export function setCurrentExperimentSteps(steps = []) {
     window.experimentSession.steps = currentExperimentSteps;
     setQuantityControlVisible(!!currentExperimentPlan);
     syncQuantityForNextStep();
+    updateCurrentStep();
     return currentExperimentSteps;
 }
 
@@ -279,6 +294,10 @@ export function getCurrentExperimentPlan() {
     return currentExperimentPlan || window.currentExperimentPlan || null;
 }
 
+export function getCurrentStep(container = null) {
+    return updateCurrentStep(container);
+}
+
 export function hasActiveExperimentPlan() {
     return !!getCurrentExperimentPlan();
 }
@@ -298,11 +317,7 @@ export function getSelectedQuantity(source) {
 
 function currentDbStepForSource(source) {
     if (!currentExperimentSteps.length) return null;
-    const nameKey = key(sourceName(source));
-    return currentExperimentSteps.find(step => {
-        if (!stepIsChemicalAction(step) || step.is_completed) return false;
-        return key(step.chemical_name_vi) === nameKey;
-    }) || currentExperimentSteps.find(step => stepIsChemicalAction(step) && !step.is_completed) || null;
+    return currentExperimentSteps.find(step => stepIsChemicalAction(step) && !step.is_completed) || null;
 }
 
 function flowIncrementFor(source, step = null) {
@@ -365,9 +380,10 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
     const remaining = dbStep?.target_amount !== null && dbStep?.target_amount !== undefined
         ? Math.max(0, Number(dbStep.target_amount) - Number(dbStep.actual_amount || 0))
         : Infinity;
+    const fallbackQuantity = defaultQuantityForSource(source);
     const tickAmount = dbStep && sameAsCurrentStep
         ? Math.min(flowIncrementFor(source, dbStep), remaining)
-        : Number(amount) || defaultQuantityForSource(source).amount;
+        : (dbStep ? fallbackQuantity.amount : (Number(amount) || fallbackQuantity.amount));
     if (dbStep && sameAsCurrentStep && remaining <= 0) {
         return {
             recorded: false,
@@ -379,8 +395,10 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
     const numericTickAmount = Number(tickAmount);
     const quantityAmount = Number.isFinite(numericTickAmount)
         ? numericTickAmount
-        : defaultQuantityForSource(source).amount;
-    const quantityUnit = dbStep?.unit || unit || defaultQuantityForSource(source).unit;
+        : fallbackQuantity.amount;
+    const quantityUnit = dbStep && sameAsCurrentStep
+        ? dbStep.unit
+        : (dbStep ? fallbackQuantity.unit : (unit || fallbackQuantity.unit));
     const state = ensureContainerExperimentState(target);
     const action = {
         step: ++actionStep,
@@ -421,6 +439,7 @@ export function recordPourAction({ source, target, amount, unit, physicalState }
     }
 
     syncQuantityForNextStep(target);
+    updateCurrentStep(target);
     return {
         recorded: true,
         action,
@@ -498,6 +517,7 @@ function validateOrder(container) {
 function validateAmounts(container) {
     const required = currentExperimentSteps.length
         ? activeChemicalSteps().map(step => ({
+            canonical_id: step.canonical_id,
             name_vi: step.chemical,
             amount: step.amount,
             unit: step.unit,
@@ -597,6 +617,27 @@ export function validateExperimentBeforeReaction({ target } = {}) {
     return { ok: true, message: currentExperimentPlan.success_message || 'Thí nghiệm thành công.' };
 }
 
+export function validateReactionResult(reaction) {
+    currentExperimentPlan = getCurrentExperimentPlan();
+    if (!currentExperimentPlan || !reaction?.has_reaction) return { ok: true };
+
+    const expected = currentExperimentPlan.reaction_id || currentExperimentPlan.success_reaction_id;
+    if (!expected || expected === 'rag_validated_reaction') return { ok: true };
+
+    const actual = reaction.id ||
+        reaction.rule_id ||
+        reaction.success_reaction_id ||
+        reaction.raw?.id ||
+        reaction.raw?.rule_id ||
+        reaction.raw?.reaction_id;
+
+    if (actual && actual === expected) return { ok: true };
+    return fail(
+        'wrong_reaction',
+        `Phản ứng tạo ra (${actual || 'không xác định'}) không khớp reaction_id cần dùng: ${expected}.`
+    );
+}
+
 export function markReactionSuccess(container, reaction = null) {
     if (!container?.userData) return;
     const state = ensureContainerExperimentState(container);
@@ -620,6 +661,7 @@ window.setCurrentExperimentPlan = setCurrentExperimentPlan;
 window.setCurrentExperimentSteps = setCurrentExperimentSteps;
 window.fetchExperimentSteps = fetchExperimentSteps;
 window.getCurrentExperimentPlan = getCurrentExperimentPlan;
+window.getCurrentExperimentStep = getCurrentStep;
 window.markExperimentHeated = markContainerHeated;
 
 if (currentExperimentPlan) {

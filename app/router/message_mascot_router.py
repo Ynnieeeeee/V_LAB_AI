@@ -33,6 +33,7 @@ def _step_to_dict(step: ExpermentSteps) -> dict:
         "id_chemical": str(step.id_chemical) if step.id_chemical else None,
         "id_tool": str(step.id_tool) if step.id_tool else None,
         "chemical_name_vi": step.chemical_name_vi,
+        "canonical_id": step.canonical_id,
         "action_type": step.action_type,
         "target_amount": float(step.target_amount) if step.target_amount is not None else None,
         "unit": step.unit,
@@ -43,13 +44,18 @@ def _step_to_dict(step: ExpermentSteps) -> dict:
         "target_temperature": float(step.target_temperature) if step.target_temperature is not None else None,
         "is_completed": step.is_completed,
         "is_failed": step.is_failed,
+        "experiment_id": step.experiment_id,
+        "reaction_id": step.reaction_id,
         "action_description": step.action_description
     }
 
 def _ensure_experiment_steps_columns(session: Session):
     statements = [
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS step_order INTEGER DEFAULT 0",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS id_chemical UUID",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS id_tool UUID",
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS chemical_name_vi VARCHAR",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS canonical_id VARCHAR",
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS action_type VARCHAR DEFAULT 'pour'",
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_amount DOUBLE PRECISION",
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS unit VARCHAR",
@@ -60,7 +66,9 @@ def _ensure_experiment_steps_columns(session: Session):
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_temperature DOUBLE PRECISION",
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS is_failed BOOLEAN DEFAULT FALSE",
         "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS experiment_id VARCHAR",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS reaction_id VARCHAR"
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS reaction_id VARCHAR",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS action_description VARCHAR",
+        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE"
     ]
     for statement in statements:
         session.exec(text(statement))
@@ -89,6 +97,146 @@ def _resolve_chemical(session: Session, name_vi: str):
             return chemical
     return None
 
+def _validate_inserted_steps(experiment_plan: dict, inserted_steps: list[ExpermentSteps]) -> dict:
+    issues = []
+    planned_steps = sorted(experiment_plan.get("steps", []), key=lambda item: item.get("step_order") or 0)
+    db_steps = sorted(inserted_steps, key=lambda item: item.step_order)
+
+    if len(planned_steps) != len(db_steps):
+        issues.append(f"planned_steps={len(planned_steps)} inserted_steps={len(db_steps)}")
+
+    for planned, db_step in zip(planned_steps, db_steps):
+        checks = {
+            "step_order": (planned.get("step_order"), db_step.step_order),
+            "target_amount": (planned.get("target_amount"), db_step.target_amount),
+            "unit": (planned.get("unit"), db_step.unit),
+            "action_type": (planned.get("action_type"), db_step.action_type),
+            "tolerance": (planned.get("tolerance"), db_step.tolerance),
+            "auto_stop": (planned.get("auto_stop", True), db_step.auto_stop),
+            "canonical_id": (planned.get("canonical_id"), db_step.canonical_id)
+        }
+        for field, (expected, actual) in checks.items():
+            if expected is None and actual is None:
+                continue
+            if isinstance(expected, float) or isinstance(actual, float):
+                if expected is None or actual is None or abs(float(expected) - float(actual)) > 1e-6:
+                    issues.append(f"step {db_step.step_order} {field}: expected={expected} actual={actual}")
+            elif expected != actual:
+                issues.append(f"step {db_step.step_order} {field}: expected={expected} actual={actual}")
+
+        if db_step.actual_amount != 0:
+            issues.append(f"step {db_step.step_order} actual_amount must start at 0")
+
+    result = {"ok": not issues, "issues": issues}
+    logger.info("Consistency experiment_plan_vs_inserted_steps result=%s", result)
+    return result
+
+def _format_amount(value) -> str:
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+def _answer_from_plan(experiment_plan: dict, fallback: str = "") -> str:
+    if not experiment_plan:
+        return fallback
+
+    chemicals = experiment_plan.get("required_chemicals", [])
+    chemical_lines = [
+        f"- {item.get('name_vi')}: {_format_amount(item.get('amount'))} {item.get('unit')} (sai số ±{_format_amount(item.get('tolerance'))} {item.get('unit')})"
+        for item in chemicals
+    ]
+    step_lines = [
+        f"Bước {step.get('step_order')}: {step.get('action_description')}"
+        for step in sorted(experiment_plan.get("steps", []), key=lambda item: item.get("step_order") or 0)
+    ]
+    conditions = experiment_plan.get("required_conditions", {})
+    condition_lines = []
+    if conditions.get("heating_required"):
+        condition_lines.append(f"- Cần đun nóng đến tối thiểu {_format_amount(conditions.get('temperature_min'))}°C.")
+    catalysts = [item.get("name_vi") for item in chemicals if item.get("role") == "catalyst"]
+    if catalysts:
+        condition_lines.append(f"- Chất xúc tác: {', '.join(catalysts)}.")
+    if not condition_lines:
+        condition_lines.append("- Không cần đun nóng hoặc xúc tác đặc biệt.")
+
+    return (
+        f"Tên thí nghiệm: {experiment_plan.get('title') or experiment_plan.get('experiment_id')}\n\n"
+        f"Hóa chất cần dùng:\n" + "\n".join(chemical_lines) + "\n\n"
+        f"Dụng cụ cần dùng: {', '.join(experiment_plan.get('required_tools') or ['Ống nghiệm hoặc cốc thủy tinh'])}.\n\n"
+        f"Thứ tự thực hiện:\n" + "\n".join(step_lines) + "\n\n"
+        f"Điều kiện:\n" + "\n".join(condition_lines) + "\n\n"
+        f"Hiện tượng: {experiment_plan.get('phenomenon') or experiment_plan.get('success_message') or 'Thí nghiệm diễn ra khi validator pass.'}"
+    )
+
+def _plan_from_existing_steps(existing_steps: list[ExpermentSteps], base_plan: dict | None = None) -> dict | None:
+    if not existing_steps:
+        return None
+
+    ordered_steps = sorted(existing_steps, key=lambda item: item.step_order)
+    chemical_steps = [step for step in ordered_steps if step.chemical_name_vi]
+    required_chemicals = []
+    seen = set()
+    for step in chemical_steps:
+        marker = step.canonical_id or step.chemical_name_vi
+        if marker in seen:
+            continue
+        seen.add(marker)
+        required_chemicals.append({
+            "canonical_id": step.canonical_id,
+            "name_vi": step.chemical_name_vi,
+            "name_en": step.chemical_name_vi,
+            "amount": float(step.target_amount) if step.target_amount is not None else None,
+            "unit": step.unit,
+            "tolerance": float(step.tolerance) if step.tolerance is not None else None,
+            "role": "reactant"
+        })
+
+    serialized_steps = [_step_to_dict(step) for step in ordered_steps]
+    heat_step = next((step for step in ordered_steps if step.action_type == "heat" or step.heating_required), None)
+    reaction_id = ordered_steps[0].reaction_id or (base_plan or {}).get("reaction_id")
+    experiment_plan = {
+        **(base_plan or {}),
+        "experiment_id": ordered_steps[0].experiment_id or (base_plan or {}).get("experiment_id") or "existing_experiment_steps",
+        "reaction_id": reaction_id,
+        "success_reaction_id": reaction_id,
+        "title": (base_plan or {}).get("title") or ordered_steps[0].experiment_id or "Thí nghiệm đã lưu",
+        "steps": serialized_steps,
+        "required_chemicals": required_chemicals,
+        "required_conditions": {
+            **((base_plan or {}).get("required_conditions") or {}),
+            "order_required": True,
+            "heating_required": bool(heat_step),
+            "temperature_min": float(heat_step.target_temperature) if heat_step and heat_step.target_temperature is not None else None,
+            "steps": [
+                {
+                    "step": step.step_order,
+                    "action": "heat" if step.action_type == "heat" else "add_chemical",
+                    "chemical": step.chemical_name_vi,
+                    "canonical_id": step.canonical_id,
+                    "amount": float(step.target_amount) if step.target_amount is not None else None,
+                    "unit": step.unit,
+                    "temperature_min": float(step.target_temperature) if step.target_temperature is not None else None
+                }
+                for step in ordered_steps
+            ]
+        },
+        "knowledge_source_priority": "experiment_steps",
+        "source_documents": (base_plan or {}).get("source_documents", [])
+    }
+    logger.info("Rebuilt experiment_plan from existing experiment_steps: %s", experiment_plan)
+    return experiment_plan
+
+def _get_existing_steps(session: Session, id_conversation) -> list[ExpermentSteps]:
+    if not id_conversation:
+        return []
+    _ensure_experiment_steps_columns(session)
+    return session.exec(
+        select(ExpermentSteps)
+        .where(ExpermentSteps.id_conv == id_conversation)
+        .order_by(ExpermentSteps.step_order)
+    ).all()
+
 def _resolve_tool(session: Session, id_tool=None, chemical=None, id_conv=None):
     parsed_id = _as_uuid(id_tool)
     if parsed_id:
@@ -116,15 +264,14 @@ def _persist_experiment_plan_steps(session: Session, id_conversation, experiment
         _ensure_experiment_steps_columns(session)
         session.exec(delete(ExpermentSteps).where(ExpermentSteps.id_conv == id_conversation))
 
-        last_chemical = None
         last_tool = None
         inserted_steps = []
         for step in experiment_plan.get("steps", []):
-            chemical = _resolve_chemical(session, step.get("chemical_name_vi")) or last_chemical
+            is_chemical_step = bool(step.get("chemical_name_vi"))
+            chemical = _resolve_chemical(session, step.get("chemical_name_vi")) if is_chemical_step else None
             tool = _resolve_tool(session, step.get("id_tool"), chemical, id_conversation) or last_tool
 
             if chemical:
-                last_chemical = chemical
                 step["id_chemical"] = str(chemical.id_chemical)
             if tool:
                 last_tool = tool
@@ -136,6 +283,7 @@ def _persist_experiment_plan_steps(session: Session, id_conversation, experiment
                 id_chemical=chemical.id_chemical if chemical else None,
                 id_tool=tool.id_tool if tool else None,
                 chemical_name_vi=step.get("chemical_name_vi"),
+                canonical_id=step.get("canonical_id"),
                 action_type=step.get("action_type") or "pour",
                 target_amount=step.get("target_amount"),
                 unit=step.get("unit"),
@@ -154,18 +302,21 @@ def _persist_experiment_plan_steps(session: Session, id_conversation, experiment
             inserted_steps.append(db_step)
 
         session.flush()
+        validation = _validate_inserted_steps(experiment_plan, inserted_steps)
         experiment_plan["steps"] = [_step_to_dict(step) for step in inserted_steps]
         experiment_plan["required_conditions"]["steps"] = [
             {
                 "step": step["step_order"],
                 "action": "heat" if step["action_type"] == "heat" else "add_chemical",
                 "chemical": step["chemical_name_vi"],
+                "canonical_id": step["canonical_id"],
                 "amount": step["target_amount"],
                 "unit": step["unit"],
                 "temperature_min": step["target_temperature"]
             }
             for step in experiment_plan["steps"]
         ]
+        experiment_plan["insert_validation"] = validation
         logger.info("Inserted %s experiment_steps for conversation %s", len(inserted_steps), id_conversation)
     except Exception:
         logger.exception("Failed to persist experiment_steps for conversation %s. Plan=%s", id_conversation, experiment_plan)
@@ -218,7 +369,29 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
         rag_result = ask_questions_with_plan(req.question, selected_subject=current_subject, history=history)
         answer = rag_result["answer_text"]
         experiment_plan = rag_result["experiment_plan"]
-        experiment_plan = _persist_experiment_plan_steps(session, id_conversation, experiment_plan)
+        consistency_validation = dict(rag_result.get("consistency_validation") or {})
+        logger.info(
+            "RAG retrieved_documents=%s consistency_validation=%s",
+            rag_result.get("retrieved_documents"),
+            consistency_validation
+        )
+        using_existing_steps = False
+        existing_steps = _get_existing_steps(session, id_conversation)
+        source_priority = (experiment_plan or {}).get("knowledge_source_priority")
+        if source_priority != "langchain_bg_embedding" and existing_steps:
+            existing_reaction_id = existing_steps[0].reaction_id
+            planned_reaction_id = (experiment_plan or {}).get("reaction_id")
+            if not planned_reaction_id or not existing_reaction_id or planned_reaction_id == existing_reaction_id:
+                experiment_plan = _plan_from_existing_steps(existing_steps, experiment_plan)
+                answer = _answer_from_plan(experiment_plan, answer)
+                consistency_validation["experiment_steps_reuse"] = {
+                    "ok": True,
+                    "reason": "langchain_bg_embedding incomplete; reused matching persisted experiment_steps"
+                }
+                using_existing_steps = True
+
+        if not using_existing_steps:
+            experiment_plan = _persist_experiment_plan_steps(session, id_conversation, experiment_plan)
 
         mascot_message = MascotMessages(
             id_conv=id_conversation,
@@ -237,7 +410,9 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
             "id_conversation": str(id_conversation),
             "answer": answer,
             "answer_text": answer,
-            "experiment_plan": experiment_plan
+            "experiment_plan": experiment_plan,
+            "retrieved_documents": rag_result.get("retrieved_documents", []),
+            "consistency_validation": consistency_validation
         }
 
 @router.get("/api/experiment-steps/{id_conversation}")
@@ -273,11 +448,19 @@ def update_experiment_step(id_step: str, payload: dict, user: Profiles = Depends
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         if "actual_amount" in payload:
-            step.actual_amount = float(payload.get("actual_amount") or 0)
-        if "is_completed" in payload:
+            step.actual_amount = max(0, float(payload.get("actual_amount") or 0))
+
+        if step.target_amount is not None and step.actual_amount is not None:
+            target_amount = float(step.target_amount)
+            if step.auto_stop and float(step.actual_amount) >= target_amount:
+                step.actual_amount = target_amount
+                step.is_completed = True
+            elif "is_completed" in payload:
+                step.is_completed = bool(payload.get("is_completed"))
+            else:
+                step.is_completed = float(step.actual_amount) >= target_amount
+        elif "is_completed" in payload:
             step.is_completed = bool(payload.get("is_completed"))
-        elif step.target_amount is not None and step.actual_amount is not None:
-            step.is_completed = float(step.actual_amount) >= float(step.target_amount)
         if "is_failed" in payload:
             step.is_failed = bool(payload.get("is_failed"))
 

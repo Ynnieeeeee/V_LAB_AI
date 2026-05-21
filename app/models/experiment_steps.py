@@ -11,6 +11,7 @@ class ExpermentSteps(SQLModel, table=True):
     id_chemical: Optional[uuid.UUID] = Field(default=None, foreign_key="chemicals.id_chemical")
     id_tool: Optional[uuid.UUID] = Field(default=None, foreign_key="tools.id_tool")
     chemical_name_vi: Optional[str] = None
+    canonical_id: Optional[str] = None
     action_type: str = Field(default="pour")
     target_amount: Optional[float] = None
     unit: Optional[str] = None

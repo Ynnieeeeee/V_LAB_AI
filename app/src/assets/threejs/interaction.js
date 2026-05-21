@@ -6,6 +6,7 @@ import {
     getSelectedQuantity,
     recordPourAction,
     validateExperimentBeforeReaction,
+    validateReactionResult,
     describeNextRequirement,
     hasActiveExperimentPlan,
     markReactionSuccess
@@ -1045,6 +1046,19 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             const reaction = await detectReaction(source, target);
 
             console.log("REACTION RESULT:", reaction);
+
+            if (hasActiveExperimentPlan()) {
+                const reactionValidation = validateReactionResult(reaction);
+                if (!reactionValidation.ok) {
+                    addSourceContentToContainer(target, source, {
+                        replaceIdentity: false,
+                        forceSourceColor: false
+                    });
+                    target.userData.isReacting = false;
+                    triggerMascotSpeech(reactionValidation.message || 'Phản ứng chưa khớp thí nghiệm đã chọn nên chưa được sinh ra.');
+                    return;
+                }
+            }
 
             if (reaction.has_reaction) {
                 console.log("Phản ứng xảy ra!");
