@@ -4,11 +4,11 @@ import logging
 import re
 import unicodedata
 
-from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint, HuggingFaceEmbeddings
-from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_postgres import PGVector
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
+from langchain_huggingface import ChatHuggingFace, HuggingFaceEmbeddings, HuggingFaceEndpoint
+from langchain_postgres import PGVector
 from sqlalchemy import create_engine, text
 
 from app.config import DATABASE_URL, HF_TOKEN
@@ -16,16 +16,19 @@ from app.config import DATABASE_URL, HF_TOKEN
 
 logger = logging.getLogger(__name__)
 
-# Khởi tạo LLM. RAG thí nghiệm không còn để LLM tự quyết định lượng/bước;
-# LLM chỉ dùng cho câu hỏi thường hoặc khi không tạo được plan mô phỏng.
+NO_EXPERIMENT_DATA_MESSAGE = "Không tìm thấy dữ liệu thí nghiệm phù hợp."
+MIN_VECTOR_SCORE = 0.18
+MIN_LEXICAL_OVERLAP = 0.12
+MAX_SELECTED_CONTEXT_CHARS = 12000
+
 llm = HuggingFaceEndpoint(
     repo_id="Qwen/Qwen2.5-7B-Instruct",
     task="text-generation",
-    temperature=0.2,
-    max_new_tokens=1024,
-    repetition_penalty=1.15,
+    temperature=0.0,
+    max_new_tokens=1400,
+    repetition_penalty=1.1,
     huggingfacehub_api_token=HF_TOKEN,
-    stop_sequences=["<|endoftext|>", "<|im_end|>", "User:", "Assistant:"]
+    stop_sequences=["<|endoftext|>", "<|im_end|>", "User:", "Assistant:"],
 )
 
 model = ChatHuggingFace(llm=llm)
@@ -35,13 +38,13 @@ connection = DATABASE_URL
 db_engine = create_engine(
     connection,
     connect_args={"prepare_threshold": None},
-    pool_pre_ping=True
+    pool_pre_ping=True,
 ) if connection else None
 
 fallback_vector_store = PGVector(
     embeddings=embeddings,
     connection=connection,
-    collection_name="data_chunks"
+    collection_name="data_chunks",
 ) if connection else None
 
 
@@ -52,55 +55,22 @@ class KnowledgeDocument:
     metadata: dict
     score: float | None
     source_table: str
+    lexical_overlap: float = 0.0
+    selected_score: float = 0.0
 
 
 def clean_repeating_text(text_value: str) -> str:
-    """Cắt các đoạn LLM lặp vô hạn hoặc lặp dòng liên tiếp."""
     if not text_value:
         return text_value
-
-    lines = text_value.split("\n")
-    cleaned_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            cleaned_lines.append("")
-            continue
-
-        n = len(stripped)
-        best_len = 0
-        best_pos = -1
-        for length in range(10, min(300, n // 3)):
-            for start in range(n - 3 * length):
-                chunk = stripped[start:start + length]
-                if (
-                    stripped[start + length:start + 2 * length] == chunk and
-                    stripped[start + 2 * length:start + 3 * length] == chunk
-                ):
-                    best_len = length
-                    best_pos = start
-                    break
-            if best_len > 0:
-                break
-
-        if best_len > 0:
-            indent = line[:len(line) - len(line.lstrip())]
-            cleaned_lines.append(indent + stripped[:best_pos + best_len].rstrip(",. ") + "...")
-        else:
-            cleaned_lines.append(line)
-
+    lines = []
     seen = set()
-    unique_lines = []
-    for line in cleaned_lines:
+    for line in text_value.splitlines():
         stripped = line.strip()
-        if not stripped:
-            unique_lines.append("")
-            continue
-        if len(stripped) > 15 and stripped in seen:
+        if len(stripped) > 20 and stripped in seen:
             continue
         seen.add(stripped)
-        unique_lines.append(line)
-    return "\n".join(unique_lines)
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def _normalize_text(value: str) -> str:
@@ -111,6 +81,10 @@ def _normalize_text(value: str) -> str:
     normalized = normalized.replace("₅", "5").replace("₆", "6").replace("₈", "8")
     normalized = re.sub(r"[()[\]{}]", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _compact_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _normalize_text(value))
 
 
 def _json_metadata(value) -> dict:
@@ -152,23 +126,74 @@ def _row_to_doc(row, source_table: str) -> KnowledgeDocument:
         content=str(getattr(row, "content", "") or ""),
         metadata=metadata,
         score=score,
-        source_table=source_table
+        source_table=source_table,
     )
 
 
-def _retrieve_from_langchain_bg_embedding(query: str, subject: str, k: int = 6) -> list[KnowledgeDocument]:
-    """Ưu tiên truy vấn trực tiếp bảng langchain_bg_embedding."""
+STOPWORDS = {
+    "thi", "nghiem", "thuc", "hien", "lam", "cach", "cho", "voi", "va",
+    "nhan", "biet", "dieu", "che", "phan", "ung", "hoa", "hoc", "hay",
+    "giup", "minh", "trong", "the", "nao", "dung", "chat", "dung", "dich",
+}
+
+
+def _query_terms(query: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9]{2,}", _normalize_text(query)))
+    return {token for token in tokens if token not in STOPWORDS}
+
+
+def _lexical_overlap(query: str, content: str) -> float:
+    terms = _query_terms(query)
+    if not terms:
+        return 0.0
+    content_norm = _normalize_text(content)
+    matched = sum(1 for term in terms if term in content_norm)
+    return matched / len(terms)
+
+
+def _rerank_and_select(query: str, docs: list[KnowledgeDocument], k: int = 4) -> list[KnowledgeDocument]:
+    ranked = []
+    for doc in docs:
+        doc.lexical_overlap = _lexical_overlap(query, doc.content)
+        vector_component = doc.score if doc.score is not None else 0.0
+        doc.selected_score = vector_component + doc.lexical_overlap
+        ranked.append(doc)
+
+    ranked.sort(key=lambda item: item.selected_score, reverse=True)
+    selected = [
+        doc for doc in ranked[:k]
+        if (doc.score is not None and doc.score >= MIN_VECTOR_SCORE) or doc.lexical_overlap >= MIN_LEXICAL_OVERLAP
+    ]
+    logger.info(
+        "RAG top_k_results=%s",
+        [
+            {
+                "id": doc.id,
+                "source_table": doc.source_table,
+                "similarity_score": doc.score,
+                "lexical_overlap": doc.lexical_overlap,
+                "selected_score": doc.selected_score,
+                "metadata": doc.metadata,
+            }
+            for doc in ranked[:k]
+        ],
+    )
+    return selected
+
+
+def _retrieve_from_langchain_bg_embedding(query: str, subject: str, k: int = 8) -> list[KnowledgeDocument]:
     if not db_engine:
         return []
 
-    query_embedding = embeddings.embed_query(f"query: {query}")
+    embedding_query = f"query: {query}"
+    query_embedding = embeddings.embed_query(embedding_query)
     params = {
         "embedding": _vector_literal(query_embedding),
         "subject": _subject_key(subject),
-        "limit": k
+        "limit": k,
     }
+    logger.info("RAG user_query=%s embedding_query=%s", query, embedding_query)
 
-    # Hỗ trợ vài biến thể schema phổ biến, nhưng luôn ưu tiên table người dùng yêu cầu.
     sql_variants = [
         """
         SELECT id::text AS id,
@@ -200,7 +225,7 @@ def _retrieve_from_langchain_bg_embedding(query: str, subject: str, k: int = 6) 
         FROM langchain_bg_embedding
         ORDER BY embedding <=> CAST(:embedding AS vector)
         LIMIT :limit
-        """
+        """,
     ]
 
     for statement in sql_variants:
@@ -209,132 +234,135 @@ def _retrieve_from_langchain_bg_embedding(query: str, subject: str, k: int = 6) 
                 rows = conn.execute(text(statement), params).fetchall()
             docs = [_row_to_doc(row, "langchain_bg_embedding") for row in rows if getattr(row, "content", None)]
             if docs:
-                for doc in docs:
-                    logger.info(
-                        "RAG retrieved bg_embedding doc id=%s score=%s metadata=%s preview=%s",
-                        doc.id,
-                        f"{doc.score:.4f}" if doc.score is not None else None,
-                        doc.metadata,
-                        doc.content[:240].replace("\n", " ")
-                    )
+                logger.info(
+                    "RAG langchain_bg_embedding_results=%s",
+                    [
+                        {
+                            "id": doc.id,
+                            "score": doc.score,
+                            "metadata": doc.metadata,
+                            "preview": doc.content[:220].replace("\n", " "),
+                        }
+                        for doc in docs
+                    ],
+                )
                 return docs
         except Exception as exc:
             logger.debug("langchain_bg_embedding query variant failed: %s", exc)
-
-    logger.warning("No usable rows retrieved from langchain_bg_embedding for query=%s", query)
     return []
 
 
-def _retrieve_from_pgvector_fallback(query: str, subject: str, k: int = 6) -> list[KnowledgeDocument]:
+def _retrieve_from_pgvector_fallback(query: str, subject: str, k: int = 8) -> list[KnowledgeDocument]:
     if not fallback_vector_store:
         return []
-
-    docs: list[KnowledgeDocument] = []
-    search_filter = {"subject": _subject_key(subject)}
     try:
         results = fallback_vector_store.similarity_search_with_score(
             f"query: {query}",
             k=k,
-            filter=search_filter
+            filter={"subject": _subject_key(subject)},
         )
     except Exception as exc:
-        logger.exception("PGVector fallback retrieval failed: %s", exc)
+        logger.exception("langchain_pg_embedding fallback retrieval failed: %s", exc)
         return []
 
+    docs = []
     for doc, raw_score in results:
         score = None
         try:
-            # LangChain PGVector thường trả distance. Quy đổi tương đối để log dễ đọc.
             distance = float(raw_score)
             score = 1 - distance if distance <= 2 else distance
         except (TypeError, ValueError):
             pass
-        item = KnowledgeDocument(
-            id=str(doc.metadata.get("id") or doc.metadata.get("source") or ""),
-            content=str(doc.page_content or ""),
-            metadata=dict(doc.metadata or {}),
-            score=score,
-            source_table="langchain_pg_embedding:data_chunks"
+        docs.append(
+            KnowledgeDocument(
+                id=str(doc.metadata.get("id") or doc.metadata.get("source") or ""),
+                content=str(doc.page_content or ""),
+                metadata=dict(doc.metadata or {}),
+                score=score,
+                source_table="langchain_pg_embedding",
+            )
         )
-        logger.info(
-            "RAG fallback doc id=%s score=%s metadata=%s preview=%s",
-            item.id,
-            f"{item.score:.4f}" if item.score is not None else None,
-            item.metadata,
-            item.content[:240].replace("\n", " ")
-        )
-        docs.append(item)
+    logger.info(
+        "RAG langchain_pg_embedding_results=%s",
+        [
+            {
+                "id": doc.id,
+                "score": doc.score,
+                "metadata": doc.metadata,
+                "preview": doc.content[:220].replace("\n", " "),
+            }
+            for doc in docs
+        ],
+    )
     return docs
 
 
-def retrieve_knowledge_documents(query: str, subject: str, k: int = 6) -> list[KnowledgeDocument]:
-    docs = _retrieve_from_langchain_bg_embedding(query, subject, k)
-    if docs:
-        return docs
-    return _retrieve_from_pgvector_fallback(query, subject, k)
+def retrieve_knowledge_documents(query: str, subject: str, k: int = 8) -> list[KnowledgeDocument]:
+    bg_docs = _retrieve_from_langchain_bg_embedding(query, subject, k)
+    selected = _rerank_and_select(query, bg_docs)
+    if selected:
+        logger.info("RAG selected_context_source=langchain_bg_embedding")
+        return selected
+
+    pg_docs = _retrieve_from_pgvector_fallback(query, subject, k)
+    selected = _rerank_and_select(query, pg_docs)
+    if selected:
+        logger.info("RAG selected_context_source=langchain_pg_embedding")
+    return selected
+
+
+def _doc_brief(doc: KnowledgeDocument) -> dict:
+    return {
+        "id": doc.id,
+        "source_table": doc.source_table,
+        "score": doc.score,
+        "lexical_overlap": doc.lexical_overlap,
+        "selected_score": doc.selected_score,
+        "metadata": doc.metadata,
+    }
+
+
+def _serialize_context(docs: list[KnowledgeDocument]) -> str:
+    parts = []
+    total = 0
+    for index, doc in enumerate(docs, start=1):
+        chunk = (
+            f"[DOC {index}]\n"
+            f"source_table: {doc.source_table}\n"
+            f"id: {doc.id}\n"
+            f"score: {doc.score}\n"
+            f"metadata: {json.dumps(doc.metadata, ensure_ascii=False)}\n"
+            f"content:\n{doc.content.strip()}\n"
+        )
+        if total + len(chunk) > MAX_SELECTED_CONTEXT_CHARS:
+            break
+        parts.append(chunk)
+        total += len(chunk)
+    selected_context = "\n---\n".join(parts)
+    logger.info("RAG selected_context=%s", selected_context[:5000])
+    return selected_context
 
 
 @tool
 def retrieved_context(query: str, subject: str):
-    """Tìm kiếm thông tin thí nghiệm, dụng cụ và quy trình trong tài liệu."""
-    docs = retrieve_knowledge_documents(query, subject, k=6)
-    return "\n\n".join(
-        (
-            f"Nguồn: {doc.source_table} id={doc.id} score={doc.score}\n"
-            f"Metadata: {json.dumps(doc.metadata, ensure_ascii=False)}\n"
-            f"Nội dung: {doc.content}"
-        )
-        for doc in docs
-    )
+    """Tìm kiếm thông tin thí nghiệm trong langchain_bg_embedding trước, sau đó mới tới langchain_pg_embedding."""
+    return _serialize_context(retrieve_knowledge_documents(query, subject, k=8))
 
-
-tools = [retrieved_context]
 
 prompt = """
-Bạn là Trợ lý Phòng thí nghiệm Ảo (Virtual Lab AI).
+Bạn là Trợ lý Phòng thí nghiệm Ảo.
 
-Luật nguồn dữ liệu:
-1. Luôn gọi tool `retrieved_context` trước khi trả lời.
-2. Nếu dữ liệu retrieve có thông tin thí nghiệm, không tự bịa hóa chất, lượng, thứ tự bước, nhiệt độ, xúc tác hoặc hiện tượng.
-3. Nếu tài liệu không có dữ liệu đủ để lập thí nghiệm, nói rõ phần thiếu thay vì tự chế.
-4. Trả lời bằng tiếng Việt, ngắn gọn, không bọc markdown/JSON.
+QUY TẮC BẮT BUỘC:
+1. Chỉ trả lời dựa trên context retrieve được.
+2. Không tự tạo hóa chất, khối lượng, thể tích, nhiệt độ, xúc tác, hiện tượng hoặc bước thực hiện.
+3. Nếu context thiếu dữ liệu, ghi "Không có dữ liệu." cho phần thiếu.
+4. Nếu không tìm thấy context phù hợp, trả đúng câu: "Không tìm thấy dữ liệu thí nghiệm phù hợp."
+5. Không dùng trí nhớ hội thoại để dựng thí nghiệm mới.
 """
-agent = create_agent(model, tools, system_prompt=prompt)
-
-
-def _extract_answer_text(raw_answer: str) -> str:
-    text_value = clean_repeating_text(raw_answer or "").strip()
-    if not text_value:
-        return text_value
-    try:
-        parsed = json.loads(text_value)
-        if isinstance(parsed, dict) and parsed.get("answer_text"):
-            return clean_repeating_text(str(parsed["answer_text"]))
-    except Exception:
-        pass
-    return text_value
+agent = create_agent(model, [retrieved_context], system_prompt=prompt)
 
 
 CHEMICAL_REGISTRY_CACHE: dict[str, dict] = {"chemicals": {}, "loaded": False}
-
-
-def _compact_key(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", _normalize_text(value))
-
-
-def _default_quantity_from_db_row(row_data: dict) -> tuple[str, float, float]:
-    state = _normalize_text(row_data.get("physical_state"))
-    chemical_type = _normalize_text(row_data.get("chemical_type"))
-
-    if any(token in state for token in ["ran", "bot", "solid"]):
-        return "g", 0.5, 0.05
-    if "indicator" in chemical_type:
-        return "ml", 2, 0.2
-    if "strong acid" in chemical_type or "strong_acid" in chemical_type:
-        return "ml", 5, 0.5
-    if "strong base" in chemical_type or "strong_base" in chemical_type:
-        return "ml", 5, 0.5
-    return "ml", 5, 0.5
 
 
 def _chemical_alias_candidates(row_data: dict) -> list[str]:
@@ -342,42 +370,17 @@ def _chemical_alias_candidates(row_data: dict) -> list[str]:
         row_data.get("name_vi"),
         row_data.get("formula"),
         row_data.get("chemical_type"),
+        row_data.get("description"),
     ]
     aliases = []
     for value in values:
-        if value:
-            aliases.append(str(value))
+        if not value:
+            continue
+        aliases.append(str(value))
+        aliases.append(_compact_key(value))
 
-    name_key = _normalize_text(row_data.get("name_vi"))
-    if name_key:
-        aliases.append(name_key)
-        aliases.append(_compact_key(name_key))
-    formula_key = _compact_key(row_data.get("formula"))
-    if formula_key:
-        aliases.append(formula_key)
-
-    # Các alias này được sinh từ tên/công thức trong DB, không phải catalog hardcode.
-    if "axit" in name_key and "clohidric" in name_key:
-        aliases.extend(["hcl", "hydrochloric acid"])
-    if "sunfuric" in name_key or "sulfuric" in name_key:
-        aliases.extend(["h2so4", "sulfuric acid"])
-    if "axetic" in name_key:
-        aliases.extend(["ch3cooh", "acetic acid"])
-    if "ancol etylic" in name_key or "etanol" in name_key:
-        aliases.extend(["c2h5oh", "ethanol"])
-    if "amoniac" in name_key:
-        aliases.extend(["nh3", "ammonia"])
-    if "natri hydroxit" in name_key or "natri hidroxit" in name_key:
-        aliases.extend(["naoh", "sodium hydroxide"])
-    if "dong" in name_key and "sunfat" in name_key:
-        aliases.extend(["cuso4", "cu so4", "copper(ii) sulfate", "copper sulfate"])
-    if "bac nitrat" in name_key:
-        aliases.extend(["agno3", "ag no3", "silver nitrate"])
-    if "gluco" in name_key:
-        aliases.extend(["glucose", "c6h12o6"])
-
-    deduped = []
     seen = set()
+    deduped = []
     for alias in aliases:
         normalized = _normalize_text(alias)
         if not normalized or normalized in seen:
@@ -388,7 +391,6 @@ def _chemical_alias_candidates(row_data: dict) -> list[str]:
 
 
 def _build_chemical_record(row_data: dict) -> dict:
-    default_unit, default_amount, default_tolerance = _default_quantity_from_db_row(row_data)
     formula_key = _compact_key(row_data.get("formula"))
     name_key = _compact_key(row_data.get("name_vi"))
     canonical_id = formula_key or name_key
@@ -401,31 +403,6 @@ def _build_chemical_record(row_data: dict) -> dict:
         "chemical_type": row_data.get("chemical_type"),
         "physical_state": row_data.get("physical_state"),
         "aliases": _chemical_alias_candidates(row_data),
-        "default_unit": default_unit,
-        "default_amount": default_amount,
-        "default_tolerance": default_tolerance
-    }
-
-
-def _fallback_chemical_record(ref: str) -> dict:
-    ref_key = _compact_key(ref)
-    default_unit, default_amount, default_tolerance = _default_quantity_from_db_row({
-        "name_vi": ref,
-        "physical_state": "",
-        "chemical_type": ""
-    })
-    return {
-        "canonical_id": ref_key,
-        "id_chemical": None,
-        "name_vi": str(ref),
-        "name_en": str(ref),
-        "formula": None,
-        "chemical_type": None,
-        "physical_state": None,
-        "aliases": [str(ref), ref_key],
-        "default_unit": default_unit,
-        "default_amount": default_amount,
-        "default_tolerance": default_tolerance
     }
 
 
@@ -461,91 +438,36 @@ def _load_chemical_registry(force_reload: bool = False) -> dict[str, dict]:
             record["canonical_id"],
             _compact_key(record["name_vi"]),
             _compact_key(record.get("formula")),
-            *(_compact_key(alias) for alias in record["aliases"])
+            *(_compact_key(alias) for alias in record["aliases"]),
         }
         for key in keys:
             if key:
                 registry[key] = record
 
     CHEMICAL_REGISTRY_CACHE.update({"chemicals": registry, "loaded": True})
-    logger.info(
-        "Loaded %s chemical aliases from chemicals table for RAG parser",
-        len(registry)
-    )
+    logger.info("Loaded %s chemical aliases from chemicals table", len(registry))
     return registry
 
 
-def _resolve_chemical(ref: str) -> dict:
+def _resolve_chemical_from_context(name: str) -> dict:
     registry = _load_chemical_registry()
-    ref_key = _compact_key(ref)
-    if ref_key in registry:
-        return registry[ref_key]
-
-    normalized_ref = _normalize_text(ref)
+    key = _compact_key(name)
+    if key in registry:
+        return registry[key]
+    normalized_name = _normalize_text(name)
     for record in registry.values():
-        if any(_normalize_text(alias) == normalized_ref for alias in record.get("aliases", [])):
+        if any(_normalize_text(alias) == normalized_name for alias in record.get("aliases", [])):
             return record
-    logger.warning("Chemical ref '%s' was not found in chemicals table; using transient fallback record", ref)
-    return _fallback_chemical_record(ref)
-
-
-EXPERIMENT_TEMPLATES = [
-    {
-        "experiment_id": "prepare_h2_from_na_hcl",
-        "reaction_id": "sodium_acid_first",
-        "title": "Điều chế khí hidro từ natri và axit clohidric",
-        "aliases": ["natri hcl", "natri axit clohidric", "na hcl", "điều chế hidro", "sodium acid"],
-        "chemical_ids": ["hcl", "na"],
-        "default_steps": ["hcl", "na"],
-        "success_message": "Natri phản ứng với axit, sủi bọt khí hidro và tỏa nhiệt.",
-        "phenomenon_keywords": ["sủi bọt", "khí hidro", "h2", "tỏa nhiệt"]
-    },
-    {
-        "experiment_id": "copper_sulfate_ammonia",
-        "reaction_id": "cu_so4_nh3_limited",
-        "title": "Đồng(II) sunfat tác dụng với amoniac",
-        "aliases": ["cuso4 nh3", "đồng ii sunfat amoniac", "đồng(II) sunfat nh3", "copper sulfate ammonia"],
-        "chemical_ids": ["cuso4", "nh3"],
-        "default_steps": ["cuso4", "nh3"],
-        "success_message": "Xuất hiện kết tủa xanh lam Cu(OH)2; nếu NH3 dư, kết tủa tan tạo dung dịch xanh thẫm.",
-        "phenomenon_keywords": ["kết tủa xanh", "xanh lam", "xanh thẫm", "cu(oh)2"]
-    },
-    {
-        "experiment_id": "silver_mirror_tollens_glucose",
-        "reaction_id": "silver_mirror_from_tollens_glucose_heat",
-        "title": "Phản ứng tráng gương của glucozơ",
-        "aliases": ["tráng gương", "trang guong", "tollens", "agno3 nh3 gluco", "phản ứng tráng bạc"],
-        "chemical_ids": ["agno3", "nh3", "glucose"],
-        "default_steps": ["agno3", "nh3", "glucose", "heat"],
-        "temperature_min": 45,
-        "heating_required": True,
-        "success_message": "Glucozơ khử phức bạc amoniac khi đun nóng, tạo lớp bạc sáng bám trong ống nghiệm.",
-        "phenomenon_keywords": ["lớp bạc", "gương bạc", "bạc sáng", "tráng gương"]
-    },
-    {
-        "experiment_id": "ethyl_acetate_esterification",
-        "reaction_id": "ethyl_acetate_esterification",
-        "title": "Este hóa axit axetic với ancol etylic",
-        "aliases": ["este hóa", "este hoa", "ethyl acetate", "axit axetic ancol etylic", "ch3cooh c2h5oh"],
-        "chemical_ids": ["ch3cooh", "c2h5oh", "h2so4"],
-        "default_steps": ["ch3cooh", "c2h5oh", "h2so4", "heat"],
-        "roles": {"h2so4": "catalyst"},
-        "temperature_min": 80,
-        "heating_required": True,
-        "success_message": "Có mùi thơm este; etyl axetat tạo thành và có thể tách thành lớp nhẹ phía trên.",
-        "phenomenon_keywords": ["mùi thơm", "este", "tách lớp", "etyl axetat"]
-    },
-    {
-        "experiment_id": "phenolphthalein_naoh_indicator",
-        "reaction_id": "phenolphthalein_base_pink",
-        "title": "Phenolphthalein đổi màu trong dung dịch natri hydroxit",
-        "aliases": ["phenolphthalein naoh", "phenolphthalein natri hydroxit", "chỉ thị phenolphthalein", "phenolphtalein naoh"],
-        "chemical_ids": ["phenolphthalein", "naoh"],
-        "default_steps": ["phenolphthalein", "naoh"],
-        "success_message": "Phenolphthalein chuyển sang màu hồng trong môi trường bazơ.",
-        "phenomenon_keywords": ["màu hồng", "hồng cánh sen", "bazơ", "kiềm"]
+    return {
+        "canonical_id": key,
+        "id_chemical": None,
+        "name_vi": name,
+        "name_en": name,
+        "formula": None,
+        "chemical_type": None,
+        "physical_state": None,
+        "aliases": [name, key],
     }
-]
 
 
 def _is_chemistry_subject(selected_subject: str) -> bool:
@@ -555,592 +477,356 @@ def _is_chemistry_subject(selected_subject: str) -> bool:
 
 def _is_experiment_question(question: str) -> bool:
     haystack = _normalize_text(question)
-    trigger_words = [
-        "thi nghiem", "thuc hien", "lam", "dieu che", "phan ung", "rot",
-        "them", "trang guong", "este", "hien tuong", "tao ket tua", "doi mau"
-    ]
-    if any(word in haystack for word in trigger_words):
-        return True
-    return _identify_template(question, []) is not None
-
-
-def _fail_messages() -> dict:
-    return {
-        "wrong_chemical": "Bạn đã dùng sai hóa chất.",
-        "missing_chemical": "Bạn chưa lấy đủ hóa chất cần thiết.",
-        "wrong_amount": "Khối lượng hoặc thể tích chưa đúng.",
-        "wrong_order": "Bạn đã thực hiện sai thứ tự thao tác.",
-        "wrong_temperature": "Điều kiện nhiệt độ chưa phù hợp.",
-        "wrong_reaction": "Phản ứng tạo ra không khớp thí nghiệm đã chọn."
+    trigger_words = {
+        "thi nghiem", "thuc hien", "dieu che", "phan ung", "nhan biet",
+        "ket tua", "hien tuong", "trang guong", "este", "hidro", "hydro",
+        "sunfat", "hidroxit", "axit", "bazo",
     }
+    return any(word in haystack for word in trigger_words)
 
 
-def _chem(chemical_id: str, amount: float, unit: str, tolerance: float | None = None, role: str = "reactant") -> dict:
-    base = _resolve_chemical(chemical_id)
-    resolved_tolerance = tolerance if tolerance is not None else (
-        base["default_tolerance"] if unit == base["default_unit"] else (0.5 if unit == "ml" else 0.05)
-    )
-    return {
-        "canonical_id": base["canonical_id"],
-        "name_vi": base["name_vi"],
-        "name_en": base["name_en"],
-        "amount": float(amount),
-        "unit": unit,
-        "tolerance": float(resolved_tolerance),
-        "role": role
-    }
+def _extract_json_object(raw_text: str) -> dict | None:
+    text_value = clean_repeating_text(raw_text or "")
+    text_value = re.sub(r"^```(?:json)?\s*", "", text_value.strip(), flags=re.IGNORECASE)
+    text_value = re.sub(r"\s*```$", "", text_value.strip())
+    try:
+        parsed = json.loads(text_value)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
 
-
-def _step(
-    step: int,
-    chemical_id: str | None,
-    amount: float | None,
-    unit: str | None,
-    action_type: str | None = None,
-    tolerance: float | None = None,
-    auto_stop: bool = True,
-    heating_required: bool = False,
-    target_temperature=None,
-    action_description: str | None = None
-) -> dict:
-    if chemical_id:
-        chemical = _resolve_chemical(chemical_id)
-        normalized_action = action_type or ("add" if unit == "g" else "pour")
-        verb = "Thêm" if normalized_action == "add" else "Rót"
-        return {
-            "step_order": step,
-            "chemical_name_vi": chemical["name_vi"],
-            "canonical_id": chemical["canonical_id"],
-            "id_chemical": None,
-            "id_tool": None,
-            "action_type": normalized_action,
-            "target_amount": float(amount) if amount is not None else None,
-            "unit": unit,
-            "tolerance": float(tolerance) if tolerance is not None else (0.05 if unit == "g" else 0.5),
-            "auto_stop": auto_stop,
-            "heating_required": heating_required,
-            "target_temperature": target_temperature,
-            "action_description": action_description or f"{verb} {amount:g} {unit} {chemical['name_vi']} vào dụng cụ phản ứng."
-        }
-
-    return {
-        "step_order": step,
-        "chemical_name_vi": None,
-        "canonical_id": None,
-        "id_chemical": None,
-        "id_tool": None,
-        "action_type": action_type or "heat",
-        "target_amount": None,
-        "unit": "°C",
-        "tolerance": 2,
-        "auto_stop": auto_stop,
-        "heating_required": True,
-        "target_temperature": target_temperature,
-        "action_description": action_description or f"Đun nóng đến khoảng {target_temperature:g}°C."
-    }
-
-
-def _legacy_step(step: dict) -> dict:
-    if step.get("action_type") == "heat":
-        return {
-            "step": step["step_order"],
-            "action": "heat",
-            "temperature_min": step.get("target_temperature")
-        }
-    return {
-        "step": step["step_order"],
-        "action": "add_chemical",
-        "chemical": step.get("chemical_name_vi"),
-        "canonical_id": step.get("canonical_id"),
-        "amount": step.get("target_amount"),
-        "unit": step.get("unit")
-    }
-
-
-def _plan(
-    experiment_id: str,
-    title: str,
-    chemicals: list[dict],
-    steps: list[dict],
-    reaction_id: str,
-    success_message: str,
-    tools: list[str] | None = None,
-    phenomenon: str | None = None,
-    source_priority: str = "fallback_default",
-    source_documents: list[dict] | None = None,
-    temperature_min=None,
-    temperature_max=None,
-    heating_required: bool = False,
-    order_required: bool = True
-) -> dict:
-    required_by_id = {item["canonical_id"]: item for item in chemicals}
-    enriched_steps = []
-    for item in steps:
-        step = dict(item)
-        canonical_id = step.get("canonical_id")
-        if canonical_id in required_by_id:
-            required = required_by_id[canonical_id]
-            step["target_amount"] = required["amount"]
-            step["unit"] = required["unit"]
-            step["tolerance"] = required["tolerance"]
-            step["chemical_name_vi"] = required["name_vi"]
-        enriched_steps.append(step)
-
-    plan = {
-        "experiment_id": experiment_id,
-        "reaction_id": reaction_id,
-        "title": title,
-        "steps": enriched_steps,
-        "required_chemicals": chemicals,
-        "required_tools": tools or ["Ống nghiệm hoặc cốc thủy tinh", "Giá đỡ", "Ống nhỏ giọt/đũa thủy tinh"],
-        "required_conditions": {
-            "temperature_min": temperature_min,
-            "temperature_max": temperature_max,
-            "heating_required": heating_required,
-            "order_required": order_required,
-            "steps": [_legacy_step(step) for step in enriched_steps]
-        },
-        "success_reaction_id": reaction_id,
-        "success_message": success_message,
-        "phenomenon": phenomenon or success_message,
-        "fail_messages": _fail_messages(),
-        "knowledge_source_priority": source_priority,
-        "source_documents": source_documents or []
-    }
-    logger.info("Generated experiment_plan: %s", json.dumps(plan, ensure_ascii=False))
-    return plan
+    match = re.search(r"\{.*\}", text_value, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
 
 
 def _format_amount(value) -> str:
     try:
-        number = float(value)
-        return f"{number:g}"
+        return f"{float(value):g}"
     except (TypeError, ValueError):
         return str(value)
 
 
-def _format_answer_from_plan(plan: dict, fallback: str = "") -> str:
-    if not plan:
-        return fallback
+def _number_in_context(value, context: str) -> bool:
+    if value is None:
+        return False
+    amount = _format_amount(value)
+    variants = {amount, amount.replace(".", ","), f"{float(value):.1f}".rstrip("0").rstrip(".")}
+    context_norm = _normalize_text(context)
+    return any(_normalize_text(item) in context_norm for item in variants if item)
 
-    chemical_lines = [
-        f"- {item['name_vi']}: {_format_amount(item['amount'])} {item['unit']} (sai số ±{_format_amount(item['tolerance'])} {item['unit']})"
-        for item in plan.get("required_chemicals", [])
-    ]
 
-    step_lines = [
-        f"Bước {step['step_order']}: {step['action_description']}"
-        for step in sorted(plan.get("steps", []), key=lambda value: value.get("step_order") or 0)
-    ]
+def _text_in_context(value: str, context: str) -> bool:
+    if not value:
+        return False
+    value_norm = _normalize_text(value)
+    context_norm = _normalize_text(context)
+    if value_norm and value_norm in context_norm:
+        return True
+    compact_value = _compact_key(value)
+    return bool(compact_value and compact_value in _compact_key(context))
 
+
+def _unit_in_context(unit: str | None, context: str) -> bool:
+    unit_key = _normalize_text(unit)
+    context_norm = _normalize_text(context)
+    equivalents = {
+        "ml": {"ml", "mililit", "m l"},
+        "g": {"g", "gam", "gram"},
+        "mg": {"mg", "miligam"},
+        "giot": {"giot"},
+        "°c": {"°c", "do c", "c"},
+    }
+    variants = equivalents.get(unit_key, {unit_key})
+    return any(variant and variant in context_norm for variant in variants)
+
+
+def _chemical_in_context(name: str, context: str) -> bool:
+    if _text_in_context(name, context):
+        return True
+    record = _resolve_chemical_from_context(name)
+    return any(_text_in_context(alias, context) for alias in record.get("aliases", []))
+
+
+def _normalize_unit(unit: str | None) -> str | None:
+    unit_key = _normalize_text(unit)
+    if unit_key in {"ml", "mililit"}:
+        return "ml"
+    if unit_key in {"g", "gam", "gram"}:
+        return "g"
+    if unit_key == "mg":
+        return "mg"
+    if unit_key in {"giot", "giọt"}:
+        return "giọt"
+    if unit_key in {"do c", "c", "°c"}:
+        return "°C"
+    return unit.strip() if isinstance(unit, str) and unit.strip() else None
+
+
+def _action_type_from_step(step: dict) -> str:
+    action = _normalize_text(step.get("action_type") or step.get("action_description"))
+    unit = _normalize_unit(step.get("unit"))
+    if "dun" in action or "gia nhiet" in action or "heat" in action:
+        return "heat"
+    if unit == "g":
+        return "add"
+    return "pour"
+
+
+def _strict_extraction_prompt(question: str, selected_context: str) -> str:
+    return f"""
+Bạn là bộ trích xuất dữ liệu thí nghiệm.
+
+Chỉ được dùng CONTEXT bên dưới. Không dùng kiến thức ngoài context. Không tự thêm hóa chất, lượng, nhiệt độ, xúc tác, hiện tượng hoặc bước thực hiện.
+Nếu context không mô tả một thí nghiệm phù hợp với USER_QUERY, trả JSON: {{"found": false, "reason": "Không tìm thấy dữ liệu thí nghiệm phù hợp."}}
+Nếu một trường không xuất hiện trong context, điền null hoặc [].
+Không bọc markdown. Chỉ trả JSON hợp lệ theo schema:
+{{
+  "found": true,
+  "experiment_id": null,
+  "reaction_id": null,
+  "experiment_name": "...",
+  "tools": ["..."],
+  "chemicals": [
+    {{"chemical_name_vi": "...", "amount": 0, "unit": "ml|g|mg|giọt", "tolerance": null}}
+  ],
+  "steps": [
+    {{"step_order": 1, "chemical_name_vi": "...", "amount": 0, "unit": "ml|g|mg|giọt", "action_type": "pour|add|heat", "action_description": "...", "heating_required": false, "target_temperature": null}}
+  ],
+  "conditions": {{"heating_required": false, "target_temperature": null, "catalyst": null, "text": null}},
+  "phenomenon": "..."
+}}
+
+USER_QUERY:
+{question}
+
+CONTEXT:
+{selected_context}
+""".strip()
+
+
+def _llm_extract_plan(question: str, selected_context: str) -> tuple[dict | None, str, str]:
+    final_prompt = _strict_extraction_prompt(question, selected_context)
+    logger.info("RAG final_prompt=%s", final_prompt[:6000])
+    try:
+        response = model.invoke([HumanMessage(content=final_prompt)])
+        raw_response = response.content if hasattr(response, "content") else str(response)
+    except Exception as exc:
+        logger.exception("RAG strict extraction LLM failed: %s", exc)
+        return None, final_prompt, ""
+    logger.info("RAG raw_llm_response=%s", raw_response)
+    return _extract_json_object(raw_response), final_prompt, raw_response
+
+
+def _coerce_float(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_extracted_payload(payload: dict | None, selected_context: str) -> dict:
+    issues = []
+    if not payload or not payload.get("found"):
+        return {"ok": False, "issues": ["not_found"]}
+
+    chemicals = payload.get("chemicals") or []
+    steps = payload.get("steps") or []
+    if not payload.get("experiment_name"):
+        issues.append("missing_experiment_name")
+    if not chemicals:
+        issues.append("missing_chemicals")
+    if not steps:
+        issues.append("missing_steps")
+    if not payload.get("phenomenon"):
+        issues.append("missing_phenomenon")
+
+    for chemical in chemicals:
+        name = chemical.get("chemical_name_vi")
+        amount = _coerce_float(chemical.get("amount"))
+        unit = _normalize_unit(chemical.get("unit"))
+        if not name or not _chemical_in_context(name, selected_context):
+            issues.append(f"chemical_not_in_context:{name}")
+        if amount is None or not _number_in_context(amount, selected_context):
+            issues.append(f"amount_not_in_context:{name}:{chemical.get('amount')}")
+        if not unit or not _unit_in_context(unit, selected_context):
+            issues.append(f"unit_not_in_context:{name}:{chemical.get('unit')}")
+
+    for step in steps:
+        name = step.get("chemical_name_vi")
+        amount = _coerce_float(step.get("amount"))
+        unit = _normalize_unit(step.get("unit"))
+        if step.get("action_type") == "heat":
+            temperature = _coerce_float(step.get("target_temperature"))
+            if temperature is not None and not _number_in_context(temperature, selected_context):
+                issues.append(f"temperature_not_in_context:{temperature}")
+            continue
+        if name and not _chemical_in_context(name, selected_context):
+            issues.append(f"step_chemical_not_in_context:{name}")
+        if amount is not None and not _number_in_context(amount, selected_context):
+            issues.append(f"step_amount_not_in_context:{name}:{amount}")
+        if unit and not _unit_in_context(unit, selected_context):
+            issues.append(f"step_unit_not_in_context:{name}:{unit}")
+
+    result = {"ok": not issues, "issues": issues}
+    logger.info("RAG extracted_payload_validation=%s", result)
+    return result
+
+
+def _build_plan_from_payload(payload: dict, docs: list[KnowledgeDocument]) -> dict:
+    chemicals = []
+    for item in payload.get("chemicals") or []:
+        record = _resolve_chemical_from_context(item.get("chemical_name_vi") or "")
+        amount = _coerce_float(item.get("amount"))
+        unit = _normalize_unit(item.get("unit"))
+        tolerance = _coerce_float(item.get("tolerance"))
+        chemicals.append({
+            "canonical_id": record["canonical_id"],
+            "name_vi": record["name_vi"],
+            "name_en": record["name_en"],
+            "amount": amount,
+            "unit": unit,
+            "tolerance": tolerance,
+            "role": "reactant",
+        })
+
+    steps = []
+    for index, item in enumerate(payload.get("steps") or [], start=1):
+        action_type = _action_type_from_step(item)
+        record = _resolve_chemical_from_context(item.get("chemical_name_vi") or "") if action_type != "heat" else None
+        amount = _coerce_float(item.get("amount"))
+        unit = _normalize_unit(item.get("unit"))
+        target_temperature = _coerce_float(item.get("target_temperature"))
+        heating_required = bool(item.get("heating_required")) or action_type == "heat"
+        steps.append({
+            "step_order": int(item.get("step_order") or index),
+            "chemical_name_vi": record["name_vi"] if record else None,
+            "canonical_id": record["canonical_id"] if record else None,
+            "id_chemical": record.get("id_chemical") if record else None,
+            "id_tool": None,
+            "target_amount": amount,
+            "unit": unit,
+            "tolerance": None,
+            "action_type": action_type,
+            "auto_stop": True,
+            "heating_required": heating_required,
+            "target_temperature": target_temperature,
+            "action_description": item.get("action_description") or "",
+        })
+
+    conditions = payload.get("conditions") or {}
+    heating_required = bool(conditions.get("heating_required")) or any(step["action_type"] == "heat" for step in steps)
+    target_temperature = _coerce_float(conditions.get("target_temperature"))
+    source_documents = [_doc_brief(doc) for doc in docs]
+    experiment_name = payload.get("experiment_name") or "Không có dữ liệu."
+    experiment_id = payload.get("experiment_id") or _compact_key(experiment_name)
+    reaction_id = payload.get("reaction_id") or None
+
+    plan = {
+        "experiment_id": experiment_id,
+        "reaction_id": reaction_id,
+        "title": experiment_name,
+        "steps": steps,
+        "required_chemicals": chemicals,
+        "required_tools": payload.get("tools") or [],
+        "required_conditions": {
+            "temperature_min": target_temperature,
+            "temperature_max": None,
+            "heating_required": heating_required,
+            "order_required": True,
+            "catalyst": conditions.get("catalyst"),
+            "text": conditions.get("text"),
+            "steps": [
+                {
+                    "step": step["step_order"],
+                    "action": "heat" if step["action_type"] == "heat" else "add_chemical",
+                    "chemical": step["chemical_name_vi"],
+                    "canonical_id": step["canonical_id"],
+                    "amount": step["target_amount"],
+                    "unit": step["unit"],
+                    "temperature_min": step["target_temperature"],
+                }
+                for step in steps
+            ],
+        },
+        "success_reaction_id": reaction_id,
+        "success_message": payload.get("phenomenon") or "Không có dữ liệu.",
+        "phenomenon": payload.get("phenomenon") or "Không có dữ liệu.",
+        "fail_messages": {
+            "wrong_chemical": "Bạn đã dùng sai hóa chất.",
+            "missing_chemical": "Bạn chưa lấy đủ hóa chất cần thiết.",
+            "wrong_amount": "Khối lượng hoặc thể tích chưa đúng.",
+            "wrong_order": "Bạn đã thực hiện sai thứ tự thao tác.",
+            "wrong_temperature": "Điều kiện nhiệt độ chưa phù hợp.",
+            "wrong_reaction": "Phản ứng tạo ra không khớp thí nghiệm đã chọn.",
+        },
+        "knowledge_source_priority": docs[0].source_table if docs else None,
+        "source_documents": source_documents,
+    }
+    logger.info("RAG generated_experiment_plan=%s", json.dumps(plan, ensure_ascii=False))
+    return plan
+
+
+def _format_tolerance(tolerance, unit: str | None) -> str:
+    if tolerance is None:
+        return "sai số: Không có dữ liệu"
+    return f"sai số ±{_format_amount(tolerance)} {unit or ''}".strip()
+
+
+def _format_answer_from_plan(plan: dict) -> str:
+    chemical_lines = []
+    for item in plan.get("required_chemicals", []):
+        chemical_lines.append(
+            f"* {item.get('name_vi')}: {_format_amount(item.get('amount'))} {item.get('unit')} "
+            f"({_format_tolerance(item.get('tolerance'), item.get('unit'))})"
+        )
+
+    tool_lines = [f"* {tool}" for tool in plan.get("required_tools", [])] or ["* Không có dữ liệu."]
+
+    step_lines = []
+    for step in sorted(plan.get("steps", []), key=lambda value: value.get("step_order") or 0):
+        description = step.get("action_description") or "Không có dữ liệu."
+        step_lines.append(f"{step.get('step_order')}. {description}")
+
+    conditions = plan.get("required_conditions") or {}
     condition_lines = []
-    conditions = plan.get("required_conditions", {})
     if conditions.get("heating_required"):
-        condition_lines.append(f"- Cần đun nóng đến tối thiểu {_format_amount(conditions.get('temperature_min'))}°C.")
-    catalyst = [item["name_vi"] for item in plan.get("required_chemicals", []) if item.get("role") == "catalyst"]
-    if catalyst:
-        condition_lines.append(f"- Chất xúc tác: {', '.join(catalyst)}.")
-    if not condition_lines:
-        condition_lines.append("- Không cần đun nóng hoặc xúc tác đặc biệt.")
+        if conditions.get("temperature_min") is not None:
+            condition_lines.append(f"* Đun nóng đến {_format_amount(conditions.get('temperature_min'))}°C.")
+        elif conditions.get("text"):
+            condition_lines.append(f"* {conditions.get('text')}")
+        else:
+            condition_lines.append("* Cần đun nóng: Không có dữ liệu nhiệt độ.")
+    elif conditions.get("catalyst"):
+        condition_lines.append(f"* Xúc tác: {conditions.get('catalyst')}.")
+    else:
+        condition_lines.append("* Không cần đun nóng hoặc xúc tác đặc biệt.")
 
     return (
-        f"Tên thí nghiệm: {plan['title']}\n\n"
-        f"Hóa chất cần dùng:\n" + "\n".join(chemical_lines) + "\n\n"
-        f"Dụng cụ cần dùng: {', '.join(plan.get('required_tools') or [])}.\n\n"
-        f"Thứ tự thực hiện:\n" + "\n".join(step_lines) + "\n\n"
-        f"Điều kiện:\n" + "\n".join(condition_lines) + "\n\n"
-        f"Hiện tượng: {plan.get('phenomenon') or plan.get('success_message')}"
+        f"Tên thí nghiệm: {plan.get('title') or 'Không có dữ liệu.'}\n\n"
+        "Hóa chất cần dùng:\n\n"
+        + "\n".join(chemical_lines or ["* Không có dữ liệu."])
+        + "\n\nDụng cụ cần dùng:\n\n"
+        + "\n".join(tool_lines)
+        + "\n\nThứ tự thực hiện:\n\n"
+        + "\n".join(step_lines or ["1. Không có dữ liệu."])
+        + "\n\nĐiều kiện:\n\n"
+        + "\n".join(condition_lines)
+        + "\n\nHiện tượng/phản ứng dự kiến:\n\n"
+        + f"* {plan.get('phenomenon') or 'Không có dữ liệu.'}"
     )
-
-
-def _doc_brief(doc: KnowledgeDocument) -> dict:
-    return {
-        "id": doc.id,
-        "source_table": doc.source_table,
-        "score": doc.score,
-        "metadata": doc.metadata
-    }
-
-
-def _identify_template(question: str, docs: list[KnowledgeDocument]) -> dict | None:
-    haystack = _normalize_text(question + "\n" + "\n".join(doc.content[:1200] for doc in docs[:3]))
-    best_template = None
-    best_score = 0
-    for template in EXPERIMENT_TEMPLATES:
-        score = 0
-        for alias in template["aliases"]:
-            if _normalize_text(alias) in haystack:
-                score += 4
-        for chemical_id in template["chemical_ids"]:
-            chemical = _resolve_chemical(chemical_id)
-            if any(_normalize_text(alias) in haystack for alias in chemical["aliases"]):
-                score += 1
-        if score > best_score:
-            best_template = template
-            best_score = score
-    return best_template if best_score >= 2 else None
-
-
-AMOUNT_RE = re.compile(
-    r"(?P<amount>\d+(?:[\.,]\d+)?)\s*(?P<unit>ml|mL|mililit|g|gam|gram|mg|giọt|giot)\b",
-    re.IGNORECASE
-)
-
-
-def _normalize_unit(unit: str, amount: float) -> tuple[float, str]:
-    unit_key = _normalize_text(unit)
-    if unit_key in {"g", "gam", "gram"}:
-        return amount, "g"
-    if unit_key == "mg":
-        return amount / 1000, "g"
-    if unit_key in {"giot", "giọt"}:
-        return amount * 0.05, "ml"
-    return amount, "ml"
-
-
-def _chemical_aliases(chemical_id: str) -> list[str]:
-    chemical = _resolve_chemical(chemical_id)
-    return [_normalize_text(alias) for alias in [chemical["name_vi"], chemical["name_en"], *chemical["aliases"]]]
-
-
-def _find_positions(text_value: str, chemical_id: str) -> list[int]:
-    normalized = _normalize_text(text_value)
-    positions = []
-    for alias in _chemical_aliases(chemical_id):
-        if not alias:
-            continue
-        start = 0
-        while True:
-            index = normalized.find(alias, start)
-            if index < 0:
-                break
-            positions.append(index)
-            start = index + len(alias)
-    return positions
-
-
-def _extract_amount_for_chemical(content: str, chemical_id: str):
-    normalized = _normalize_text(content)
-    alias_positions = _find_positions(content, chemical_id)
-    if not alias_positions:
-        return None
-
-    candidates = []
-    for match in AMOUNT_RE.finditer(content):
-        amount = float(match.group("amount").replace(",", "."))
-        amount, unit = _normalize_unit(match.group("unit"), amount)
-        norm_prefix = _normalize_text(content[:match.start()])
-        norm_start = len(norm_prefix)
-        nearest = min(abs(norm_start - pos) for pos in alias_positions)
-        window_start = max(0, norm_start - 110)
-        window_end = min(len(normalized), norm_start + 110)
-        window = normalized[window_start:window_end]
-        if any(alias in window for alias in _chemical_aliases(chemical_id)):
-            candidates.append((nearest, norm_start, amount, unit, match.group(0)))
-
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: (item[0], item[1]))
-    _, position, amount, unit, evidence = candidates[0]
-    return {
-        "amount": amount,
-        "unit": unit,
-        "position": position,
-        "evidence": evidence
-    }
-
-
-def _extract_temperature(content: str):
-    normalized = _normalize_text(content)
-    temp_match = re.search(r"(\d+(?:[\.,]\d+)?)\s*(?:°\s*c|do\s*c|c)\b", normalized)
-    if temp_match:
-        return float(temp_match.group(1).replace(",", "."))
-    if any(token in normalized for token in ["dun nong", "cach thuy", "gia nhiet", "lam nong"]):
-        return None
-    return None
-
-
-def _extract_procedure_section(content: str) -> str:
-    normalized = _normalize_text(content)
-    headings = ["cach tien hanh", "tien hanh", "thuc hien", "cac buoc", "thi nghiem"]
-    indexes = [normalized.find(heading) for heading in headings if normalized.find(heading) >= 0]
-    if not indexes:
-        return content
-    start_norm = min(indexes)
-    # Dùng tỉ lệ vị trí normalized/original đủ tốt để cắt vùng thủ tục.
-    ratio = len(content) / max(1, len(normalized))
-    return content[int(start_norm * ratio):]
-
-
-def _extract_step_order(content: str, template: dict, amount_by_chemical: dict) -> list[str]:
-    procedure = _extract_procedure_section(content)
-    positions = []
-    for chemical_id in template["chemical_ids"]:
-        found_positions = _find_positions(procedure, chemical_id)
-        if found_positions:
-            positions.append((min(found_positions), chemical_id))
-        elif chemical_id in amount_by_chemical:
-            positions.append((amount_by_chemical[chemical_id]["position"], chemical_id))
-
-    if len(positions) >= len(template["chemical_ids"]):
-        ordered = [chemical_id for _, chemical_id in sorted(positions, key=lambda item: item[0])]
-        return [item for item in ordered if item in template["chemical_ids"]]
-
-    return [item for item in template["default_steps"] if item != "heat"]
-
-
-def _extract_phenomenon(content: str, template: dict) -> str | None:
-    normalized = _normalize_text(content)
-    markers = ["hien tuong", "quan sat", "ket qua", "nhan xet"]
-    for marker in markers:
-        index = normalized.find(marker)
-        if index < 0:
-            continue
-        ratio = len(content) / max(1, len(normalized))
-        original_index = int(index * ratio)
-        snippet = content[original_index:original_index + 260]
-        snippet = re.sub(r"\s+", " ", snippet)
-        snippet = re.sub(r"^(Hiện tượng|Quan sát|Kết quả|Nhận xét)\s*[:\-]?\s*", "", snippet, flags=re.IGNORECASE)
-        if snippet:
-            return snippet.strip(" .;:")
-
-    for keyword in template.get("phenomenon_keywords", []):
-        key = _normalize_text(keyword)
-        index = normalized.find(key)
-        if index >= 0:
-            ratio = len(content) / max(1, len(normalized))
-            original_index = int(index * ratio)
-            snippet = re.sub(r"\s+", " ", content[max(0, original_index - 80):original_index + 180])
-            return snippet.strip(" .;:")
-    return None
-
-
-def _parse_plan_from_documents(question: str, docs: list[KnowledgeDocument]) -> dict | None:
-    bg_docs = [doc for doc in docs if doc.source_table == "langchain_bg_embedding"]
-    if not bg_docs:
-        return None
-    template = _identify_template(question, bg_docs)
-    if not template:
-        return None
-
-    best_doc = None
-    best_amounts = None
-    for doc in bg_docs:
-        amount_by_chemical = {
-            chemical_id: amount
-            for chemical_id in template["chemical_ids"]
-            if (amount := _extract_amount_for_chemical(doc.content, chemical_id))
-        }
-        logger.info(
-            "Parsed amounts from doc id=%s experiment=%s amounts=%s",
-            doc.id,
-            template["experiment_id"],
-            amount_by_chemical
-        )
-        if len(amount_by_chemical) == len(template["chemical_ids"]):
-            best_doc = doc
-            best_amounts = amount_by_chemical
-            break
-
-    if not best_doc or not best_amounts:
-        logger.info(
-            "langchain_bg_embedding did not contain enough amounts for experiment=%s; fallback allowed",
-            template["experiment_id"]
-        )
-        return None
-
-    role_by_id = template.get("roles", {})
-    chemicals = []
-    for chemical_id in template["chemical_ids"]:
-        parsed = best_amounts[chemical_id]
-        chemicals.append(
-            _chem(
-                chemical_id,
-                parsed["amount"],
-                parsed["unit"],
-                role=role_by_id.get(chemical_id, "reactant")
-            )
-        )
-
-    step_ids = _extract_step_order(best_doc.content, template, best_amounts)
-    target_temperature = _extract_temperature(best_doc.content)
-    if target_temperature is None:
-        target_temperature = template.get("temperature_min")
-    heating_required = bool(template.get("heating_required")) or any(
-        token in _normalize_text(best_doc.content)
-        for token in ["dun nong", "cach thuy", "gia nhiet"]
-    )
-
-    steps = []
-    for chemical_id in step_ids:
-        parsed = best_amounts[chemical_id]
-        steps.append(_step(len(steps) + 1, chemical_id, parsed["amount"], parsed["unit"]))
-    if heating_required:
-        steps.append(
-            _step(
-                len(steps) + 1,
-                None,
-                None,
-                None,
-                action_type="heat",
-                target_temperature=target_temperature or 80,
-                action_description=f"Đun nóng đến tối thiểu {_format_amount(target_temperature or 80)}°C."
-            )
-        )
-
-    phenomenon = _extract_phenomenon(best_doc.content, template) or template["success_message"]
-    source_documents = [_doc_brief(best_doc)]
-    logger.info(
-        "Using langchain_bg_embedding as source of truth for experiment=%s source=%s",
-        template["experiment_id"],
-        source_documents
-    )
-    return _plan(
-        template["experiment_id"],
-        template["title"],
-        chemicals,
-        steps,
-        template["reaction_id"],
-        template["success_message"],
-        phenomenon=phenomenon,
-        source_priority="langchain_bg_embedding",
-        source_documents=source_documents,
-        temperature_min=target_temperature,
-        heating_required=heating_required
-    )
-
-
-def _build_template_fallback_plan(question: str, answer_text: str, docs: list[KnowledgeDocument]) -> dict | None:
-    template = _identify_template(question + "\n" + answer_text, docs)
-    if not template:
-        return None
-
-    role_by_id = template.get("roles", {})
-    chemicals = []
-    for chemical_id in template["chemical_ids"]:
-        chemical = _resolve_chemical(chemical_id)
-        chemicals.append(
-            _chem(
-                chemical_id,
-                chemical["default_amount"],
-                chemical["default_unit"],
-                chemical["default_tolerance"],
-                role_by_id.get(chemical_id, "reactant")
-            )
-        )
-    steps = []
-    for item in template["default_steps"]:
-        if item == "heat":
-            steps.append(
-                _step(
-                    len(steps) + 1,
-                    None,
-                    None,
-                    None,
-                    action_type="heat",
-                    target_temperature=template.get("temperature_min") or 80,
-                    action_description=f"Đun nóng đến tối thiểu {_format_amount(template.get('temperature_min') or 80)}°C."
-                )
-            )
-            continue
-        chemical = _resolve_chemical(item)
-        steps.append(
-            _step(
-                len(steps) + 1,
-                item,
-                chemical["default_amount"],
-                chemical["default_unit"]
-            )
-        )
-
-    logger.warning(
-        "Using ReactionDatabase/default fallback for experiment=%s because bg_embedding was missing complete data",
-        template["experiment_id"]
-    )
-    return _plan(
-        template["experiment_id"],
-        template["title"],
-        chemicals,
-        steps,
-        template["reaction_id"],
-        template["success_message"],
-        phenomenon=template["success_message"],
-        source_priority="ReactionDatabase.js/default_simulation_values",
-        source_documents=[_doc_brief(doc) for doc in docs[:3]],
-        temperature_min=template.get("temperature_min"),
-        heating_required=bool(template.get("heating_required"))
-    )
-
-
-def _build_generic_plan_from_text(question: str, answer_text: str) -> dict | None:
-    haystack = _normalize_text(f"{question}\n{answer_text}")
-    found = []
-    unique_chemicals = {}
-    for chemical in _load_chemical_registry().values():
-        unique_chemicals[chemical["canonical_id"]] = chemical
-    for chemical_id, chemical in unique_chemicals.items():
-        if any(_normalize_text(alias) in haystack for alias in chemical["aliases"]):
-            parsed = _extract_amount_for_chemical(f"{question}\n{answer_text}", chemical_id)
-            amount = parsed["amount"] if parsed else chemical["default_amount"]
-            unit = parsed["unit"] if parsed else chemical["default_unit"]
-            found.append((parsed["position"] if parsed else 9999, chemical_id, amount, unit))
-    if not found:
-        return None
-
-    ordered = []
-    seen = set()
-    for _, chemical_id, amount, unit in sorted(found, key=lambda item: item[0]):
-        if chemical_id in seen:
-            continue
-        seen.add(chemical_id)
-        ordered.append((chemical_id, amount, unit))
-
-    chemicals = [_chem(chemical_id, amount, unit) for chemical_id, amount, unit in ordered]
-    steps = [_step(index + 1, chemical_id, amount, unit) for index, (chemical_id, amount, unit) in enumerate(ordered)]
-    return _plan(
-        "rag_generated_experiment",
-        "Thí nghiệm theo hướng dẫn Mascot/RAG",
-        chemicals,
-        steps,
-        "rag_validated_reaction",
-        "Thí nghiệm thành công khi thực hiện đúng hóa chất, đúng lượng và đúng thứ tự.",
-        source_priority="fallback_default"
-    )
-
-
-def build_experiment_plan(
-    question: str,
-    answer_text: str,
-    selected_subject: str = "Chemistry",
-    retrieved_docs: list[KnowledgeDocument] | None = None
-):
-    """Tạo experiment_plan chuẩn hóa theo thứ tự ưu tiên dữ liệu."""
-    if not _is_chemistry_subject(selected_subject):
-        return None
-
-    docs = retrieved_docs or []
-    haystack = _normalize_text(f"{question}\n{answer_text}")
-    if not _is_experiment_question(question) and not any(
-        token in haystack
-        for token in ["thi nghiem", "phan ung", "hien tuong", "hoa chat", "dun nong"]
-    ):
-        return None
-
-    plan = _parse_plan_from_documents(question, docs)
-    if plan:
-        return plan
-
-    plan = _build_template_fallback_plan(question, answer_text, docs)
-    if plan:
-        return plan
-
-    return _build_generic_plan_from_text(question, answer_text)
 
 
 def validate_answer_matches_plan(answer_text: str, plan: dict | None) -> dict:
     if not plan:
         return {"ok": True, "issues": []}
-
     normalized_answer = _normalize_text(answer_text)
     issues = []
     for step in plan.get("steps", []):
@@ -1152,43 +838,74 @@ def validate_answer_matches_plan(answer_text: str, plan: dict | None) -> dict:
         name = step.get("chemical_name_vi")
         amount = _format_amount(step.get("target_amount"))
         unit = step.get("unit")
-        if _normalize_text(name) not in normalized_answer:
+        if name and _normalize_text(name) not in normalized_answer:
             issues.append(f"answer_text thiếu hóa chất {name}")
-        if amount not in normalized_answer or _normalize_text(unit) not in normalized_answer:
-            issues.append(f"answer_text thiếu lượng {amount} {unit} của {name}")
-
+        if amount and amount != "None" and amount not in normalized_answer:
+            issues.append(f"answer_text thiếu lượng {amount} của {name}")
+        if unit and _normalize_text(unit) not in normalized_answer:
+            issues.append(f"answer_text thiếu đơn vị {unit} của {name}")
     result = {"ok": not issues, "issues": issues}
-    logger.info("Consistency answer_text_vs_plan result=%s", result)
+    logger.info("RAG consistency answer_text_vs_plan=%s", result)
     return result
 
 
 def validate_plan_against_documents(plan: dict | None, docs: list[KnowledgeDocument]) -> dict:
-    if not plan or plan.get("knowledge_source_priority") != "langchain_bg_embedding":
+    if not plan:
         return {"ok": True, "issues": []}
-
-    content = "\n".join(doc.content for doc in docs[:3])
-    normalized_content = _normalize_text(content)
+    context = _serialize_context(docs)
     issues = []
     for chemical in plan.get("required_chemicals", []):
-        aliases = _chemical_aliases(chemical["canonical_id"])
-        if not any(alias in normalized_content for alias in aliases):
-            issues.append(f"document thiếu hóa chất {chemical['name_vi']}")
-        parsed = _extract_amount_for_chemical(content, chemical["canonical_id"])
-        if not parsed:
-            issues.append(f"document thiếu lượng của {chemical['name_vi']}")
-            continue
-        if abs(float(parsed["amount"]) - float(chemical["amount"])) > 1e-6 or parsed["unit"] != chemical["unit"]:
-            issues.append(f"plan lệch lượng document cho {chemical['name_vi']}")
-
+        if not _chemical_in_context(chemical.get("name_vi"), context):
+            issues.append(f"document thiếu hóa chất {chemical.get('name_vi')}")
+        if not _number_in_context(chemical.get("amount"), context):
+            issues.append(f"document thiếu lượng {chemical.get('amount')} của {chemical.get('name_vi')}")
+        if not _unit_in_context(chemical.get("unit"), context):
+            issues.append(f"document thiếu đơn vị {chemical.get('unit')} của {chemical.get('name_vi')}")
     result = {"ok": not issues, "issues": issues}
-    logger.info("Consistency plan_vs_langchain_bg_embedding result=%s", result)
+    logger.info("RAG consistency plan_vs_retrieved_context=%s", result)
     return result
 
 
-def ask_questions(question: str, selected_subject: str, history: list = None):
-    """Trả lời câu hỏi thường bằng agent RAG."""
-    input_messages = []
+def build_experiment_plan(
+    question: str,
+    selected_subject: str = "Chemistry",
+    retrieved_docs: list[KnowledgeDocument] | None = None,
+):
+    if not _is_chemistry_subject(selected_subject) or not _is_experiment_question(question):
+        return None, None, {"ok": True, "issues": []}
 
+    docs = retrieved_docs or []
+    if not docs:
+        return None, None, {"ok": False, "issues": ["no_retrieved_context"]}
+
+    selected_context = _serialize_context(docs)
+    payload, _, _ = _llm_extract_plan(question, selected_context)
+    validation = _validate_extracted_payload(payload, selected_context)
+
+    if not validation["ok"]:
+        logger.info("RAG no valid experiment payload; issues=%s", validation["issues"])
+        return None, None, validation
+
+    plan = _build_plan_from_payload(payload, docs)
+    answer_text = _format_answer_from_plan(plan)
+    return plan, answer_text, validation
+
+
+def _extract_answer_text(raw_answer: str) -> str:
+    text_value = clean_repeating_text(raw_answer or "").strip()
+    if not text_value:
+        return text_value
+    try:
+        parsed = json.loads(text_value)
+        if isinstance(parsed, dict) and parsed.get("answer_text"):
+            return clean_repeating_text(str(parsed["answer_text"]))
+    except Exception:
+        pass
+    return text_value
+
+
+def ask_questions(question: str, selected_subject: str, history: list = None):
+    input_messages = []
     if history:
         for msg in history:
             if isinstance(msg, dict):
@@ -1196,53 +913,66 @@ def ask_questions(question: str, selected_subject: str, history: list = None):
                 content = msg.get("content") or msg.get("context")
             else:
                 role, content = msg
-
             if role == "user":
                 input_messages.append(HumanMessage(content=content))
             elif role == "assistant":
                 input_messages.append(AIMessage(content=content))
 
-    subject = (selected_subject or "general").lower()
-    input_messages.append(HumanMessage(content=f"[Môn học: {subject}] {question}"))
-
+    input_messages.append(HumanMessage(content=f"[Môn học: {(selected_subject or 'general').lower()}] {question}"))
     try:
         response = agent.invoke({"messages": input_messages})
-        return _extract_answer_text(response["messages"][-1].content)
+        raw_answer = response["messages"][-1].content
+        logger.info("RAG raw_llm_response=%s", raw_answer)
+        return _extract_answer_text(raw_answer)
     except Exception as exc:
         logger.exception("Error in ask_questions: %s", exc)
         return "Xin lỗi, mình gặp chút trục trặc khi xử lý câu hỏi. Bạn thử lại nhé!"
 
 
 def ask_questions_with_plan(question: str, selected_subject: str, history: list = None):
-    docs = retrieve_knowledge_documents(question, selected_subject, k=6)
+    docs = retrieve_knowledge_documents(question, selected_subject, k=8)
+    is_experiment_query = _is_chemistry_subject(selected_subject) and _is_experiment_question(question)
 
-    if _is_chemistry_subject(selected_subject) and _is_experiment_question(question):
-        plan = build_experiment_plan(question, "", selected_subject, retrieved_docs=docs)
-        if plan:
-            answer_text = _format_answer_from_plan(plan)
-            validations = {
-                "answer_text_vs_plan": validate_answer_matches_plan(answer_text, plan),
-                "plan_vs_langchain_bg_embedding": validate_plan_against_documents(plan, docs)
-            }
-            logger.info("RAG consistency validation result=%s", validations)
-            return {
-                "answer_text": answer_text,
-                "experiment_plan": plan,
+    if is_experiment_query:
+        plan, answer_text, extraction_validation = build_experiment_plan(
+            question,
+            selected_subject=selected_subject,
+            retrieved_docs=docs,
+        )
+        if not plan:
+            result = {
+                "answer_text": NO_EXPERIMENT_DATA_MESSAGE,
+                "experiment_plan": None,
                 "retrieved_documents": [_doc_brief(doc) for doc in docs],
-                "consistency_validation": validations
+                "consistency_validation": {
+                    "extraction": extraction_validation,
+                    "answer_text_vs_plan": {"ok": True, "issues": []},
+                    "plan_vs_retrieved_context": {"ok": False, "issues": extraction_validation.get("issues", [])},
+                },
+                "is_experiment_query": True,
             }
+            logger.info("RAG consistency validation result=%s", result["consistency_validation"])
+            return result
+
+        validations = {
+            "extraction": extraction_validation,
+            "answer_text_vs_plan": validate_answer_matches_plan(answer_text, plan),
+            "plan_vs_retrieved_context": validate_plan_against_documents(plan, docs),
+        }
+        logger.info("RAG consistency validation result=%s", validations)
+        return {
+            "answer_text": answer_text,
+            "experiment_plan": plan,
+            "retrieved_documents": [_doc_brief(doc) for doc in docs],
+            "consistency_validation": validations,
+            "is_experiment_query": True,
+        }
 
     answer = ask_questions(question, selected_subject=selected_subject, history=history)
-    plan = build_experiment_plan(question, answer, selected_subject, retrieved_docs=docs)
-    answer_text = _format_answer_from_plan(plan, answer) if plan else answer
-    validations = {
-        "answer_text_vs_plan": validate_answer_matches_plan(answer_text, plan),
-        "plan_vs_langchain_bg_embedding": validate_plan_against_documents(plan, docs)
-    }
-    logger.info("RAG consistency validation result=%s", validations)
     return {
-        "answer_text": answer_text,
-        "experiment_plan": plan,
+        "answer_text": answer,
+        "experiment_plan": None,
         "retrieved_documents": [_doc_brief(doc) for doc in docs],
-        "consistency_validation": validations
+        "consistency_validation": {},
+        "is_experiment_query": False,
     }

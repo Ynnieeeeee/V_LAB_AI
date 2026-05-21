@@ -131,112 +131,6 @@ def _validate_inserted_steps(experiment_plan: dict, inserted_steps: list[Experme
     logger.info("Consistency experiment_plan_vs_inserted_steps result=%s", result)
     return result
 
-def _format_amount(value) -> str:
-    try:
-        return f"{float(value):g}"
-    except (TypeError, ValueError):
-        return str(value)
-
-def _answer_from_plan(experiment_plan: dict, fallback: str = "") -> str:
-    if not experiment_plan:
-        return fallback
-
-    chemicals = experiment_plan.get("required_chemicals", [])
-    chemical_lines = [
-        f"- {item.get('name_vi')}: {_format_amount(item.get('amount'))} {item.get('unit')} (sai số ±{_format_amount(item.get('tolerance'))} {item.get('unit')})"
-        for item in chemicals
-    ]
-    step_lines = [
-        f"Bước {step.get('step_order')}: {step.get('action_description')}"
-        for step in sorted(experiment_plan.get("steps", []), key=lambda item: item.get("step_order") or 0)
-    ]
-    conditions = experiment_plan.get("required_conditions", {})
-    condition_lines = []
-    if conditions.get("heating_required"):
-        condition_lines.append(f"- Cần đun nóng đến tối thiểu {_format_amount(conditions.get('temperature_min'))}°C.")
-    catalysts = [item.get("name_vi") for item in chemicals if item.get("role") == "catalyst"]
-    if catalysts:
-        condition_lines.append(f"- Chất xúc tác: {', '.join(catalysts)}.")
-    if not condition_lines:
-        condition_lines.append("- Không cần đun nóng hoặc xúc tác đặc biệt.")
-
-    return (
-        f"Tên thí nghiệm: {experiment_plan.get('title') or experiment_plan.get('experiment_id')}\n\n"
-        f"Hóa chất cần dùng:\n" + "\n".join(chemical_lines) + "\n\n"
-        f"Dụng cụ cần dùng: {', '.join(experiment_plan.get('required_tools') or ['Ống nghiệm hoặc cốc thủy tinh'])}.\n\n"
-        f"Thứ tự thực hiện:\n" + "\n".join(step_lines) + "\n\n"
-        f"Điều kiện:\n" + "\n".join(condition_lines) + "\n\n"
-        f"Hiện tượng: {experiment_plan.get('phenomenon') or experiment_plan.get('success_message') or 'Thí nghiệm diễn ra khi validator pass.'}"
-    )
-
-def _plan_from_existing_steps(existing_steps: list[ExpermentSteps], base_plan: dict | None = None) -> dict | None:
-    if not existing_steps:
-        return None
-
-    ordered_steps = sorted(existing_steps, key=lambda item: item.step_order)
-    chemical_steps = [step for step in ordered_steps if step.chemical_name_vi]
-    required_chemicals = []
-    seen = set()
-    for step in chemical_steps:
-        marker = step.canonical_id or step.chemical_name_vi
-        if marker in seen:
-            continue
-        seen.add(marker)
-        required_chemicals.append({
-            "canonical_id": step.canonical_id,
-            "name_vi": step.chemical_name_vi,
-            "name_en": step.chemical_name_vi,
-            "amount": float(step.target_amount) if step.target_amount is not None else None,
-            "unit": step.unit,
-            "tolerance": float(step.tolerance) if step.tolerance is not None else None,
-            "role": "reactant"
-        })
-
-    serialized_steps = [_step_to_dict(step) for step in ordered_steps]
-    heat_step = next((step for step in ordered_steps if step.action_type == "heat" or step.heating_required), None)
-    reaction_id = ordered_steps[0].reaction_id or (base_plan or {}).get("reaction_id")
-    experiment_plan = {
-        **(base_plan or {}),
-        "experiment_id": ordered_steps[0].experiment_id or (base_plan or {}).get("experiment_id") or "existing_experiment_steps",
-        "reaction_id": reaction_id,
-        "success_reaction_id": reaction_id,
-        "title": (base_plan or {}).get("title") or ordered_steps[0].experiment_id or "Thí nghiệm đã lưu",
-        "steps": serialized_steps,
-        "required_chemicals": required_chemicals,
-        "required_conditions": {
-            **((base_plan or {}).get("required_conditions") or {}),
-            "order_required": True,
-            "heating_required": bool(heat_step),
-            "temperature_min": float(heat_step.target_temperature) if heat_step and heat_step.target_temperature is not None else None,
-            "steps": [
-                {
-                    "step": step.step_order,
-                    "action": "heat" if step.action_type == "heat" else "add_chemical",
-                    "chemical": step.chemical_name_vi,
-                    "canonical_id": step.canonical_id,
-                    "amount": float(step.target_amount) if step.target_amount is not None else None,
-                    "unit": step.unit,
-                    "temperature_min": float(step.target_temperature) if step.target_temperature is not None else None
-                }
-                for step in ordered_steps
-            ]
-        },
-        "knowledge_source_priority": "experiment_steps",
-        "source_documents": (base_plan or {}).get("source_documents", [])
-    }
-    logger.info("Rebuilt experiment_plan from existing experiment_steps: %s", experiment_plan)
-    return experiment_plan
-
-def _get_existing_steps(session: Session, id_conversation) -> list[ExpermentSteps]:
-    if not id_conversation:
-        return []
-    _ensure_experiment_steps_columns(session)
-    return session.exec(
-        select(ExpermentSteps)
-        .where(ExpermentSteps.id_conv == id_conversation)
-        .order_by(ExpermentSteps.step_order)
-    ).all()
-
 def _resolve_tool(session: Session, id_tool=None, chemical=None, id_conv=None):
     parsed_id = _as_uuid(id_tool)
     if parsed_id:
@@ -287,7 +181,7 @@ def _persist_experiment_plan_steps(session: Session, id_conversation, experiment
                 action_type=step.get("action_type") or "pour",
                 target_amount=step.get("target_amount"),
                 unit=step.get("unit"),
-                tolerance=step.get("tolerance") if step.get("tolerance") is not None else 0.1,
+                tolerance=step.get("tolerance"),
                 actual_amount=0,
                 auto_stop=bool(step.get("auto_stop", True)),
                 heating_required=bool(step.get("heating_required", False)),
@@ -375,23 +269,15 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
             rag_result.get("retrieved_documents"),
             consistency_validation
         )
-        using_existing_steps = False
-        existing_steps = _get_existing_steps(session, id_conversation)
-        source_priority = (experiment_plan or {}).get("knowledge_source_priority")
-        if source_priority != "langchain_bg_embedding" and existing_steps:
-            existing_reaction_id = existing_steps[0].reaction_id
-            planned_reaction_id = (experiment_plan or {}).get("reaction_id")
-            if not planned_reaction_id or not existing_reaction_id or planned_reaction_id == existing_reaction_id:
-                experiment_plan = _plan_from_existing_steps(existing_steps, experiment_plan)
-                answer = _answer_from_plan(experiment_plan, answer)
-                consistency_validation["experiment_steps_reuse"] = {
-                    "ok": True,
-                    "reason": "langchain_bg_embedding incomplete; reused matching persisted experiment_steps"
-                }
-                using_existing_steps = True
-
-        if not using_existing_steps:
+        if experiment_plan:
             experiment_plan = _persist_experiment_plan_steps(session, id_conversation, experiment_plan)
+        elif rag_result.get("is_experiment_query"):
+            _ensure_experiment_steps_columns(session)
+            session.exec(delete(ExpermentSteps).where(ExpermentSteps.id_conv == id_conversation))
+            logger.info(
+                "Cleared experiment_steps for conversation %s because the new experiment query had no grounded plan",
+                id_conversation
+            )
 
         mascot_message = MascotMessages(
             id_conv=id_conversation,

@@ -197,7 +197,7 @@ function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
         name_en: step.chemical_name_vi,
         amount: Number(step.target_amount || 0),
         unit: step.unit,
-        tolerance: Number(step.tolerance || 0.1),
+        tolerance: Number(step.tolerance || 0),
         role: 'reactant'
     }));
     const legacySteps = steps.map(step => ({
@@ -256,7 +256,7 @@ export function setCurrentExperimentSteps(steps = []) {
         ? steps.map(step => ({
             ...step,
             target_amount: step.target_amount === null || step.target_amount === undefined ? null : Number(step.target_amount),
-            tolerance: step.tolerance === null || step.tolerance === undefined ? 0.1 : Number(step.tolerance),
+            tolerance: step.tolerance === null || step.tolerance === undefined ? 0 : Number(step.tolerance),
             actual_amount: Number(step.actual_amount || 0),
             is_completed: !!step.is_completed,
             is_failed: !!step.is_failed,
@@ -647,13 +647,14 @@ export function markReactionSuccess(container, reaction = null) {
     });
 }
 
-export function markContainerHeated(container, temperature = 80) {
+export function markContainerHeated(container, temperature = null) {
     if (!container?.userData) return;
-    container.userData.temperature = temperature;
-    container.userData.currentTemperature = temperature;
+    const nextTemperature = Number(temperature ?? container.userData.temperature ?? container.userData.currentTemperature ?? 25);
+    container.userData.temperature = nextTemperature;
+    container.userData.currentTemperature = nextTemperature;
     container.userData.hasBeenHeated = true;
     const state = ensureContainerExperimentState(container);
-    state.temperature = temperature;
+    state.temperature = nextTemperature;
     state.hasBeenHeated = true;
 }
 
