@@ -17,6 +17,7 @@ import { initMascot, updateMascot } from './mascot.js';
 import { setupChemicalCabinet } from './cabinetChemical.js';
 import { pouringEffect, pouringState } from './interaction.js';
 import { createHeatingManager } from './HeatingManager.js';
+import { createLabAssemblyManager } from './LabAssemblyManager.js';
 
 const scene = new three.Scene();
 scene.background = new three.Color(0x0f172a);
@@ -91,6 +92,8 @@ initEnvironment(scene);
 initMascot(scene, camera);
 const heatingManager = createHeatingManager(scene, { getObjects: () => draggableObjects });
 window.heatingManager = heatingManager;
+const labAssemblyManager = createLabAssemblyManager(scene, { getObjects: () => draggableObjects });
+window.labAssemblyManager = labAssemblyManager;
 
 const loader = new GLTFLoader();
 const modelPath = './assets/models/';
@@ -142,6 +145,7 @@ function animate() {
         const isMoving = controlsManager.updateMovement();
         if (controlsManager.fps.isLocked) updateArmsAnimation(performance.now() / 1000, isMoving);
         updateMascot();
+        labAssemblyManager.syncObjects();
         heatingManager.update(delta);
         if (window.checkPouringCollision) window.checkPouringCollision();
         if (pouringEffect) pouringEffect.update(pouringState.currentPourTargetPos);

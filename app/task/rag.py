@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import concurrent.futures
 import json
 import logging
 from pathlib import Path
@@ -23,7 +24,11 @@ MIN_LEXICAL_OVERLAP = 0.05
 MIN_SPECIFIC_OVERLAP = 0.34
 MIN_REACTION_FUZZY_SCORE = 2.2
 MAX_SELECTED_CONTEXT_CHARS = 12000
+RAG_RETRIEVAL_TIMEOUT_SECONDS = 12
+RAG_EXTRACTION_TIMEOUT_SECONDS = 25
+RAG_GENERAL_TIMEOUT_SECONDS = 25
 REACTION_DATABASE_PATH = Path(__file__).resolve().parents[1] / "src" / "assets" / "threejs" / "ReactionDatabase.js"
+_RAG_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="mascot-rag")
 
 llm = HuggingFaceEndpoint(
     repo_id="Qwen/Qwen2.5-7B-Instruct",
@@ -77,6 +82,19 @@ def clean_repeating_text(text_value: str) -> str:
         seen.add(stripped)
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _run_with_timeout(label: str, timeout_seconds: float, default, func, *args, **kwargs):
+    future = _RAG_EXECUTOR.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        logger.error("[MascotRAG] %s timed out after %ss", label, timeout_seconds)
+        return default
+    except Exception as exc:
+        logger.exception("[MascotRAG] %s failed: %s", label, exc)
+        return default
 
 
 def _normalize_text(value: str) -> str:
@@ -456,6 +474,18 @@ def retrieve_knowledge_documents(query: str, subject: str, k: int = 8) -> list[K
     return []
 
 
+def retrieve_knowledge_documents_safe(query: str, subject: str, k: int = 8) -> list[KnowledgeDocument]:
+    return _run_with_timeout(
+        "retrieval",
+        RAG_RETRIEVAL_TIMEOUT_SECONDS,
+        [],
+        retrieve_knowledge_documents,
+        query,
+        subject,
+        k,
+    )
+
+
 def _doc_brief(doc: KnowledgeDocument) -> dict:
     return {
         "id": doc.id,
@@ -494,7 +524,7 @@ def _serialize_context(docs: list[KnowledgeDocument]) -> str:
 @tool
 def retrieved_context(query: str, subject: str):
     """Tìm kiếm thông tin thí nghiệm trong langchain_bg_embedding, rồi fallback sang langchain_pg_embedding."""
-    return _serialize_context(retrieve_knowledge_documents(query, subject, k=8))
+    return _serialize_context(retrieve_knowledge_documents_safe(query, subject, k=8))
 
 
 prompt = """
@@ -1906,7 +1936,15 @@ def ask_questions(question: str, selected_subject: str, history: list = None):
 
     input_messages.append(HumanMessage(content=f"[Môn học: {(selected_subject or 'general').lower()}] {question}"))
     try:
-        response = agent.invoke({"messages": input_messages})
+        response = _run_with_timeout(
+            "general answer generation",
+            RAG_GENERAL_TIMEOUT_SECONDS,
+            None,
+            agent.invoke,
+            {"messages": input_messages},
+        )
+        if response is None:
+            return "Xin lỗi, Mascot mất quá lâu để phản hồi. Bạn thử hỏi lại hoặc diễn đạt ngắn hơn nhé!"
         raw_answer = response["messages"][-1].content
         logger.info("RAG raw_llm_response=%s", raw_answer)
         return _extract_answer_text(raw_answer)
@@ -1916,11 +1954,15 @@ def ask_questions(question: str, selected_subject: str, history: list = None):
 
 
 def ask_questions_with_plan(question: str, selected_subject: str, history: list = None):
-    docs = retrieve_knowledge_documents(question, selected_subject, k=8)
     is_experiment_query = _is_chemistry_subject(selected_subject) and _is_experiment_question(question)
+    docs = retrieve_knowledge_documents_safe(question, selected_subject, k=8) if is_experiment_query else []
 
     if is_experiment_query:
-        plan, answer_text, extraction_validation = build_experiment_plan(
+        plan, answer_text, extraction_validation = _run_with_timeout(
+            "experiment plan extraction",
+            RAG_EXTRACTION_TIMEOUT_SECONDS,
+            (None, None, {"ok": False, "issues": ["llm_extraction_timeout"]}),
+            build_experiment_plan,
             question,
             selected_subject=selected_subject,
             retrieved_docs=docs,

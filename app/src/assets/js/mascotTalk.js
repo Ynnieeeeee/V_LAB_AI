@@ -2,6 +2,7 @@
 // It updates the existing panel without playback, auto-hide, or repeated DOM node churn.
 
 const mascotTalkScriptUrl = document.currentScript?.src || null;
+const MASCOT_REQUEST_TIMEOUT_MS = 45000;
 
 function getCurrentConvId() {
     return window.currentConvId || localStorage.getItem('mascot_conv_id') || null;
@@ -76,6 +77,8 @@ async function loadExperimentStepsForConversation(idConversation) {
 async function sendMascotMessage(question) {
     const mascotInput = document.getElementById('mascot-input');
     const mascotSendBtn = document.getElementById('mascot-send-btn');
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), MASCOT_REQUEST_TIMEOUT_MS);
 
     mascotTalk('Đang suy nghĩ...');
     if (mascotInput) mascotInput.disabled = true;
@@ -88,8 +91,9 @@ async function sendMascotMessage(question) {
             return;
         }
 
-        const response = await fetch('http://127.0.0.1:8000/message/send', {
+        const response = await fetch('/message/send', {
             method: 'POST',
+            signal: controller.signal,
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
@@ -149,8 +153,13 @@ async function sendMascotMessage(question) {
         }
     } catch (error) {
         console.error(error);
+        if (error?.name === 'AbortError') {
+            mascotTalk('Mascot phản hồi quá lâu nên mình đã dừng lượt này. Bạn thử hỏi lại ngắn hơn, hoặc kiểm tra backend RAG/log server nhé.');
+            return;
+        }
         mascotTalk('Rất tiếc, mình gặp lỗi khi kết nối với hệ thống. Bạn thử lại nhé!');
     } finally {
+        window.clearTimeout(timeoutId);
         if (mascotInput) {
             mascotInput.disabled = false;
             mascotInput.focus();
@@ -176,7 +185,7 @@ async function loadMessages(id) {
     if (!token) return;
 
     try {
-        const response = await fetch(`http://127.0.0.1:8000/api/message/full_history/${id}`, {
+        const response = await fetch(`/api/message/full_history/${id}`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 

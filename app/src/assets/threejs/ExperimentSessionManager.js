@@ -646,7 +646,7 @@ export function describeNextRequirement(container) {
     return 'Đúng rồi, các hóa chất và lượng đã khớp đề bài. Có thể tiếp tục phản ứng.';
 }
 
-export function validateExperimentBeforeReaction({ target } = {}) {
+export function validateExperimentBeforeReaction({ target, skipTemperature = false } = {}) {
     currentExperimentPlan = getCurrentExperimentPlan();
     if (!currentExperimentPlan) return { ok: true };
     if (!target?.userData) return fail('missing_container', 'Chưa xác định được dụng cụ chứa để kiểm tra thí nghiệm.');
@@ -657,8 +657,10 @@ export function validateExperimentBeforeReaction({ target } = {}) {
     const amountIssue = validateAmounts(target);
     if (amountIssue) return amountIssue;
 
-    const temperatureIssue = validateTemperature(target);
-    if (temperatureIssue) return temperatureIssue;
+    if (!skipTemperature) {
+        const temperatureIssue = validateTemperature(target);
+        if (temperatureIssue) return temperatureIssue;
+    }
 
     return { ok: true, message: currentExperimentPlan.success_message || 'Thí nghiệm thành công.' };
 }

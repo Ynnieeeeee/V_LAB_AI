@@ -1,4 +1,5 @@
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, JSON
 from typing import Optional
 from datetime import datetime
 import uuid
@@ -29,5 +30,17 @@ class Tools (SQLModel, table=True):
     heating_power: float = Field(default=0)
     max_temperature: float = Field(default=25)
     is_toggleable: bool = Field(default=False)
+    is_support_stand: bool = Field(default=False)
+    can_support_tools: bool = Field(default=False)
+    support_height: float = Field(default=0.8)
+    support_radius: float = Field(default=1.0)
+    scale_x: float = Field(default=1)
+    scale_y: float = Field(default=1)
+    scale_z: float = Field(default=1)
+    has_custom_scale: bool = Field(default=False)
+    capabilities: list = Field(default_factory=list, sa_column=Column(JSON, default=list))
+    ports: dict = Field(default_factory=dict, sa_column=Column(JSON, default=dict))
+    attach_points: dict = Field(default_factory=dict, sa_column=Column(JSON, default=dict))
+    assembly_role: str = Field(default="none")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

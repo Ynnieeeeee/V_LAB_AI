@@ -20,6 +20,14 @@ import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_EXPERIMENT_STEPS_SCHEMA_READY = False
+
+
+def _first_cell(row):
+    try:
+        return row[0]
+    except Exception:
+        return row
 
 def _norm(value: str) -> str:
     text_value = unicodedata.normalize("NFD", str(value or "").lower())
@@ -50,29 +58,73 @@ def _step_to_dict(step: ExpermentSteps) -> dict:
         "action_description": step.action_description
     }
 
+def _experiment_steps_columns(session: Session) -> set[str]:
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        rows = session.exec(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'experiment_steps'
+        """)).all()
+        return {str(_first_cell(row)) for row in rows}
+    if dialect == "sqlite":
+        rows = session.exec(text("PRAGMA table_info(experiment_steps)")).all()
+        return {str(row[1]) for row in rows}
+    return set()
+
+
 def _ensure_experiment_steps_columns(session: Session):
-    statements = [
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS step_order INTEGER DEFAULT 0",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS id_chemical UUID",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS id_tool UUID",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS chemical_name_vi VARCHAR",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS canonical_id VARCHAR",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS action_type VARCHAR DEFAULT 'pour'",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_amount DOUBLE PRECISION",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS unit VARCHAR",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS tolerance DOUBLE PRECISION",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS actual_amount DOUBLE PRECISION DEFAULT 0",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS auto_stop BOOLEAN DEFAULT TRUE",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS heating_required BOOLEAN DEFAULT FALSE",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_temperature DOUBLE PRECISION",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS is_failed BOOLEAN DEFAULT FALSE",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS experiment_id VARCHAR",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS reaction_id VARCHAR",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS action_description VARCHAR",
-        "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE"
-    ]
-    for statement in statements:
-        session.exec(text(statement))
+    global _EXPERIMENT_STEPS_SCHEMA_READY
+    if _EXPERIMENT_STEPS_SCHEMA_READY:
+        return
+
+    statements = {
+        "step_order": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS step_order INTEGER DEFAULT 0",
+        "id_chemical": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS id_chemical UUID",
+        "id_tool": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS id_tool UUID",
+        "chemical_name_vi": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS chemical_name_vi VARCHAR",
+        "canonical_id": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS canonical_id VARCHAR",
+        "action_type": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS action_type VARCHAR DEFAULT 'pour'",
+        "target_amount": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_amount DOUBLE PRECISION",
+        "unit": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS unit VARCHAR",
+        "tolerance": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS tolerance DOUBLE PRECISION",
+        "actual_amount": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS actual_amount DOUBLE PRECISION DEFAULT 0",
+        "auto_stop": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS auto_stop BOOLEAN DEFAULT TRUE",
+        "heating_required": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS heating_required BOOLEAN DEFAULT FALSE",
+        "target_temperature": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS target_temperature DOUBLE PRECISION",
+        "is_failed": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS is_failed BOOLEAN DEFAULT FALSE",
+        "experiment_id": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS experiment_id VARCHAR",
+        "reaction_id": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS reaction_id VARCHAR",
+        "action_description": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS action_description VARCHAR",
+        "is_completed": "ALTER TABLE experiment_steps ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE",
+    }
+
+    try:
+        existing = _experiment_steps_columns(session)
+    except Exception as exc:
+        logger.warning("Cannot inspect experiment_steps schema; skip runtime ALTER: %s", exc)
+        return
+
+    missing = [column for column in statements if column not in existing]
+    if not missing:
+        _EXPERIMENT_STEPS_SCHEMA_READY = True
+        return
+
+    with Session(engine) as schema_session:
+        dialect = schema_session.get_bind().dialect.name
+        for column in missing:
+            try:
+                if dialect == "postgresql":
+                    schema_session.exec(text("SET LOCAL lock_timeout = '750ms'"))
+                schema_session.exec(text(statements[column]))
+                schema_session.commit()
+            except Exception as exc:
+                schema_session.rollback()
+                logger.warning("Skipped experiment_steps schema update for %s: %s", column, exc)
+                return
+
+    _EXPERIMENT_STEPS_SCHEMA_READY = True
 
 def _as_uuid(value):
     if not value:

@@ -7,7 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 import uuid
 
-from app.models.base_db import check_db_connection, create_db_and_tables
+from app.models.base_db import check_db_connection, create_db_and_tables, engine
+from sqlmodel import Session
+from app.utils.tool_classifier import ensure_tools_metadata_columns
 from app.router.lab_router import router as lab_router
 from app.router.google_login import router as google_login
 from app.router.get_msg import router as get_msg
@@ -22,6 +24,12 @@ async def lifespan(app: FastAPI):
     print("Start application...")
     check_db_connection()
     create_db_and_tables()
+    try:
+        with Session(engine) as session:
+            ensure_tools_metadata_columns(session, backfill_existing=True)
+            session.commit()
+    except Exception as exc:
+        print(f"Tool metadata migration failed: {exc}")
     yield
     print("Shutdown application...")
 

@@ -21,18 +21,31 @@ export function autoScaleModel(model, targetSize){
  */
 
 export function animateScale(model, scaleFactor){
+    const targetScale = scaleFactor?.isVector3
+        ? scaleFactor.clone()
+        : new three.Vector3(scaleFactor, scaleFactor, scaleFactor);
+    const maxTarget = Math.max(targetScale.x, targetScale.y, targetScale.z) || 1;
     model.scale.set(0, 0, 0);
     let currentScale = 0;
-    const speed = scaleFactor * .005;
+    const speed = maxTarget * .005;
 
     const animate = () => {
         currentScale += speed;
 
-        if(currentScale < scaleFactor){
-            model.scale.set(currentScale, currentScale, currentScale);
+        if(currentScale < maxTarget){
+            const ratio = currentScale / maxTarget;
+            model.scale.set(
+                targetScale.x * ratio,
+                targetScale.y * ratio,
+                targetScale.z * ratio
+            );
             requestAnimationFrame(animate);
         } else {
-            model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+            model.scale.copy(targetScale);
+            if (model.userData) {
+                model.userData.customScale = targetScale.clone();
+                model.userData.hasCustomScale = true;
+            }
         }
     };
     animate();

@@ -751,6 +751,29 @@ function matchConditions(ctx, conditions = {}) {
     return true;
 }
 
+function checkConditionsDetailed(ctx, conditions = {}) {
+    const pendingReason = [];
+    const failedReason = [];
+    if (conditions.minTemperature !== undefined && ctx.temperature < conditions.minTemperature) pendingReason.push('temperature');
+    if (conditions.maxTemperature !== undefined && ctx.temperature > conditions.maxTemperature) failedReason.push('temperature');
+    if (conditions.environment && ctx.environment !== conditions.environment) failedReason.push('environment');
+    if (conditions.notEnvironment && ctx.environment === conditions.notEnvironment) failedReason.push('environment');
+    if (conditions.catalyst && !has(ctx, conditions.catalyst)) failedReason.push('catalyst');
+    if (conditions.proximity !== undefined && ctx.distance > conditions.proximity) failedReason.push('proximity');
+    if (conditions.notExisting && conditions.notExisting.some(spec => matchSpecies(ctx, spec))) failedReason.push('notExisting');
+    if (conditions.excess) {
+        const reagent = ctx.amount(conditions.excess.reagent);
+        const over = (conditions.excess.over || []).reduce((sum, name) => sum + ctx.amount(name), 0);
+        if (over <= 0 || reagent < over * (conditions.excess.ratio || 1)) failedReason.push('excess');
+    }
+    return {
+        ok: pendingReason.length === 0 && failedReason.length === 0,
+        pending: pendingReason.length > 0 && failedReason.length === 0,
+        pendingReason,
+        failedReason
+    };
+}
+
 function materializeRule(rule) {
     const out = {
         ...rule.result,
@@ -803,12 +826,34 @@ export function getReactionPool(source, target) {
 export function findLocalReaction(source, target) {
     const ctx = makeContext(source, target);
     const sorted = [...LOCAL_REACTION_RULES].sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    let pendingTemperature = null;
     for (const rule of sorted) {
         if (!matchReactants(ctx, rule.reactants || [])) continue;
         if (!matchExisting(ctx, rule.requiredExistingSpecies || [])) continue;
-        if (!matchConditions(ctx, rule.conditions || {})) continue;
+        const conditionResult = checkConditionsDetailed(ctx, rule.conditions || {});
+        if (!conditionResult.ok) {
+            if (conditionResult.pending && !pendingTemperature) {
+                const materialized = materializeRule(rule);
+                pendingTemperature = {
+                    has_reaction: false,
+                    pending_reaction: true,
+                    pendingReason: conditionResult.pendingReason,
+                    pendingReaction: {
+                        ...materialized,
+                        heating_required: true,
+                        target_temperature: rule.conditions?.minTemperature ?? null,
+                        temperature_tolerance: rule.conditions?.temperatureTolerance ?? 5
+                    },
+                    requiredTemperature: rule.conditions?.minTemperature ?? null,
+                    currentTemperature: ctx.temperature,
+                    reason: 'pending_temperature'
+                };
+            }
+            continue;
+        }
         return materializeRule(rule);
     }
+    if (pendingTemperature) return pendingTemperature;
     return {
         has_reaction: false,
         reason: 'no_local_rule',

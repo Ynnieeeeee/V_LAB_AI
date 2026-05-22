@@ -130,6 +130,116 @@ async function checkBackendStatus(scene) {
 /**
  * Tải mô hình và đặt vào vị trí lưới (Grid) trên bàn
  */
+function normalizeToolText(value = '') {
+    return String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd')
+        .replace(/Đ/g, 'd')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function toolSearchText(tool = {}, model = null) {
+    return normalizeToolText([
+        tool.name_tool_vi,
+        tool.name_tool_en,
+        tool.name_vi,
+        tool.name_en,
+        tool.tool_type,
+        model?.userData?.toolType,
+        model?.name
+    ].filter(Boolean).join(' '));
+}
+
+function isFlatHeatingTool(tool, model) {
+    const text = toolSearchText(tool, model);
+    return /(hot plate|heating plate|bep|bep dien|bep gia nhiet|bep dun|heater plate)/.test(text);
+}
+
+function isNaturallyHorizontalTool(tool, model) {
+    const text = toolSearchText(tool, model);
+    return /(petri|dia petri|watch glass|mat kinh dong ho|tray|khay|plate|stirring rod|glass rod|dua thuy tinh|pipette|ong hut)/.test(text);
+}
+
+function shouldAutoUprightModel(tool, model) {
+    const toolType = model?.userData?.toolType || tool?.tool_type || 'unknown';
+    if (toolType === 'heating_source' && isFlatHeatingTool(tool, model)) return false;
+    if (isNaturallyHorizontalTool(tool, model)) return false;
+    if (['container', 'support_stand', 'heating_source'].includes(toolType)) return true;
+
+    return true;
+}
+
+function measureModelWithRotation(model, baseRotation, offset, label) {
+    model.rotation.copy(baseRotation);
+    if (offset.x) model.rotateX(offset.x);
+    if (offset.y) model.rotateY(offset.y);
+    if (offset.z) model.rotateZ(offset.z);
+    model.updateMatrixWorld(true);
+
+    const box = new three.Box3().setFromObject(model);
+    const size = box.getSize(new three.Vector3());
+    return { label, offset, size };
+}
+
+function applyAutoUprightOrientation(model, tool) {
+    if (!shouldAutoUprightModel(tool, model)) return false;
+
+    const baseRotation = model.rotation.clone();
+    const candidates = [
+        { label: 'identity', offset: { x: 0, y: 0, z: 0 } },
+        { label: 'rotate_x_90', offset: { x: Math.PI / 2, y: 0, z: 0 } },
+        { label: 'rotate_x_-90', offset: { x: -Math.PI / 2, y: 0, z: 0 } },
+        { label: 'rotate_z_90', offset: { x: 0, y: 0, z: Math.PI / 2 } },
+        { label: 'rotate_z_-90', offset: { x: 0, y: 0, z: -Math.PI / 2 } }
+    ].map(candidate => measureModelWithRotation(model, baseRotation, candidate.offset, candidate.label));
+
+    const identity = candidates[0];
+    const best = candidates.reduce((selected, candidate) => (
+        candidate.size.y > selected.size.y ? candidate : selected
+    ), identity);
+
+    const shouldApply = (
+        best.label !== 'identity' &&
+        best.size.y > identity.size.y * 1.08
+    );
+
+    if (shouldApply) {
+        model.rotation.copy(baseRotation);
+        if (best.offset.x) model.rotateX(best.offset.x);
+        if (best.offset.y) model.rotateY(best.offset.y);
+        if (best.offset.z) model.rotateZ(best.offset.z);
+        model.userData.autoUprightApplied = best.label;
+        model.updateMatrixWorld(true);
+        console.log('[ModelOrientation] auto upright:', tool.name_tool_vi || tool.name_tool_en, best.label);
+        return true;
+    }
+
+    model.rotation.copy(baseRotation);
+    model.updateMatrixWorld(true);
+    return false;
+}
+
+function getPersistedToolScale(tool = {}, fallbackScale = 1) {
+    const sx = Number(tool.scale_x);
+    const sy = Number(tool.scale_y);
+    const sz = Number(tool.scale_z);
+    const values = [sx, sy, sz];
+    const hasScaleColumns = [tool.scale_x, tool.scale_y, tool.scale_z].every(value => value !== undefined && value !== null);
+    const hasCustomScale = tool.has_custom_scale === true ||
+        tool.has_custom_scale === 1 ||
+        String(tool.has_custom_scale).toLowerCase() === 'true';
+    const differsFromDbDefault = values.some(value => Math.abs(value - 1) > 1e-6);
+
+    if (hasScaleColumns && values.every(Number.isFinite) && (hasCustomScale || differsFromDbDefault)) {
+        return new three.Vector3(sx, sy, sz);
+    }
+
+    return new three.Vector3(fallbackScale, fallbackScale, fallbackScale);
+}
+
 export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
     if (!tool.model_3d_url) return;
 
@@ -148,6 +258,7 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         // Tự động Scale về kích thước chuẩn 0.6 đơn vị
         // 1. Đặt scale về 1 để tính toán kích thước thực thực tế của Model
         model.scale.set(1, 1, 1);
+        applyAutoUprightOrientation(model, tool);
         model.updateMatrixWorld(true);
 
         const box = new three.Box3().setFromObject(model);
@@ -158,43 +269,74 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         // 2. Tính toán tỉ lệ scale để đạt kích thước 0.6 đơn vị
         const maxDim = Math.max(size.x, size.y, size.z) || 1;
         const scaleFactor = 0.6 / maxDim;
+        const targetScale = getPersistedToolScale(tool, scaleFactor);
 
         // 3. Tính toán vị trí Grid (vẫn dùng center để căn giữa X, Z)
         const spacing = 0.9;
         const col = displayIndex % 8;
         const row = Math.floor(displayIndex / 8);
-        const spawnX = (col * spacing) - 3.2 - (center.x * scaleFactor);
-        const spawnZ = (row * spacing) - 1.2 - (center.z * scaleFactor);
+        const spawnX = (col * spacing) - 3.2 - (center.x * targetScale.x);
+        const spawnZ = (row * spacing) - 1.2 - (center.z * targetScale.z);
 
         // 4. Tính toán offsetToFloor dựa trên tỉ lệ scale
         // lowestPoint là y thấp nhất của box khi scale là 1
         const lowestPoint = box.min.y;
         const naturalOffset = model.position.y - lowestPoint;
-        const offsetToFloor = naturalOffset * scaleFactor;
+        const offsetToFloor = naturalOffset * targetScale.y;
         const spawnY = 1.6 + offsetToFloor;
 
-        model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+        model.scale.copy(targetScale);
         model.position.set(spawnX, spawnY, spawnZ);
         
         // Lưu metadata chuẩn
         model.userData.instanceId = instanceId;
         model.userData.toolData = tool;
         model.userData.toolType = model.userData.toolType || 'unknown';
+        if (model.userData.toolType === 'support_stand' || model.userData.isSupportStand === true) {
+            model.userData.toolType = 'support_stand';
+            model.userData.isSupportStand = true;
+            model.userData.canSupportTools = true;
+            model.userData.isHeatingSource = false;
+            model.userData.heatingPower = 0;
+            model.userData.maxTemperature = 25;
+            model.userData.isToggleable = false;
+            model.userData.isOn = false;
+        }
         model.userData.isHeatingSource = model.userData.isHeatingSource === true;
-        model.userData.heatingPower = Number(model.userData.heatingPower || 0);
-        model.userData.maxTemperature = Number(model.userData.maxTemperature || 25);
+        model.userData.heatingPower = model.userData.isHeatingSource ? (Number(model.userData.heatingPower || 8) || 8) : 0;
+        model.userData.maxTemperature = model.userData.isHeatingSource ? (Number(model.userData.maxTemperature || 120) || 120) : 25;
         model.userData.isToggleable = model.userData.isToggleable === true;
-        model.userData.isOn = false;
+        model.userData.isSupportStand = model.userData.isSupportStand === true;
+        model.userData.canSupportTools = model.userData.canSupportTools === true;
+        model.userData.supportHeight = Number(model.userData.supportHeight || 0.8) || 0.8;
+        model.userData.supportRadius = Number(model.userData.supportRadius || 1.0) || 1.0;
+        model.userData.isOn = Boolean(model.userData.isOn && model.userData.isHeatingSource && model.userData.isToggleable);
+        if (model.userData.toolType === 'container') {
+            model.userData.currentTemperature ??= 25;
+            model.userData.temperature ??= model.userData.currentTemperature;
+            model.userData.isHeating = false;
+            model.userData.heatingSource = null;
+            model.userData.isOnSupportStand = false;
+            model.userData.supportStand = null;
+            model.userData.isSnappedToSupport = false;
+            model.userData.pendingReaction = null;
+            model.userData.pendingReason = null;
+        }
         model.userData.originalScale = scaleFactor;
+        model.userData.baseScale = new three.Vector3(scaleFactor, scaleFactor, scaleFactor);
+        model.userData.customScale = targetScale.clone();
+        model.userData.hasCustomScale = true;
         model.userData.offsetToFloor = offsetToFloor;
 
         // Cho phép kéo thả nếu đã đăng ký module Draggable
         if (globalRegisterDraggable) {
             globalRegisterDraggable(model);
         }
+        window.heatingManager?.registerObject?.(model);
+        window.labAssemblyManager?.registerObject?.(model);
 
         // Hiệu ứng Scale-up khi xuất hiện
-        animateScale(model, scaleFactor);
+        animateScale(model, targetScale);
 
         scene.add(model);
         loaderModels.set(instanceId, model);

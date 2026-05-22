@@ -1,7 +1,7 @@
 import requests
 import re
 import json
-from app.config import HF_TOKEN
+from app.config import HF_TOKEN, PUBLIC_BASE_URL
 
 class VisionService:
     def __init__(self):
@@ -22,6 +22,11 @@ class VisionService:
 
     def analyze_material(self, image_url: str):
         """Phân tích loại chất liệu (classification) để áp dụng bộ thông số PBR chuẩn"""
+        if image_url and image_url.startswith("/static/"):
+            if not PUBLIC_BASE_URL:
+                return {"roughness": 0.5, "metalness": 0.0, "ior": 1.5, "transmission": 0.0, "is_glass": False, "clearcoat": 0.0, "material_color": "#ffffff"}
+            image_url = f"{PUBLIC_BASE_URL.rstrip('/')}{image_url}"
+
         prompt = """
             Act as a Laboratory Equipment Specialist. Analyze the image and identify:
             1. The primary material (GLASS, METAL, PLASTIC, LIQUID, or OTHER).
@@ -82,4 +87,4 @@ class VisionService:
         except Exception as e:
             print(f"Lỗi Vision Service: {e}")
 
-        return {"roughness": 0.5, "metalness": 0.0, "ior": 1.5, "transmission": 0.0, "is_glass": False, "clearcoat": 0.0, "material_color": "#ffffff"}
+        return {"roughness": 0.5, "metalness": 0.0, "ior": 1.5, "transmission": 0.0, "is_glass": False, "clearcoat": 0.0, "material_color": "#ffffff"}

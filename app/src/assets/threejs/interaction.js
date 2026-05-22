@@ -29,7 +29,16 @@ import {
     shouldEmitSmokeOrGas,
     reactionGasDebug
 } from './reactionGasUtils.js';
-import { canToggleHeatingSource, toggleHeatingSource } from './HeatingManager.js';
+import {
+    autoSnapContainerToNearestSupportStand,
+    autoSnapContainerToNearestHeatingSource,
+    canToggleHeatingSource,
+    releaseHeatingSourceFromSupportStand,
+    releaseContainerFromSupportStand,
+    releaseContainerFromHeatingSource,
+    toggleHeatingSource,
+    tryPlaceHeatingSourceUnderSupport
+} from './HeatingManager.js';
 const THREE = three;
 
 function isSolidChemical(obj) {
@@ -257,6 +266,74 @@ function getWorldCenter(obj) {
     return center;
 }
 
+function getSavedScale(object) {
+    if (!object?.scale) return new three.Vector3(1, 1, 1);
+    return object.userData?.customScale?.clone?.() || object.scale.clone();
+}
+
+function rememberCustomScale(object, scale = null) {
+    if (!object?.userData || !object?.scale) return null;
+    const saved = scale?.clone?.() || object.scale.clone();
+    object.userData.customScale = saved;
+    object.userData.hasCustomScale = true;
+    console.log('[Scale] saved customScale:', saved);
+    return saved;
+}
+
+function restoreCustomScale(object, savedScale = null) {
+    if (!object?.scale) return;
+    const scale = savedScale?.clone?.() || object.userData?.customScale?.clone?.();
+    if (!scale) return;
+    object.scale.copy(scale);
+}
+
+function updateOffsetToFloor(object) {
+    if (!object?.userData) return;
+    object.updateMatrixWorld(true);
+    const box = new three.Box3().setFromObject(object);
+    object.userData.offsetToFloor = object.position.y - box.min.y;
+}
+
+function attachKeepWorldTransform(parent, child) {
+    if (!parent || !child) return;
+    child.updateMatrixWorld(true);
+    const worldScale = new three.Vector3();
+    child.getWorldScale(worldScale);
+    const savedScale = child.userData?.customScale?.clone?.() || child.scale.clone() || worldScale;
+    console.log('[Scale] before move:', child.scale);
+    parent.attach(child);
+    child.scale.copy(savedScale);
+    rememberCustomScale(child, savedScale);
+    child.updateMatrixWorld(true);
+    console.log('[Scale] after move:', child.scale);
+}
+
+async function persistToolScale(object) {
+    const idTool = object?.userData?.toolData?.id_tool || object?.userData?.id_tool;
+    if (!idTool || !object?.scale) return;
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    const scale = object.scale;
+    try {
+        const baseUrl = window.API_URL || 'http://127.0.0.1:8000';
+        await fetch(`${baseUrl}/api/lab/tools/${idTool}/scale`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                scale_x: scale.x,
+                scale_y: scale.y,
+                scale_z: scale.z
+            })
+        });
+    } catch (error) {
+        console.warn('[Scale] failed to persist scale:', error);
+    }
+}
+
 export const draggableObjects = [];
 let heldObjectRight = null; // Đối tượng tay phải
 let heldObjectLeft = null;  // Đối tượng tay trái
@@ -279,6 +356,48 @@ function toggleHeatingForObject(object) {
     const name = object.userData.toolData?.name_tool_vi || object.userData.toolData?.name_tool_en || 'nguồn nhiệt';
     triggerMascotSpeech(isOn ? `Đã bật ${name}.` : `Đã tắt ${name}.`);
     return true;
+}
+
+function isHeatingContainer(object) {
+    return object?.userData?.toolType === 'container';
+}
+
+function isHeatingSourceObject(object) {
+    return object?.userData?.isHeatingSource === true;
+}
+
+function snapToHeatingSourceIfNear(object) {
+    const tryAssemblyConnect = () => {
+        const connection = window.labAssemblyManager?.tryAutoConnect?.(object, draggableObjects, { maxDistance: 0.55 });
+        if (connection && pouringEffect) pouringEffect.invalidateCavity(object);
+        return Boolean(connection);
+    };
+
+    if (isHeatingSourceObject(object)) {
+        const placed = tryPlaceHeatingSourceUnderSupport(object, draggableObjects, { maxDistance: 1.0 });
+        tryAssemblyConnect();
+        if (placed && pouringEffect) pouringEffect.invalidateCavity(object);
+        return placed;
+    }
+    if (!isHeatingContainer(object)) return tryAssemblyConnect();
+    const snappedToSupport = autoSnapContainerToNearestSupportStand(object, draggableObjects, { maxDistance: 1.0 });
+    const connected = tryAssemblyConnect();
+    if (snappedToSupport) {
+        if (pouringEffect) pouringEffect.invalidateCavity(object);
+        return true;
+    }
+    const snapped = autoSnapContainerToNearestHeatingSource(object, draggableObjects, { maxDistance: 1.0 });
+    if (!connected) tryAssemblyConnect();
+    if (snapped && pouringEffect) pouringEffect.invalidateCavity(object);
+    return snapped || connected;
+}
+
+function releaseHeatingSnapIfNeeded(object) {
+    if (!object?.userData) return;
+    window.labAssemblyManager?.disconnectTool?.(object);
+    if (object.userData.isSnappedToSupport) releaseContainerFromSupportStand(object);
+    if (object.userData.isSnappedToHeatingSource) releaseContainerFromHeatingSource(object);
+    if (object.userData.isUnderSupportStand) releaseHeatingSourceFromSupportStand(object);
 }
 
 export let pouringEffect;
@@ -375,6 +494,9 @@ rightArmGroup.add(rightArm);
 
 export function registerDraggableObject(obj) {
     obj.updateMatrixWorld(true);
+    if (!obj.userData.hasCustomScale || !obj.userData.customScale) {
+        rememberCustomScale(obj);
+    }
 
     // Lưu Scale và Quaternion nguyên bản ngay khi đăng ký
     if (!obj.userData.originalWorldScale) {
@@ -449,7 +571,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         if (currentHeld) {
             // Thả vật thể về Scene (Sử dụng attach để giữ nguyên world transform tạm thời)
-            scene.attach(currentHeld);
+            const savedScale = getSavedScale(currentHeld);
+            attachKeepWorldTransform(scene, currentHeld);
             if (pouringEffect) pouringEffect.invalidateCavity(currentHeld);
 
             // Tìm điểm va chạm để đặt vật thể
@@ -486,10 +609,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             }
 
             // KHÔI PHỤC TRẠNG THÁI GỐC (SỬ DỤNG WORLD DATA ĐÃ LƯU)
-            if (currentHeld.userData.originalWorldScale) {
-                const s = currentHeld.userData.originalWorldScale;
-                currentHeld.scale.set(s, s, s);
-            }
+            restoreCustomScale(currentHeld, savedScale);
 
             // Ưu tiên sử dụng originalQuaternion từ lúc đăng ký để đảm bảo không bị lộn ngược
             const targetQuat = currentHeld.userData.originalQuaternion || currentHeld.userData.originalWorldQuaternion;
@@ -504,6 +624,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             // Tính toán khoảng cách chênh lệch để vật thể chạm đất/bàn
             const bottomOffset = currentHeld.position.y - bottomY;
             currentHeld.position.y += bottomOffset;
+            updateOffsetToFloor(currentHeld);
+
+            snapToHeatingSourceIfNear(currentHeld);
 
             if (isRightHand) heldObjectRight = null;
             else heldObjectLeft = null;
@@ -523,6 +646,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 // Kiểm tra xem vật này có đang bị tay kia cầm không
                 if (root === heldObjectRight || root === heldObjectLeft) return;
 
+                releaseHeatingSnapIfNeeded(root);
+
                 if (isRightHand) heldObjectRight = root;
                 else heldObjectLeft = root;
 
@@ -537,15 +662,15 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     root.getWorldQuaternion(worldQuat);
                     root.userData.originalWorldQuaternion = worldQuat.clone();
 
-                    slot.attach(root);
+                    const savedScale = getSavedScale(root);
+                    attachKeepWorldTransform(slot, root);
                     if (pouringEffect) pouringEffect.invalidateCavity(root);
                     root.position.set(0, 0.1, 0);
                     root.rotation.order = 'YXZ';
                     root.rotation.set(0, isRightHand ? -Math.PI / 2 : Math.PI / 2, 0);
 
                     // Scale khi cầm trên tay (nhỏ đi một chút)
-                    const s = root.userData.originalWorldScale * 0.7;
-                    root.scale.set(s, s, s);
+                    restoreCustomScale(root, savedScale);
 
                     // Không gọi mascot khi chỉ cầm/nhặt dụng cụ hoặc hóa chất.
                     // Mascot chỉ hiển thị sau khi phản ứng thật sự xảy ra.
@@ -787,6 +912,223 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             ].filter(Boolean)
         });
     }
+
+    function normalizeForCompare(value) {
+        return String(value || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/đ/g, 'd')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function reactionTemperatureTarget(reaction) {
+        const raw = reaction?.raw || {};
+        const conditions = reaction?.conditions || raw?.conditions || raw?.reaction_data?.conditions || {};
+        const value =
+            reaction?.target_temperature ??
+            reaction?.targetTemperature ??
+            reaction?.requiredTemperature ??
+            reaction?.required_temperature ??
+            conditions?.minTemperature ??
+            raw?.requiredTemperature ??
+            raw?.required_temperature;
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+    }
+
+    function reactionRequiresHeating(reaction) {
+        return Boolean(
+            reaction?.heating_required ||
+            reaction?.heatingRequired ||
+            reactionTemperatureTarget(reaction) !== null
+        );
+    }
+
+    function checkTemperature(container, reaction) {
+        if (!reactionRequiresHeating(reaction)) return true;
+        const current = Number(container?.userData?.currentTemperature ?? container?.userData?.temperature ?? 25);
+        const target = reactionTemperatureTarget(reaction);
+        const tolerance = Number(reaction?.temperature_tolerance ?? reaction?.temperatureTolerance ?? 5);
+        if (target === null) return false;
+        return current >= target - tolerance;
+    }
+
+    function containerHasSpecies(container, name) {
+        if (!name || !container?.userData) return true;
+        const needle = normalizeForCompare(name);
+        const values = [
+            container.userData.current_chemical_name,
+            container.userData.chemicalName,
+            container.userData.current_chemical_type,
+            container.userData.chemicalType,
+            ...(container.userData.contents || []),
+            ...(container.userData.products || []),
+            ...(container.userData.reactionProducts || []),
+            ...Object.keys(container.userData.composition || {})
+        ].filter(Boolean).map(normalizeForCompare);
+        return values.some(value => value === needle || value.includes(needle) || needle.includes(value));
+    }
+
+    function checkCatalyst(container, reaction) {
+        const raw = reaction?.raw || {};
+        const conditions = reaction?.conditions || raw?.conditions || raw?.reaction_data?.conditions || {};
+        const catalyst = reaction?.catalyst || conditions?.catalyst;
+        return containerHasSpecies(container, catalyst);
+    }
+
+    function getPendingReactionPayload(reaction) {
+        return reaction?.pendingReaction || reaction?.pending_reaction_data || reaction?.reaction || null;
+    }
+
+    function isPendingReactionResult(reaction) {
+        return Boolean(reaction?.pending_reaction || reaction?.pendingReaction || reaction?.reason === 'pending_temperature');
+    }
+
+    function storePendingReaction(container, reaction, source = null) {
+        const pending = getPendingReactionPayload(reaction);
+        if (!container?.userData || !pending) return false;
+        container.userData.pendingReaction = {
+            ...pending,
+            heating_required: pending.heating_required ?? true,
+            target_temperature: pending.target_temperature ?? reaction.requiredTemperature ?? reactionTemperatureTarget(pending),
+            temperature_tolerance: pending.temperature_tolerance ?? 5
+        };
+        container.userData.pendingReason = reaction.pendingReason || reaction.pending_reason || ['temperature'];
+        container.userData.pendingSourceSnapshot = source ? {
+            name: getChemicalName(source),
+            id: getChemicalId(source),
+            type: getChemicalType(source),
+            color: getChemicalColor(source)
+        } : null;
+        container.userData.pendingReactionStartedAt = Date.now();
+        console.log('[ReactionManager] pending reaction:', container.userData.pendingReaction.name || container.userData.pendingReaction.id);
+        console.log('[ReactionManager] temperature ok:', checkTemperature(container, container.userData.pendingReaction));
+        return true;
+    }
+
+    function applyPendingReaction(container, reaction) {
+        if (!container?.userData || !reaction) return;
+        const targetObject = container;
+        reaction.has_reaction = true;
+        console.log('[ReactionManager] triggering pending reaction:', reaction.name || reaction.id);
+
+        createReactionEffect({
+            container: targetObject,
+            position: getContainerEffectPosition(targetObject),
+            color: reaction.color,
+            gas: reaction.gas,
+            smoke: reaction.smoke,
+            fire: reaction.fire,
+            explosion: reaction.explosion,
+            heat: reaction.heat,
+            foam: reaction.foam,
+            gasColor: reaction.gasColor,
+            smokeColor: reaction.smokeColor,
+            raw: reaction.raw || reaction,
+            effects: reaction.effects,
+            precipitate: reaction.precipitate,
+            precipitateColor: reaction.precipitateColor
+        });
+
+        targetObject.userData.liquidLevel = Math.min(0.8, (targetObject.userData.liquidLevel || 0) + 0.003);
+        const volume = pouringEffect.getOrCreateVolume(targetObject);
+
+        if (reaction.color && volume) {
+            const reactionColor = new three.Color(reaction.color);
+            volume.userData.targetColor = reactionColor;
+            volume.userData.isColorLerping = true;
+            volume.material.emissive = reactionColor.clone().multiplyScalar(0.08);
+            volume.material.needsUpdate = true;
+            targetObject.userData.liquidColor = reactionColor.clone();
+        }
+
+        const allowGasVisual = shouldEmitSmokeOrGas(reaction);
+        targetObject.userData.hasGasEffect = allowGasVisual;
+        if (volume) volume.userData.hasGasEffect = allowGasVisual;
+        if (!allowGasVisual) pouringEffect.clearSmokeEffectForTarget?.(targetObject);
+
+        if (targetObject.userData.hasSolidDeposit) {
+            clearDissolvablePowder(targetObject);
+            targetObject.userData.hasSolidDeposit = false;
+        }
+
+        if (hasPrecipitateReaction(reaction)) {
+            const precipitateColor = getPrecipitateColor(reaction);
+            createPrecipitate(targetObject, precipitateColor);
+            targetObject.userData.hasPrecipitate = true;
+            targetObject.userData.precipitateColor = precipitateColor;
+            if (volume) volume.userData.hasPrecipitate = true;
+        }
+        if (reaction.dissolvePrecipitate) {
+            clearPrecipitateLayer(targetObject);
+            if (volume) volume.userData.hasPrecipitate = false;
+        }
+        if (reaction.mirrorCoating) createSilverMirrorCoating(targetObject);
+        if (reaction.decolorize && volume) decolorizeLiquid(targetObject, reaction.color || '#ffffff');
+        if (reaction.twoLayerLiquid && volume) {
+            volume.userData.twoLayerLiquid = true;
+            targetObject.userData.twoLayerLiquid = true;
+            applyPhaseSeparation(targetObject, {
+                upperColor: targetObject.userData.upperLayerColor || '#fff4c2',
+                lowerColor: targetObject.userData.lowerLayerColor || '#f8f8ff'
+            });
+        }
+
+        rememberContainerContents(targetObject, reaction.products || [], reaction.result_chemical_id, reaction.result_chemical_type);
+        addContainerComposition(targetObject, reaction.products || [], reaction.result_chemical_id, reaction.result_chemical_type);
+        applyReactionState(targetObject, reaction);
+        markReactionSuccess(targetObject, reaction);
+
+        targetObject.userData.current_chemical_type = reaction.result_chemical_type || 'generic_solution';
+        targetObject.userData.current_chemical_id = reaction.result_chemical_id || `${reaction.id || 'heated_reaction'}_${Date.now()}`;
+        targetObject.userData.reactionStage = (targetObject.userData.reactionStage || 0) + 1;
+        targetObject.userData.chemicalType = targetObject.userData.current_chemical_type;
+        targetObject.userData.chemicalName = (reaction.products && reaction.products[0]) || 'Dung dịch phản ứng';
+        targetObject.userData.current_chemical_name = targetObject.userData.chemicalName;
+        targetObject.userData.color = reaction.color;
+
+        if (volume) {
+            volume.userData.chemicalType = targetObject.userData.chemicalType;
+            volume.userData.chemicalName = targetObject.userData.chemicalName;
+            volume.userData.color = reaction.color;
+        }
+
+        targetObject.userData.isReacting = true;
+        window.setTimeout(() => {
+            if (targetObject?.userData) targetObject.userData.isReacting = false;
+        }, 1800);
+
+        triggerMascotSpeech(hasActiveExperimentPlan()
+            ? (window.currentExperimentPlan?.success_message || formatReactionMascotText(reaction))
+            : formatReactionMascotText(reaction));
+    }
+
+    function tryTriggerPendingReaction(container) {
+        const reaction = container?.userData?.pendingReaction;
+        if (!reaction) return;
+        const temperatureOk = checkTemperature(container, reaction);
+        const catalystOk = checkCatalyst(container, reaction);
+        const now = performance.now();
+        if (!container.userData.lastPendingReactionLogAt || now - container.userData.lastPendingReactionLogAt > 1000) {
+            console.log('[ReactionManager] pending reaction:', reaction.name || reaction.id);
+            console.log('[ReactionManager] temperature ok:', temperatureOk);
+            container.userData.lastPendingReactionLogAt = now;
+        }
+        if (!temperatureOk || !catalystOk) return;
+        container.userData.pendingReaction = null;
+        container.userData.pendingReason = null;
+        applyPendingReaction(container, reaction);
+    }
+
+    window.ReactionManager = {
+        ...(window.ReactionManager || {}),
+        tryTriggerPendingReaction,
+        checkTemperature,
+        checkCatalyst
+    };
+    window.tryTriggerPendingReaction = tryTriggerPendingReaction;
 
 
     window.checkPouringCollision = () => {
@@ -1077,7 +1419,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             console.log("REACTION CHECK:", { type1, type2, sourceId, targetId });
 
             if (hasActiveExperimentPlan()) {
-                const validation = validateExperimentBeforeReaction({ source, target });
+                const validation = validateExperimentBeforeReaction({ source, target, skipTemperature: true });
                 if (!validation.ok) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
@@ -1093,7 +1435,64 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             console.log("REACTION RESULT:", reaction);
 
+            if (reaction?.has_reaction || isPendingReactionResult(reaction)) {
+                const setupValidation = window.labAssemblyManager?.validateReactionSetup?.(
+                    isPendingReactionResult(reaction) ? getPendingReactionPayload(reaction) : reaction,
+                    target
+                );
+                if (setupValidation && !setupValidation.ok) {
+                    addSourceContentToContainer(target, source, {
+                        replaceIdentity: false,
+                        forceSourceColor: false
+                    });
+                    target.userData.isReacting = false;
+                    triggerMascotSpeech(setupValidation.message || 'Cần lắp đúng bộ dụng cụ trước khi phản ứng xảy ra.');
+                    return;
+                }
+            }
+
+            if (isPendingReactionResult(reaction)) {
+                addSourceContentToContainer(target, source, {
+                    replaceIdentity: false,
+                    forceSourceColor: false
+                });
+                storePendingReaction(target, reaction, source);
+                target.userData.isReacting = false;
+                const targetTemp = reaction.requiredTemperature ?? reactionTemperatureTarget(getPendingReactionPayload(reaction));
+                triggerMascotSpeech(targetTemp
+                    ? `Phản ứng cần đun nóng. Nhiệt độ hiện khoảng ${Number(target.userData.currentTemperature ?? 25).toFixed(1)}°C, cần khoảng ${targetTemp}°C.`
+                    : 'Phản ứng cần đun nóng trước khi xảy ra.');
+                return;
+            }
+
+            if (reaction?.has_reaction && reactionRequiresHeating(reaction) && !checkTemperature(target, reaction)) {
+                addSourceContentToContainer(target, source, {
+                    replaceIdentity: false,
+                    forceSourceColor: false
+                });
+                storePendingReaction(target, {
+                    pending_reaction: true,
+                    pendingReason: ['temperature'],
+                    pendingReaction: reaction,
+                    requiredTemperature: reactionTemperatureTarget(reaction),
+                    currentTemperature: target.userData.currentTemperature ?? 25
+                }, source);
+                target.userData.isReacting = false;
+                triggerMascotSpeech(`Phản ứng đang chờ gia nhiệt. Nhiệt độ hiện khoảng ${Number(target.userData.currentTemperature ?? 25).toFixed(1)}°C.`);
+                return;
+            }
+
             if (hasActiveExperimentPlan()) {
+                const conditionValidation = validateExperimentBeforeReaction({ source, target });
+                if (!conditionValidation.ok) {
+                    addSourceContentToContainer(target, source, {
+                        replaceIdentity: false,
+                        forceSourceColor: false
+                    });
+                    target.userData.isReacting = false;
+                    triggerMascotSpeech(conditionValidation.message || 'Thí nghiệm chưa đủ điều kiện nên phản ứng chưa xảy ra.');
+                    return;
+                }
                 const reactionValidation = validateReactionResult(reaction);
                 if (!reactionValidation.ok) {
                     addSourceContentToContainer(target, source, {
@@ -1321,7 +1720,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (intersects.length > 0) {
             draggedObject = resolveDraggableRoot(intersects[0].object);
             if (!draggedObject) return;
-            scene.attach(draggedObject);
+            releaseHeatingSnapIfNeeded(draggedObject);
+            const savedScale = getSavedScale(draggedObject);
+            attachKeepWorldTransform(scene, draggedObject);
             if (pouringEffect) pouringEffect.invalidateCavity(draggedObject);
 
             // Khôi phục scale và hướng xoay chuẩn (World)
@@ -1336,15 +1737,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 draggedObject.userData.originalQuaternion = worldQuat.clone();
             }
 
-            const s = draggedObject.userData.originalWorldScale;
-            draggedObject.scale.set(s, s, s);
+            restoreCustomScale(draggedObject, savedScale);
             draggedObject.quaternion.copy(draggedObject.userData.originalQuaternion);
 
             // Chỉ tính offset nếu chưa có
-            if (draggedObject.userData.offsetToFloor === undefined) {
-                const box = new three.Box3().setFromObject(draggedObject);
-                draggedObject.userData.offsetToFloor = draggedObject.position.y - box.min.y;
-            }
+            updateOffsetToFloor(draggedObject);
 
             orbit.enabled = false;
 
@@ -1386,6 +1783,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     window.addEventListener('pointerup', () => {
         if (draggedObject) {
+            snapToHeatingSourceIfNear(draggedObject);
             orbit.enabled = true;
             draggedObject = null;
         }
@@ -1406,6 +1804,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 if (selectedObjectForMenu.scale.x > maxScale) {
                     selectedObjectForMenu.scale.set(maxScale, maxScale, maxScale);
                 }
+                rememberCustomScale(selectedObjectForMenu);
+                updateOffsetToFloor(selectedObjectForMenu);
+                persistToolScale(selectedObjectForMenu);
             }
             contextmenu.classList.add('hidden');
         };
@@ -1421,6 +1822,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 if (selectedObjectForMenu.scale.x < minScale) {
                     selectedObjectForMenu.scale.set(minScale, minScale, minScale);
                 }
+                rememberCustomScale(selectedObjectForMenu);
+                updateOffsetToFloor(selectedObjectForMenu);
+                persistToolScale(selectedObjectForMenu);
             }
             contextmenu.classList.add('hidden');
         };

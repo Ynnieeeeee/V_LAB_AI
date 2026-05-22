@@ -6,3 +6,4 @@ app/static/models/
 app/data/
 __pycache__/
 *.pyc
+app/static/cleaned_tool_images/

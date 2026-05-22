@@ -56,6 +56,11 @@ function normalizeApiReaction(data) {
         return {
             has_reaction: false,
             reason: data?.reason || 'no_reaction',
+            pending_reaction: Boolean(data?.pending_reaction || data?.pendingReaction),
+            pendingReason: data?.pendingReason || data?.pending_reason || [],
+            pendingReaction: data?.pendingReaction || data?.pending_reaction_data || data?.reaction || null,
+            requiredTemperature: data?.requiredTemperature ?? data?.required_temperature ?? null,
+            currentTemperature: data?.currentTemperature ?? data?.current_temperature ?? null,
             foam: data?.foam ?? visual.foam ?? effects.foam ?? inferred.foam,
             mascotText: data?.mascot_speech || 'Không có dấu hiệu phản ứng hóa học rõ ràng.'
         };
@@ -250,6 +255,7 @@ export async function detectReaction(source, target) {
     // Local database được kiểm tra trước để hỗ trợ phản ứng nhiều giai đoạn dựa trên contents/products.
     const local = findLocalReaction(source, target);
     if (local?.has_reaction) return normalizeApiReaction(local);
+    if (local?.pending_reaction) return normalizeApiReaction(local);
 
     // Nếu thiếu ID, vẫn cho phép fallback theo tên/contents thay vì chặn hoàn toàn.
     if (!sourceId || !targetId || sourceId === targetId) {

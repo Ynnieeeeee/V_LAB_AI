@@ -1,53 +1,59 @@
-from fastapi import HTTPException, Depends, APIRouter, BackgroundTasks
-from app.services.lab_service import LabServices
-from app.models.tools import Tools
+from datetime import datetime
+import math
+import time
+import uuid
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlmodel import Session, select
+
+from app.models.base_db import engine, get_session
 from app.models.conversations import Conversations
 from app.models.profiles import Profiles
-from app.models.base_db import engine, get_session
-from sqlmodel import Session, select
-from app.task.lab_task import start_3d_pipeline_task
+from app.models.tools import Tools
+from app.services.lab_service import LabServices
+from app.task.lab_task import get_processing_tool_ids, start_3d_pipeline_task
 from app.utils.get_current_user import get_current_user
 from app.utils.tool_classifier import ensure_tools_metadata_columns
 
+
 router = APIRouter(prefix="/api/lab", tags=["Laboratory"])
 lab_service = LabServices()
+LAST_PIPELINE_REQUEUE_AT = {}
+
+
 @router.post("/generate")
 async def generate_lab(
-    payload: dict, 
-    backgroundtask: BackgroundTasks, 
+    payload: dict,
+    backgroundtask: BackgroundTasks,
     session: Session = Depends(get_session),
-    user: Profiles = Depends(get_current_user)
+    user: Profiles = Depends(get_current_user),
 ):
     user_text = payload.get("text")
-    id_conv = payload.get("id_conv") 
+    id_conv = payload.get("id_conv")
     subject = payload.get("subject", "chemistry")
 
+    ensure_tools_metadata_columns(session)
+    session.commit()
+
     if not user_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Thiếu thông tin mô tả"
-        )
-    
-    # Nếu không có id_conv, tạo mới cuộc hội thoại
+        raise HTTPException(status_code=400, detail="Thieu thong tin mo ta")
+
     if not id_conv or id_conv == "null" or id_conv == "undefined":
         new_conv = Conversations(
             id_profile=user.id_profile,
             title=user_text[:50],
-            subject_type=subject
+            subject_type=subject,
         )
         session.add(new_conv)
         session.commit()
         session.refresh(new_conv)
         id_conv = new_conv.id_conv
-    
-    # 1. AI trích xuất dụng cụ dựa trên ngữ cảnh môn học
-    extracted_data = await lab_service.process_user_request(user_text, id_conv, subject)
 
+    extracted_data = await lab_service.process_user_request(user_text, id_conv, subject)
     tool_ids_to_process = []
     response_data = []
 
     for item in extracted_data:
-        # Sử dụng dụng cụ đã được LabService tạo
         response_data.append({
             "name": item["name_vi"],
             "quantity": item["quantity"],
@@ -56,31 +62,123 @@ async def generate_lab(
             "is_heating_source": item.get("is_heating_source", False),
             "heating_power": item.get("heating_power", 0),
             "max_temperature": item.get("max_temperature", 25),
-            "is_toggleable": item.get("is_toggleable", False)
+            "is_toggleable": item.get("is_toggleable", False),
+            "is_support_stand": item.get("is_support_stand", False),
+            "can_support_tools": item.get("can_support_tools", False),
+            "support_height": item.get("support_height", 0.8),
+            "support_radius": item.get("support_radius", 1.0),
+            "scale_x": item.get("scale_x", 1),
+            "scale_y": item.get("scale_y", 1),
+            "scale_z": item.get("scale_z", 1),
+            "has_custom_scale": item.get("has_custom_scale", False),
+            "capabilities": item.get("capabilities", []),
+            "ports": item.get("ports", {}),
+            "attach_points": item.get("attach_points", {}),
+            "assembly_role": item.get("assembly_role", "none"),
         })
 
-        # Nếu chưa có model 3D, mới đưa vào hàng chờ Pipeline để tạo tự động
         if not item["model_3d_url"]:
             tool_ids_to_process.append(item["id_tool"])
 
     if tool_ids_to_process:
+        print(f"[LabGenerate] Queue 3D tools: {[str(tool_id) for tool_id in tool_ids_to_process]}")
         backgroundtask.add_task(start_3d_pipeline_task, tool_ids_to_process, engine)
 
     return {
         "status": "success",
         "conversation_id": id_conv,
-        "data": response_data
+        "data": response_data,
     }
 
+
+def _queue_pending_3d_tools(id_conv, backgroundtask: BackgroundTasks, session: Session) -> None:
+    pending_statement = select(Tools).where(
+        Tools.id_conv == id_conv,
+        Tools.model_3d_url == None,
+    )
+    pending_tools = session.exec(pending_statement).all()
+    processing_ids = get_processing_tool_ids()
+    now = time.time()
+    requeue_ids = []
+
+    for tool in pending_tools:
+        key = str(tool.id_tool)
+        last_attempt = LAST_PIPELINE_REQUEUE_AT.get(key, 0)
+        if key in processing_ids or now - last_attempt < 60:
+            continue
+        LAST_PIPELINE_REQUEUE_AT[key] = now
+        requeue_ids.append(tool.id_tool)
+
+    if requeue_ids:
+        print(f"[LabStatus] Requeue pending 3D tools: {[str(tool_id) for tool_id in requeue_ids]}")
+        backgroundtask.add_task(start_3d_pipeline_task, requeue_ids, engine)
+
+
 @router.get("/status")
-async def get_tool_status(id_conv: str, session: Session = Depends(get_session)):
+async def get_tool_status(
+    id_conv: str,
+    backgroundtask: BackgroundTasks,
+    session: Session = Depends(get_session),
+):
+    ensure_tools_metadata_columns(session)
+    session.commit()
+    _queue_pending_3d_tools(id_conv, backgroundtask, session)
+
+    statement = select(Tools).where(
+        Tools.id_conv == id_conv,
+        Tools.model_3d_url != None,
+    )
+    result = session.exec(statement).all()
+    print(f"[LabStatus] ready tools for {id_conv}: {len(result)}")
+    return result
+
+
+def _coerce_scale(value, field_name: str) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field_name} khong hop le")
+    if not math.isfinite(numeric) or numeric <= 0 or numeric > 100:
+        raise HTTPException(status_code=400, detail=f"{field_name} nam ngoai gioi han")
+    return numeric
+
+
+@router.patch("/tools/{id_tool}/scale")
+async def update_tool_scale(
+    id_tool: str,
+    payload: dict,
+    session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
+):
+    try:
+        tool_uuid = uuid.UUID(str(id_tool))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id_tool khong hop le")
+
     ensure_tools_metadata_columns(session)
     session.commit()
 
-    # CHỈ LẤY dụng cụ của cuộc hội thoại hiện tại
-    statement = select(Tools).where(
-        Tools.id_conv == id_conv,
-        Tools.model_3d_url != None
-    )
-    result = session.exec(statement).all()
-    return result
+    tool = session.get(Tools, tool_uuid)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
+
+    conversation = session.get(Conversations, tool.id_conv) if tool.id_conv else None
+    if conversation and conversation.id_profile != user.id_profile:
+        raise HTTPException(status_code=403, detail="Khong co quyen cap nhat dung cu nay")
+
+    tool.scale_x = _coerce_scale(payload.get("scale_x"), "scale_x")
+    tool.scale_y = _coerce_scale(payload.get("scale_y"), "scale_y")
+    tool.scale_z = _coerce_scale(payload.get("scale_z"), "scale_z")
+    tool.has_custom_scale = True
+    tool.updated_at = datetime.utcnow()
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+    return {
+        "status": "success",
+        "id_tool": tool.id_tool,
+        "scale_x": tool.scale_x,
+        "scale_y": tool.scale_y,
+        "scale_z": tool.scale_z,
+        "has_custom_scale": tool.has_custom_scale,
+    }

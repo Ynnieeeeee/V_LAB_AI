@@ -31,6 +31,7 @@ export function initChatEvents() {
 
             if (response.ok){
                 const result = await response.json();
+                const waitingForModels = (result.data || []).some(item => !item.ready);
                 
                 // Nếu đây là chat mới, cập nhật ID và URL
                 if ((!window.currentConvId || window.currentConvId === "null" || window.currentConvId === "undefined") && result.conversation_id) {
@@ -45,7 +46,10 @@ export function initChatEvents() {
                 }
 
                 input.value = '';
-                statusText.innerText = "Đang đưa dụng cụ lên bàn...";
+                statusText.innerText = waitingForModels
+                    ? "Đang tạo mô hình 3D cho dụng cụ..."
+                    : "Đang đưa dụng cụ lên bàn...";
+                window.checkBackendStatus?.();
             } else {
                 statusText.innerText = "Lỗi: Server báo lỗi " + response.status;
             }

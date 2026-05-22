@@ -70,6 +70,66 @@ export class ReactionManager {
         };
     }
 
+    reactionTemperatureTarget(reaction = {}) {
+        const raw = reaction.raw || {};
+        const conditions = reaction.conditions || raw.conditions || raw.reaction_data?.conditions || {};
+        const value =
+            reaction.target_temperature ??
+            reaction.targetTemperature ??
+            reaction.requiredTemperature ??
+            reaction.required_temperature ??
+            conditions.minTemperature ??
+            raw.requiredTemperature ??
+            raw.required_temperature;
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
+    }
+
+    checkTemperature(container, reaction = {}) {
+        if (!reaction.heating_required && !reaction.heatingRequired && this.reactionTemperatureTarget(reaction) === null) {
+            return true;
+        }
+        const current = Number(container?.userData?.currentTemperature ?? container?.userData?.temperature ?? 25);
+        const target = this.reactionTemperatureTarget(reaction);
+        const tolerance = Number(reaction.temperature_tolerance ?? reaction.temperatureTolerance ?? 5);
+        if (target === null) return false;
+        return current >= target - tolerance;
+    }
+
+    checkCatalyst(container, reaction = {}) {
+        const raw = reaction.raw || {};
+        const conditions = reaction.conditions || raw.conditions || raw.reaction_data?.conditions || {};
+        const catalyst = reaction.catalyst || conditions.catalyst;
+        if (!catalyst || !container?.userData) return true;
+        const needle = String(catalyst).toLowerCase();
+        const values = [
+            ...(container.userData.contents || []),
+            ...(container.userData.products || []),
+            ...Object.keys(container.userData.composition || {}),
+            container.userData.current_chemical_name,
+            container.userData.chemicalName
+        ].filter(Boolean).map(value => String(value).toLowerCase());
+        return values.some(value => value.includes(needle) || needle.includes(value));
+    }
+
+    tryTriggerPendingReaction(container) {
+        const reaction = container?.userData?.pendingReaction;
+        if (!reaction) return null;
+        const temperatureOk = this.checkTemperature(container, reaction);
+        const catalystOk = this.checkCatalyst(container, reaction);
+        const setupValidation = window.labAssemblyManager?.validateReactionSetup?.(reaction, container);
+        console.log('[ReactionManager] pending reaction:', reaction.name || reaction.id);
+        console.log('[ReactionManager] temperature ok:', temperatureOk);
+        if (setupValidation && !setupValidation.ok) {
+            console.log('[ReactionManager] setup ok:', false, setupValidation.missing);
+            return null;
+        }
+        if (!temperatureOk || !catalystOk) return null;
+        container.userData.pendingReaction = null;
+        container.userData.pendingReason = null;
+        return this.apply(container, { ...reaction, has_reaction: true });
+    }
+
     getContainerMouthPosition(container, fallback = null) {
         if (fallback) return fallback.clone();
         if (!container) return new THREE.Vector3();

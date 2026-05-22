@@ -1,14 +1,24 @@
 import requests
+import os
 from PIL import Image
 from io import BytesIO
 from collections import Counter
 
 class ColorService:
+    def _open_image(self, image_url):
+        if image_url and image_url.startswith("/static/"):
+            local_path = os.path.abspath(os.path.join("app", image_url.lstrip("/").replace("/", os.sep)))
+            return Image.open(local_path)
+        if image_url and os.path.exists(image_url):
+            return Image.open(image_url)
+        response = requests.get(image_url, timeout=10)
+        response.raise_for_status()
+        return Image.open(BytesIO(response.content))
+
     def get_dominant_color(self, image_url):
         """Trích xuất màu sắc chủ đạo từ ảnh (loại bỏ màu nền trắng/đen)"""
         try:
-            response = requests.get(image_url, timeout=10)
-            img = Image.open(BytesIO(response.content))
+            img = self._open_image(image_url)
             img = img.convert('RGB')
             img = img.resize((50, 50))  # Resize để xử lý nhanh hơn
             

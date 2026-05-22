@@ -102,7 +102,19 @@ class LabServices:
                     is_heating_source=tool_meta["is_heating_source"],
                     heating_power=tool_meta["heating_power"],
                     max_temperature=tool_meta["max_temperature"],
-                    is_toggleable=tool_meta["is_toggleable"]
+                    is_toggleable=tool_meta["is_toggleable"],
+                    is_support_stand=tool_meta["is_support_stand"],
+                    can_support_tools=tool_meta["can_support_tools"],
+                    support_height=tool_meta["support_height"],
+                    support_radius=tool_meta["support_radius"],
+                    scale_x=template_tool.scale_x if template_tool and template_tool.has_custom_scale else 1,
+                    scale_y=template_tool.scale_y if template_tool and template_tool.has_custom_scale else 1,
+                    scale_z=template_tool.scale_z if template_tool and template_tool.has_custom_scale else 1,
+                    has_custom_scale=template_tool.has_custom_scale if template_tool else False,
+                    capabilities=tool_meta.get("capabilities", []),
+                    ports=tool_meta.get("ports", {}),
+                    attach_points=tool_meta.get("attach_points", {}),
+                    assembly_role=tool_meta.get("assembly_role", "none")
                 )
                 
                 session.add(new_tool)
@@ -120,7 +132,19 @@ class LabServices:
                     "is_heating_source": new_tool.is_heating_source,
                     "heating_power": new_tool.heating_power,
                     "max_temperature": new_tool.max_temperature,
-                    "is_toggleable": new_tool.is_toggleable
+                    "is_toggleable": new_tool.is_toggleable,
+                    "is_support_stand": new_tool.is_support_stand,
+                    "can_support_tools": new_tool.can_support_tools,
+                    "support_height": new_tool.support_height,
+                    "support_radius": new_tool.support_radius,
+                    "scale_x": new_tool.scale_x,
+                    "scale_y": new_tool.scale_y,
+                    "scale_z": new_tool.scale_z,
+                    "has_custom_scale": new_tool.has_custom_scale,
+                    "capabilities": new_tool.capabilities,
+                    "ports": new_tool.ports,
+                    "attach_points": new_tool.attach_points,
+                    "assembly_role": new_tool.assembly_role
                 })
             
             # 2. Lưu tin nhắn Bot
