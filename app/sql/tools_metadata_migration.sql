@@ -3,7 +3,11 @@ ADD COLUMN IF NOT EXISTS tool_type text DEFAULT 'unknown',
 ADD COLUMN IF NOT EXISTS is_heating_source boolean DEFAULT false,
 ADD COLUMN IF NOT EXISTS heating_power double precision DEFAULT 0,
 ADD COLUMN IF NOT EXISTS max_temperature double precision DEFAULT 25,
-ADD COLUMN IF NOT EXISTS is_toggleable boolean DEFAULT false;
+ADD COLUMN IF NOT EXISTS is_toggleable boolean DEFAULT false,
+ADD COLUMN IF NOT EXISTS capabilities jsonb DEFAULT '[]'::jsonb,
+ADD COLUMN IF NOT EXISTS ports jsonb DEFAULT '{}'::jsonb,
+ADD COLUMN IF NOT EXISTS attach_points jsonb DEFAULT '{}'::jsonb,
+ADD COLUMN IF NOT EXISTS assembly_role text DEFAULT 'none';
 
 UPDATE public.tools
 SET
@@ -42,3 +46,9 @@ WHERE lower(name_tool_vi) LIKE '%ống nghiệm%'
    OR lower(name_tool_en) LIKE '%flask%'
    OR lower(name_tool_en) LIKE '%container%'
    OR lower(name_tool_en) LIKE '%vessel%';
+
+
+ALTER TABLE public.tools
+ADD COLUMN IF NOT EXISTS rotation_x double precision DEFAULT 0,
+ADD COLUMN IF NOT EXISTS rotation_y double precision DEFAULT 0,
+ADD COLUMN IF NOT EXISTS rotation_z double precision DEFAULT 0;

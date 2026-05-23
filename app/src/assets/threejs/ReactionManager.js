@@ -112,22 +112,39 @@ export class ReactionManager {
         return values.some(value => value.includes(needle) || needle.includes(value));
     }
 
+    notifySetupIssue(validation) {
+        const message = validation?.message;
+        if (!message) return;
+        const appWindow = typeof window !== 'undefined' ? window : null;
+        if (typeof appWindow?.triggerMascotSpeech === 'function') {
+            appWindow.triggerMascotSpeech(message);
+        } else if (typeof appWindow?.mascotTalk === 'function') {
+            appWindow.mascotTalk(message);
+        }
+    }
+
+    validateSetupBeforeReaction(container, reaction = {}) {
+        const appWindow = typeof window !== 'undefined' ? window : null;
+        return appWindow?.labAssemblyManager?.validateReactionSetup?.(reaction, container) || { ok: true };
+    }
+
     tryTriggerPendingReaction(container) {
         const reaction = container?.userData?.pendingReaction;
         if (!reaction) return null;
         const temperatureOk = this.checkTemperature(container, reaction);
         const catalystOk = this.checkCatalyst(container, reaction);
-        const setupValidation = window.labAssemblyManager?.validateReactionSetup?.(reaction, container);
+        const setupValidation = this.validateSetupBeforeReaction(container, reaction);
         console.log('[ReactionManager] pending reaction:', reaction.name || reaction.id);
         console.log('[ReactionManager] temperature ok:', temperatureOk);
         if (setupValidation && !setupValidation.ok) {
             console.log('[ReactionManager] setup ok:', false, setupValidation.missing);
+            this.notifySetupIssue(setupValidation);
             return null;
         }
         if (!temperatureOk || !catalystOk) return null;
         container.userData.pendingReaction = null;
         container.userData.pendingReason = null;
-        return this.apply(container, { ...reaction, has_reaction: true });
+        return this.apply(container, { ...reaction, has_reaction: true }, { skipSetupValidation: true });
     }
 
     getContainerMouthPosition(container, fallback = null) {
@@ -143,6 +160,14 @@ export class ReactionManager {
 
     apply(container, reaction, options = {}) {
         if (!container || !reaction) return null;
+        if (options.skipSetupValidation !== true) {
+            const setupValidation = this.validateSetupBeforeReaction(container, reaction);
+            if (setupValidation && !setupValidation.ok) {
+                console.log('[ReactionManager] setup ok:', false, setupValidation.missing);
+                this.notifySetupIssue(setupValidation);
+                return null;
+            }
+        }
         const fx = this.normalizeReaction(reaction);
         if (!fx.hasReaction && !fx.precipitate && !fx.gas && !fx.smoke && !fx.fire) return null;
 

@@ -25,6 +25,19 @@ function toEffectIntensity(...values) {
     return 0;
 }
 
+function normalizeSetup(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+    return {};
+}
+
 function inferVisibleEffects(data, text = '') {
     const haystack = [
         text,
@@ -51,6 +64,13 @@ function normalizeApiReaction(data) {
     const effects = Array.isArray(data?.effects) ? {} : (data?.effects || {});
     const effectByType = (type) => effectList.find(fx => fx?.type === type);
     const inferred = inferVisibleEffects(data || {});
+    const requiredSetup = normalizeSetup(
+        data?.requiredSetup ||
+        data?.required_setup ||
+        data?.reaction_data?.requiredSetup ||
+        data?.reaction_data?.required_setup ||
+        {}
+    );
 
     if (!data || !data.has_reaction) {
         return {
@@ -62,6 +82,8 @@ function normalizeApiReaction(data) {
             requiredTemperature: data?.requiredTemperature ?? data?.required_temperature ?? null,
             currentTemperature: data?.currentTemperature ?? data?.current_temperature ?? null,
             foam: data?.foam ?? visual.foam ?? effects.foam ?? inferred.foam,
+            requiredSetup,
+            required_setup: requiredSetup,
             mascotText: data?.mascot_speech || 'Không có dấu hiệu phản ứng hóa học rõ ràng.'
         };
     }
@@ -156,6 +178,8 @@ function normalizeApiReaction(data) {
         effects: effectList.length ? effectList : effects,
         consumes: data.consumes || data.reaction_data?.consumes || {},
         producesState: data.producesState || data.produces_state || data.reaction_data?.producesState || {},
+        requiredSetup,
+        required_setup: requiredSetup,
         mascotText: data.mascot_speech || data.mascotText || 'Phản ứng hóa học đã xảy ra.',
         raw: data
     };

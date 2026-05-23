@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 
-const PORT_COMPATIBILITY = {
+export const PORT_COMPATIBILITY = {
     liquid_out: ['liquid_in', 'opening'],
     gas_out: ['gas_in'],
+    support: ['support_top', 'support_target'],
     support_top: ['support_target'],
     support_target: ['support_top'],
+    clamp: ['clamp_point', 'clamp_target'],
     clamp_point: ['clamp_target'],
     clamp_target: ['clamp_point'],
     heating_zone: ['heat_target'],
@@ -17,13 +19,55 @@ const CONNECTION_TYPES = {
     opening: 'liquid',
     gas_out: 'gas',
     gas_in: 'gas',
+    support: 'support',
     support_top: 'support',
     support_target: 'support',
+    clamp: 'clamp',
     clamp_point: 'clamp',
     clamp_target: 'clamp',
     heating_zone: 'heat',
     heat_target: 'heat'
 };
+
+const POINT_TYPE_ALIASES = {
+    opening: ['liquid_in'],
+    liquid_in: ['opening'],
+    support: ['support_top', 'support_target'],
+    support_top: ['support'],
+    support_target: ['support'],
+    clamp: ['clamp_point', 'clamp_target'],
+    clamp_point: ['clamp'],
+    clamp_target: ['clamp'],
+    heat: ['heating_zone', 'heat_target'],
+    heating_zone: ['heat'],
+    heat_target: ['heat']
+};
+
+function normalizeArray(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return value.split(',').map(item => item.trim()).filter(Boolean);
+        }
+    }
+    return [];
+}
+
+function normalizeObject(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+    return {};
+}
 
 function toolName(tool) {
     return tool?.userData?.toolData?.name_tool_vi ||
@@ -33,11 +77,11 @@ function toolName(tool) {
 }
 
 function pointEntries(tool) {
-    const ports = tool?.userData?.ports || {};
-    const attachPoints = tool?.userData?.attachPoints || tool?.userData?.attach_points || {};
+    const ports = normalizeObject(tool?.userData?.ports);
+    const attachPoints = normalizeObject(tool?.userData?.attachPoints || tool?.userData?.attach_points);
     return [
-        ...Object.entries(ports).map(([name, data]) => ({ name, ...data, group: 'ports' })),
-        ...Object.entries(attachPoints).map(([name, data]) => ({ name, ...data, group: 'attachPoints' }))
+        ...Object.entries(ports).map(([name, data = {}]) => ({ ...data, name, type: data.type || name, group: 'ports' })),
+        ...Object.entries(attachPoints).map(([name, data = {}]) => ({ ...data, name, type: data.type || name, group: 'attachPoints' }))
     ].filter(point => point?.type);
 }
 
@@ -69,16 +113,33 @@ function setObjectWorldPosition(object, worldPosition) {
     object.updateMatrixWorld(true);
 }
 
+function expandedTypes(type) {
+    return new Set([type, ...(POINT_TYPE_ALIASES[type] || [])].filter(Boolean));
+}
+
 function compatible(a, b) {
-    return PORT_COMPATIBILITY[a]?.includes(b) || PORT_COMPATIBILITY[b]?.includes(a);
+    const typesA = expandedTypes(a);
+    const typesB = expandedTypes(b);
+    for (const typeA of typesA) {
+        for (const typeB of typesB) {
+            if (PORT_COMPATIBILITY[typeA]?.includes(typeB) || PORT_COMPATIBILITY[typeB]?.includes(typeA)) return true;
+        }
+    }
+    return false;
 }
 
 function connectionTypeFor(a, b) {
-    if ((a === 'gas_out' && b === 'gas_in') || (b === 'gas_out' && a === 'gas_in')) return 'gas';
-    if (['liquid_out', 'liquid_in', 'opening'].includes(a) && ['liquid_out', 'liquid_in', 'opening'].includes(b)) return 'liquid';
-    if (['support_top', 'support_target'].includes(a) && ['support_top', 'support_target'].includes(b)) return 'support';
-    if (['clamp_point', 'clamp_target'].includes(a) && ['clamp_point', 'clamp_target'].includes(b)) return 'clamp';
-    if (['heating_zone', 'heat_target'].includes(a) && ['heating_zone', 'heat_target'].includes(b)) return 'heat';
+    const typesA = expandedTypes(a);
+    const typesB = expandedTypes(b);
+    if (typesA.has('gas_out') && typesB.has('gas_in') || typesB.has('gas_out') && typesA.has('gas_in')) return 'gas';
+    if ([...typesA].some(type => ['liquid_out', 'liquid_in', 'opening'].includes(type)) &&
+        [...typesB].some(type => ['liquid_out', 'liquid_in', 'opening'].includes(type))) return 'liquid';
+    if ([...typesA].some(type => ['support', 'support_top', 'support_target'].includes(type)) &&
+        [...typesB].some(type => ['support', 'support_top', 'support_target'].includes(type))) return 'support';
+    if ([...typesA].some(type => ['clamp', 'clamp_point', 'clamp_target'].includes(type)) &&
+        [...typesB].some(type => ['clamp', 'clamp_point', 'clamp_target'].includes(type))) return 'clamp';
+    if ([...typesA].some(type => ['heat', 'heating_zone', 'heat_target'].includes(type)) &&
+        [...typesB].some(type => ['heat', 'heating_zone', 'heat_target'].includes(type))) return 'heat';
     return CONNECTION_TYPES[a] || CONNECTION_TYPES[b] || 'generic';
 }
 
@@ -112,6 +173,31 @@ function reactionRequiresHeating(reaction = {}) {
     );
 }
 
+function reactionRequiredSetup(reaction = {}) {
+    const raw = reaction.raw || {};
+    return normalizeObject(reaction.requiredSetup ||
+        reaction.required_setup ||
+        raw.requiredSetup ||
+        raw.required_setup ||
+        raw.reaction_data?.requiredSetup ||
+        raw.reaction_data?.required_setup ||
+        {});
+}
+
+function boolRequired(required, ...keys) {
+    return keys.some(key => required?.[key] === true);
+}
+
+const SETUP_MESSAGES = {
+    container: 'Cần đặt hóa chất trong dụng cụ chứa phù hợp trước khi thực hiện.',
+    heating: 'Phản ứng này cần lắp nguồn nhiệt với dụng cụ chứa trước khi thực hiện.',
+    gas_collection: 'Cần lắp ống dẫn khí và dụng cụ thu khí trước khi thực hiện.',
+    support: 'Cần đặt hoặc kẹp dụng cụ lên giá đỡ trước khi thực hiện.',
+    clamp: 'Cần kẹp giữ dụng cụ trước khi thực hiện thí nghiệm này.',
+    dropping_funnel: 'Cần nối phễu nhỏ giọt với bình phản ứng trước khi thực hiện.',
+    stirring: 'Cần có dụng cụ khuấy cho thí nghiệm này.'
+};
+
 export class LabAssemblyManager {
     constructor(scene, options = {}) {
         this.scene = scene;
@@ -126,10 +212,18 @@ export class LabAssemblyManager {
 
     registerObject(tool) {
         if (!tool?.userData) return;
-        tool.userData.capabilities ??= [];
-        tool.userData.ports ??= {};
-        tool.userData.attachPoints ??= tool.userData.attach_points ?? {};
+        const toolData = tool.userData.toolData || {};
+        tool.userData.toolType ??= tool.userData.tool_type ?? toolData.toolType ?? toolData.tool_type ?? 'unknown';
+        tool.userData.tool_type ??= tool.userData.toolType;
+        const capabilities = normalizeArray(tool.userData.capabilities);
+        const ports = normalizeObject(tool.userData.ports);
+        const attachPoints = normalizeObject(tool.userData.attachPoints || tool.userData.attach_points);
+        tool.userData.capabilities = capabilities.length ? capabilities : normalizeArray(toolData.capabilities);
+        tool.userData.ports = Object.keys(ports).length ? ports : normalizeObject(toolData.ports);
+        tool.userData.attachPoints = Object.keys(attachPoints).length ? attachPoints : normalizeObject(toolData.attach_points);
         tool.userData.attach_points ??= tool.userData.attachPoints;
+        tool.userData.assemblyRole ??= tool.userData.assembly_role ?? toolData.assemblyRole ?? toolData.assembly_role ?? 'none';
+        tool.userData.assembly_role ??= tool.userData.assemblyRole;
         tool.userData.assemblyConnections ??= [];
     }
 
@@ -139,7 +233,7 @@ export class LabAssemblyManager {
     }
 
     hasCapability(tool, capability) {
-        return Boolean(tool?.userData?.capabilities?.includes(capability));
+        return normalizeArray(tool?.userData?.capabilities).includes(capability);
     }
 
     findNearestCompatiblePort(toolA, toolB, maxDistance = this.snapDistance) {
@@ -339,11 +433,24 @@ export class LabAssemblyManager {
         return this.hasPath(container, 'collect_gas', 'gas');
     }
 
+    hasSupportPath(container) {
+        return this.hasPath(container, 'support', 'support') ||
+            this.hasPath(container, 'support', 'clamp') ||
+            this.hasPath(container, 'clamp', 'clamp');
+    }
+
+    hasDroppingFunnelPath(container) {
+        return this.hasPath(container, 'drop_liquid', 'liquid');
+    }
+
     hasHeatingPath(container) {
         if (container?.userData?.isHeating && container.userData.heatingSource?.userData?.isHeatingSource) return true;
         if (this.hasPath(container, 'heat', 'heat')) return true;
 
-        const supports = this.getNeighbors(container, 'support').filter(tool => this.hasCapability(tool, 'support'));
+        const supports = [
+            ...this.getNeighbors(container, 'support'),
+            ...this.getNeighbors(container, 'clamp')
+        ].filter(tool => this.hasCapability(tool, 'support'));
         return supports.some(support => this.getNeighbors(support, 'heat').some(source => this.hasCapability(source, 'heat')));
     }
 
@@ -351,7 +458,10 @@ export class LabAssemblyManager {
         const direct = this.getNeighbors(container, 'heat').find(isActiveHeatingSource);
         if (direct) return direct;
 
-        const supports = this.getNeighbors(container, 'support').filter(tool => this.hasCapability(tool, 'support'));
+        const supports = [
+            ...this.getNeighbors(container, 'support'),
+            ...this.getNeighbors(container, 'clamp')
+        ].filter(tool => this.hasCapability(tool, 'support'));
         for (const support of supports) {
             const source = this.getNeighbors(support, 'heat').find(isActiveHeatingSource);
             if (source) return source;
@@ -360,14 +470,28 @@ export class LabAssemblyManager {
     }
 
     validateReactionSetup(reaction = {}, container = null) {
-        const required = reaction.requiredSetup || reaction.required_setup || {};
-        const needsContainer = required.container === true;
-        const needsHeating = required.heating === true || reactionRequiresHeating(reaction);
-        const needsGasCollection = required.gasCollection === true || required.gas_collection === true;
-        const needsSupport = required.support === true;
-        const needsDroppingFunnel = required.droppingFunnel === true || required.dropping_funnel === true;
-        const needsStirring = required.stirring === true;
-        const needsClamp = required.clamp === true;
+        const required = reactionRequiredSetup(reaction);
+        const needsContainer = boolRequired(required, 'container');
+        const needsHeating = boolRequired(required, 'heating', 'heat') || reactionRequiresHeating(reaction);
+        const needsGasCollection = boolRequired(required, 'gasCollection', 'gas_collection');
+        const needsSupport = boolRequired(required, 'support');
+        const needsDroppingFunnel = boolRequired(required, 'droppingFunnel', 'dropping_funnel');
+        const needsStirring = boolRequired(required, 'stirring', 'stir');
+        const needsClamp = boolRequired(required, 'clamp');
+
+        const missing =
+            (needsContainer && !this.hasCapability(container, 'react') && !this.hasCapability(container, 'contain_liquid') && 'container') ||
+            (needsHeating && !this.hasHeatingPath(container) && 'heating') ||
+            (needsGasCollection && !this.hasGasCollectionPath(container) && 'gas_collection') ||
+            (needsSupport && !this.hasSupportPath(container) && 'support') ||
+            (needsClamp && !this.hasPath(container, 'clamp', 'clamp') && 'clamp') ||
+            (needsDroppingFunnel && !this.hasDroppingFunnelPath(container) && 'dropping_funnel') ||
+            (needsStirring && !this.hasPath(container, 'stir') && 'stirring') ||
+            null;
+
+        if (missing) {
+            return { ok: false, missing, message: SETUP_MESSAGES[missing] || 'Thiếu setup dụng cụ cho phản ứng này.' };
+        }
 
         if (needsContainer && !this.hasCapability(container, 'react') && !this.hasCapability(container, 'contain_liquid')) {
             return { ok: false, missing: 'container', message: 'Cần đặt hóa chất trong dụng cụ chứa phù hợp trước khi thực hiện.' };
@@ -378,13 +502,13 @@ export class LabAssemblyManager {
         if (needsGasCollection && !this.hasGasCollectionPath(container)) {
             return { ok: false, missing: 'gas_collection', message: 'Cần lắp ống dẫn khí và dụng cụ thu khí trước khi thực hiện.' };
         }
-        if (needsSupport && !this.hasPath(container, 'support', 'support')) {
+        if (needsSupport && !this.hasSupportPath(container)) {
             return { ok: false, missing: 'support', message: 'Cần đặt hoặc kẹp dụng cụ lên giá đỡ trước khi thực hiện.' };
         }
         if (needsClamp && !this.hasPath(container, 'clamp', 'clamp')) {
             return { ok: false, missing: 'clamp', message: 'Can kep giu dung cu truoc khi thuc hien thi nghiem nay.' };
         }
-        if (needsDroppingFunnel && !this.hasPath(container, 'drop_liquid', 'liquid')) {
+        if (needsDroppingFunnel && !this.hasDroppingFunnelPath(container)) {
             return { ok: false, missing: 'dropping_funnel', message: 'Cần nối phễu nhỏ giọt với bình phản ứng trước khi thực hiện.' };
         }
         if (needsStirring && !this.hasPath(container, 'stir')) {

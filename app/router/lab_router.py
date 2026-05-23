@@ -72,6 +72,9 @@ async def generate_lab(
             "scale_y": item.get("scale_y", 1),
             "scale_z": item.get("scale_z", 1),
             "has_custom_scale": item.get("has_custom_scale", False),
+            "rotation_x": item.get("rotation_x", 0),
+            "rotation_y": item.get("rotation_y", 0),
+            "rotation_z": item.get("rotation_z", 0),
             "capabilities": item.get("capabilities", []),
             "ports": item.get("ports", {}),
             "attach_points": item.get("attach_points", {}),
@@ -95,6 +98,7 @@ async def generate_lab(
 def _queue_pending_3d_tools(id_conv, backgroundtask: BackgroundTasks, session: Session) -> None:
     pending_statement = select(Tools).where(
         Tools.id_conv == id_conv,
+        Tools.is_deleted == False,
         or_(
             Tools.model_3d_url == None,
             Tools.force_regenerate_model == True,
@@ -131,6 +135,7 @@ async def get_tool_status(
 
     statement = select(Tools).where(
         Tools.id_conv == id_conv,
+        Tools.is_deleted == False,
         Tools.model_3d_url != None,
         Tools.force_regenerate_model == False,
         or_(
@@ -218,6 +223,42 @@ async def regenerate_tool_model(
     }
 
 
+
+@router.patch("/tools/{id_tool}/soft-delete")
+async def soft_delete_tool(
+    id_tool: str,
+    session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
+):
+    try:
+        tool_uuid = uuid.UUID(str(id_tool))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id_tool khong hop le")
+
+    ensure_tools_metadata_columns(session)
+    session.commit()
+
+    tool = session.get(Tools, tool_uuid)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
+
+    conversation = session.get(Conversations, tool.id_conv) if tool.id_conv else None
+    if conversation and conversation.id_profile != user.id_profile:
+        raise HTTPException(status_code=403, detail="Khong co quyen xoa dung cu nay")
+
+    tool.is_deleted = True
+    tool.updated_at = datetime.utcnow()
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+
+    return {
+        "status": "success",
+        "id_tool": tool.id_tool,
+        "is_deleted": tool.is_deleted,
+    }
+
+
 def _coerce_scale(value, field_name: str) -> float:
     try:
         numeric = float(value)
@@ -266,4 +307,53 @@ async def update_tool_scale(
         "scale_y": tool.scale_y,
         "scale_z": tool.scale_z,
         "has_custom_scale": tool.has_custom_scale,
+    }
+
+
+def _coerce_rotation(value, field_name: str) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field_name} khong hop le")
+    if not math.isfinite(numeric):
+        raise HTTPException(status_code=400, detail=f"{field_name} nam ngoai gioi han")
+    return numeric
+
+
+@router.patch("/tools/{id_tool}/rotation")
+async def update_tool_rotation(
+    id_tool: str,
+    payload: dict,
+    session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
+):
+    try:
+        tool_uuid = uuid.UUID(str(id_tool))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id_tool khong hop le")
+
+    ensure_tools_metadata_columns(session)
+    session.commit()
+
+    tool = session.get(Tools, tool_uuid)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
+
+    conversation = session.get(Conversations, tool.id_conv) if tool.id_conv else None
+    if conversation and conversation.id_profile != user.id_profile:
+        raise HTTPException(status_code=403, detail="Khong co quyen cap nhat dung cu nay")
+
+    tool.rotation_x = _coerce_rotation(payload.get("rotation_x", 0), "rotation_x")
+    tool.rotation_y = _coerce_rotation(payload.get("rotation_y", 0), "rotation_y")
+    tool.rotation_z = _coerce_rotation(payload.get("rotation_z", 0), "rotation_z")
+    tool.updated_at = datetime.utcnow()
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+    return {
+        "status": "success",
+        "id_tool": tool.id_tool,
+        "rotation_x": tool.rotation_x,
+        "rotation_y": tool.rotation_y,
+        "rotation_z": tool.rotation_z,
     }

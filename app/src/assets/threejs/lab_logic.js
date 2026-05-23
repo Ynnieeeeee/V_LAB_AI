@@ -222,6 +222,19 @@ function applyAutoUprightOrientation(model, tool) {
     return false;
 }
 
+
+function getPersistedToolRotation(tool = {}) {
+    const rx = Number(tool.rotation_x);
+    const ry = Number(tool.rotation_y);
+    const rz = Number(tool.rotation_z);
+    const hasRotationColumns = [tool.rotation_x, tool.rotation_y, tool.rotation_z]
+        .every(value => value !== undefined && value !== null);
+    const hasPersistedRotation = hasRotationColumns && [rx, ry, rz]
+        .every(Number.isFinite) && [rx, ry, rz].some(value => Math.abs(value) > 1e-6);
+
+    return hasPersistedRotation ? new three.Euler(rx, ry, rz, 'YXZ') : null;
+}
+
 function getPersistedToolScale(tool = {}, fallbackScale = 1) {
     const sx = Number(tool.scale_x);
     const sy = Number(tool.scale_y);
@@ -259,6 +272,12 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         // 1. Đặt scale về 1 để tính toán kích thước thực thực tế của Model
         model.scale.set(1, 1, 1);
         applyAutoUprightOrientation(model, tool);
+        const persistedRotation = getPersistedToolRotation(tool);
+        if (persistedRotation) {
+            model.rotation.copy(persistedRotation);
+            model.userData.keepManualRotation = true;
+            model.userData.manualRotationDirty = true;
+        }
         model.updateMatrixWorld(true);
 
         const box = new three.Box3().setFromObject(model);

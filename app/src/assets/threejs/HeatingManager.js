@@ -2,6 +2,34 @@ import * as THREE from 'three';
 import { markContainerHeated } from './ExperimentSessionManager.js';
 
 const ROOM_TEMPERATURE = 25;
+const DEFAULT_TABLE_Y = 0;
+
+function getTableSurfaceY() {
+    const explicitTableY = Number(window.TABLE_Y ?? window.tableY);
+    if (Number.isFinite(explicitTableY)) return explicitTableY;
+
+    const tableObject = window.tableObject || window.labTable || window.tableMesh;
+    if (tableObject?.isObject3D) {
+        tableObject.updateMatrixWorld?.(true);
+        const tableBox = new THREE.Box3().setFromObject(tableObject);
+        if (Number.isFinite(tableBox.max.y)) return tableBox.max.y;
+    }
+
+    return DEFAULT_TABLE_Y;
+}
+
+function clampObjectAboveTable(object, tableY = DEFAULT_TABLE_Y) {
+    if (!object?.isObject3D) return;
+    object.updateMatrixWorld?.(true);
+    const box = new THREE.Box3().setFromObject(object);
+    const minY = box.min.y;
+
+    if (Number.isFinite(minY) && minY < tableY) {
+        object.position.y += tableY - minY;
+        object.updateMatrixWorld?.(true);
+    }
+}
+
 
 function getCenter(object) {
     const box = new THREE.Box3().setFromObject(object);
@@ -112,10 +140,29 @@ function ensureSupportAnchor(support) {
         console.log('[SupportStand] support detected:', toolName(support));
     }
 
-    const worldScale = new THREE.Vector3(1, 1, 1);
-    support.getWorldScale?.(worldScale);
-    const scaleY = Math.abs(worldScale.y) || 1;
-    anchor.position.set(0, support.userData.supportHeight / scaleY, 0);
+    // FIX mạnh: không lấy pivot làm tâm. Anchor X/Z luôn lấy từ tâm world bounding box của giá đỡ.
+    // Y ưu tiên metadata supportHeight để giữ đúng mặt đỡ ảo cho kiềng/ring stand.
+    support.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(support);
+    const centerWorld = new THREE.Vector3();
+    box.getCenter(centerWorld);
+
+    const supportWorldPos = new THREE.Vector3();
+    support.getWorldPosition?.(supportWorldPos);
+    const anchorWorld = new THREE.Vector3(
+        centerWorld.x,
+        supportWorldPos.y + Number(support.userData.supportHeight ?? 0.8),
+        centerWorld.z
+    );
+
+    if (!Number.isFinite(anchorWorld.y)) {
+        anchorWorld.y = box.max.y + Number(support.userData.supportYOffset ?? 0);
+    }
+
+    const anchorLocal = support.worldToLocal(anchorWorld.clone());
+    anchor.position.copy(anchorLocal);
+
+    console.log('[SupportAnchor] created from bbox center:', anchorWorld);
     return anchor;
 }
 
@@ -272,17 +319,103 @@ function worldDistance(a, b) {
     return aPos.distanceTo(bPos);
 }
 
-function setContainerBottomNearAnchor(container, anchorWorldPos, clearance = null) {
-    setObjectWorldPosition(container, anchorWorldPos);
+function alignObjectBottomToY(object, targetY, clearance = 0) {
+    if (!object?.isObject3D) return;
+    object.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(object);
+    const deltaY = targetY + clearance - box.min.y;
+    object.position.y += deltaY;
+    object.updateMatrixWorld(true);
+}
 
-    const box = new THREE.Box3().setFromObject(container);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const bottomOffset = anchorWorldPos.y - box.min.y;
-    const adjustedWorldPos = anchorWorldPos.clone();
-    const anchorClearance = clearance ?? Math.min(0.12, size.y * 0.25);
-    adjustedWorldPos.y += bottomOffset + anchorClearance;
-    setObjectWorldPosition(container, adjustedWorldPos);
+function getObjectBBoxCenter(object) {
+    object.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(object);
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    return center;
+}
+
+function centerObjectXZToWorldPoint(object, targetWorldPoint) {
+    if (!object?.isObject3D || !targetWorldPoint) return;
+    const centerBefore = getObjectBBoxCenter(object);
+    const dx = targetWorldPoint.x - centerBefore.x;
+    const dz = targetWorldPoint.z - centerBefore.z;
+
+    const beforeWorld = new THREE.Vector3();
+    object.getWorldPosition(beforeWorld);
+    const afterWorld = beforeWorld.clone().add(new THREE.Vector3(dx, 0, dz));
+    const beforeLocal = beforeWorld.clone();
+    const afterLocal = afterWorld.clone();
+    object.parent?.worldToLocal?.(beforeLocal);
+    object.parent?.worldToLocal?.(afterLocal);
+    const localDelta = afterLocal.sub(beforeLocal);
+
+    object.position.x += localDelta.x;
+    object.position.z += localDelta.z;
+    object.updateMatrixWorld(true);
+
+    const centerAfter = getObjectBBoxCenter(object);
+    console.log('[SupportSnap] container bbox center before:', centerBefore);
+    console.log('[SupportSnap] container bbox center after:', centerAfter);
+    console.log('[SupportSnap] deltaXZ:', dx, dz);
+}
+
+function getActiveSupportedTools(support, currentContainer = null) {
+    if (!support?.userData) return currentContainer ? [currentContainer] : [];
+
+    support.userData.supportedTools ??= [];
+    support.userData.supportedTools = support.userData.supportedTools.filter(tool =>
+        tool?.parent &&
+        tool.userData?.isOnSupportStand === true &&
+        tool.userData?.supportStand === support
+    );
+
+    if (currentContainer?.isObject3D && !support.userData.supportedTools.includes(currentContainer)) {
+        support.userData.supportedTools.push(currentContainer);
+    }
+
+    return support.userData.supportedTools;
+}
+
+function getSupportSlotPositionIfNeeded(container, support, anchorWorldPos) {
+    if (!container?.isObject3D || !support?.userData || !anchorWorldPos) return anchorWorldPos?.clone?.() || null;
+
+    const tools = getActiveSupportedTools(support, container);
+    const count = tools.length;
+    const index = tools.indexOf(container);
+
+    // Chỉ có 1 dụng cụ thì tuyệt đối giữ đúng tâm support anchor, không slot, không offset.
+    if (count <= 1 || index < 0) {
+        console.log('[SupportSnap] supported count:', count);
+        return anchorWorldPos.clone();
+    }
+
+    const spacing = Number(support.userData.supportSlotSpacing ?? 0.28) || 0.28;
+    console.log('[SupportSlot] support:', toolName(support), 'tool index:', index);
+    console.log('[SupportSnap] supported count:', count);
+
+    return anchorWorldPos.clone().add(new THREE.Vector3(
+        (index - (count - 1) / 2) * spacing,
+        0,
+        0
+    ));
+}
+
+function setContainerBottomNearAnchor(container, anchorWorldPos, clearance = null, support = null) {
+    const savedScale = container.userData?.customScale?.clone?.() || container.scale.clone();
+    const slotWorldPos = support
+        ? getSupportSlotPositionIfNeeded(container, support, anchorWorldPos)
+        : anchorWorldPos.clone();
+
+    // Logic cũ vẫn đặt pivot trước, sau đó FIX mạnh bằng bbox center X/Z.
+    setObjectWorldPosition(container, slotWorldPos);
+    centerObjectXZToWorldPoint(container, slotWorldPos);
+    alignObjectBottomToY(container, slotWorldPos.y, clearance ?? 0.01);
+    centerObjectXZToWorldPoint(container, slotWorldPos);
+
+    container.scale.copy(savedScale);
+    container.updateMatrixWorld(true);
 }
 
 export function releaseContainerFromHeatingSource(container) {
@@ -295,6 +428,10 @@ export function releaseContainerFromHeatingSource(container) {
 
 export function releaseContainerFromSupportStand(container) {
     if (!container?.userData) return;
+    const support = container.userData.supportStand;
+    if (support?.userData?.supportedTools) {
+        support.userData.supportedTools = support.userData.supportedTools.filter(tool => tool && tool !== container && tool.parent);
+    }
     container.userData.isOnSupportStand = false;
     container.userData.isSnappedToSupport = false;
     container.userData.supportStand = null;
@@ -307,25 +444,12 @@ export function releaseHeatingSourceFromSupportStand(source) {
 }
 
 export function snapContainerToHeatingSource(container, source) {
-    if (!isHeatTarget(container) || !source?.userData?.isHeatingSource) return false;
-    const anchorWorldPos = getAnchorWorldPosition(source);
-    if (!anchorWorldPos) return false;
-
-    releaseContainerFromSupportStand(container);
-    setContainerBottomNearAnchor(container, anchorWorldPos);
-    if (container.userData.originalQuaternion) {
-        container.quaternion.copy(container.userData.originalQuaternion);
-    }
-    container.userData.isOnHeatingSource = true;
-    container.userData.isSnappedToHeatingSource = true;
-    container.userData.heatingSource = source;
-    container.userData.isHeating = false;
-    container.userData.lockRotation = true;
-
-    console.log('[HeatingSnap] container:', toolName(container));
-    console.log('[HeatingSnap] source:', toolName(source));
-    console.log('[HeatingSnap] snapped:', true);
-    return true;
+    // NEW HEATING RULE:
+    // Không tự snap/căn vị trí container vào nguồn nhiệt nữa.
+    // Nguồn nhiệt chỉ được xét theo vị trí thực tế bên dưới container trong HeatingManager.update().
+    if (container?.userData) releaseContainerFromHeatingSource(container);
+    console.log('[HeatingSnap] disabled auto snap container to heating source:', toolName(container), 'source:', toolName(source));
+    return false;
 }
 
 export function snapContainerToSupportStand(container, support) {
@@ -334,16 +458,32 @@ export function snapContainerToSupportStand(container, support) {
     if (!anchorWorldPos) return false;
 
     releaseContainerFromHeatingSource(container);
-    setContainerBottomNearAnchor(container, anchorWorldPos, 0.01);
-    if (container.userData.originalQuaternion) {
-        container.quaternion.copy(container.userData.originalQuaternion);
-    }
+
+    // Gắn trạng thái support TRƯỚC khi tính slot để danh sách supportedTools lọc đúng.
     container.userData.isOnSupportStand = true;
     container.userData.supportStand = support;
     container.userData.isSnappedToSupport = true;
     container.userData.isHeating = false;
     container.userData.lockRotation = true;
 
+    setContainerBottomNearAnchor(container, anchorWorldPos, 0.01, support);
+
+    if (container.userData.originalQuaternion) {
+        container.quaternion.copy(container.userData.originalQuaternion);
+        container.updateMatrixWorld(true);
+
+        // Rotation reset có thể làm bbox center lệch lại nếu pivot/model không chuẩn.
+        // Vì vậy bắt buộc căn tâm bbox X/Z thêm một lần SAU khi restore quaternion.
+        setContainerBottomNearAnchor(container, anchorWorldPos, 0.01, support);
+    }
+
+    // Ép lần cuối sau toàn bộ logic snap cũ để không còn đoạn nào ghi đè vị trí tâm.
+    setContainerBottomNearAnchor(container, anchorWorldPos, 0.01, support);
+
+    console.log('[SupportSnap] support:', toolName(support));
+    console.log('[SupportSnap] anchor world:', anchorWorldPos);
+    console.log('[SupportSnap] final container position:', container.position);
+    console.log('[SupportSnap] bottom aligned:', toolName(container));
     console.log('[SupportStand] snapped container:', toolName(container), 'to support:', toolName(support));
     console.log('[SupportStand] container snapped:', toolName(container));
     return true;
@@ -382,28 +522,18 @@ export function autoSnapContainerToNearestSupportStand(container, objects = [], 
 }
 
 export function placeHeatingSourceUnderSupport(source, support) {
-    if (!source?.userData?.isHeatingSource || !canSupportTools(support)) return false;
-    ensureSupportState(support);
-    const supportPos = getWorldPosition(support);
-    const offsetY = Number(support.userData.heatingSourceOffsetY ?? -0.4) || -0.4;
-    const targetPosition = supportPos.clone();
-    targetPosition.y += offsetY;
-    setObjectWorldPosition(source, targetPosition);
-    source.userData.isUnderSupportStand = true;
-    source.userData.supportStand = support;
-    console.log('[SupportStand] heating source placed under support:', toolName(source));
-    return true;
+    // NEW HEATING RULE:
+    // Không tự động di chuyển/snap nguồn nhiệt xuống dưới giá đỡ.
+    // Người dùng đặt nguồn nhiệt ở đâu thì giữ nguyên ở đó.
+    if (source?.userData) releaseHeatingSourceFromSupportStand(source);
+    console.log('[SupportStand] disabled auto place heating source under support:', toolName(source), 'support:', toolName(support));
+    return false;
 }
 
 export function tryPlaceHeatingSourceUnderSupport(source, objects = [], options = {}) {
-    if (!source?.userData?.isHeatingSource) return false;
-    const maxDistance = Number(options.maxDistance ?? 1.0);
-    const support = findNearestSupportStandForObject(source, objects, maxDistance);
-    if (!support) {
-        releaseHeatingSourceFromSupportStand(source);
-        return false;
-    }
-    return placeHeatingSourceUnderSupport(source, support);
+    // NEW HEATING RULE: không tự snap nguồn nhiệt vào giá đỡ.
+    if (source?.userData) releaseHeatingSourceFromSupportStand(source);
+    return false;
 }
 
 export function findNearestHeatingSource(container, objects = [], maxDistance = 1.0) {
@@ -423,13 +553,10 @@ export function findNearestHeatingSource(container, objects = [], maxDistance = 
 }
 
 export function autoSnapContainerToNearestHeatingSource(container, objects = [], options = {}) {
-    const maxDistance = Number(options.maxDistance ?? 1.0);
-    const source = findNearestHeatingSource(container, objects, maxDistance);
-    if (!source) {
-        releaseContainerFromHeatingSource(container);
-        return false;
-    }
-    return snapContainerToHeatingSource(container, source);
+    // NEW HEATING RULE: không tự snap/căn container lên nguồn nhiệt.
+    // HeatingManager chỉ kiểm tra nguồn nhiệt thật sự đang bật và nằm bên dưới container.
+    if (container?.userData) releaseContainerFromHeatingSource(container);
+    return false;
 }
 
 function notifyPendingReaction(container) {
@@ -524,11 +651,6 @@ export class HeatingManager {
     updateContainerTemperature(container, deltaTime) {
         ensureContainerState(container);
         const current = Number(container.userData.currentTemperature ?? this.minTemperature);
-        let snappedSource = container.userData.isOnHeatingSource ? container.userData.heatingSource : null;
-        if (snappedSource && (!snappedSource.parent || snappedSource.userData?.isHeatingSource !== true)) {
-            releaseContainerFromHeatingSource(container);
-            snappedSource = null;
-        }
 
         let supportStand = container.userData.isOnSupportStand ? container.userData.supportStand : null;
         if (supportStand && (!supportStand.parent || !canSupportTools(supportStand))) {
@@ -536,26 +658,12 @@ export class HeatingManager {
             supportStand = null;
         }
 
-        let activeSource = isActiveHeatingSource(snappedSource) ? snappedSource : null;
-        if (!activeSource && supportStand) {
-            activeSource = this.findActiveHeatingSourceUnderSupport(supportStand);
-            if (activeSource) {
-                container.userData.heatingSource = activeSource;
-            } else {
-                container.userData.isHeating = false;
-                container.userData.heatingSource = null;
-            }
-            this.debugSupportHeatingState(container, supportStand, activeSource);
-        }
-        if (!activeSource) {
-            activeSource = this.findActiveHeatingSourceThroughAssembly(container);
-            if (activeSource) {
-                container.userData.heatingSource = activeSource;
-            }
-        }
-        const nearestDistance = activeSource
-            ? (supportStand ? worldDistance(supportStand, activeSource) : sourceDistance(container, activeSource))
-            : Infinity;
+        // NEW HEATING RULE:
+        // Không dùng trạng thái snap/assembly để coi là có nhiệt.
+        // Chỉ nguồn nhiệt thật sự, đang bật, nằm đúng bên dưới container mới được tính.
+        const activeSource = this.findActiveHeatingSourceBelowContainer(container);
+
+        const nearestDistance = activeSource ? sourceDistance(container, activeSource) : Infinity;
         let nextTemperature = current;
         if (activeSource) {
             const power = Math.max(0, Number(activeSource.userData.heatingPower ?? 8));
@@ -564,12 +672,13 @@ export class HeatingManager {
             container.userData.isHeating = true;
             container.userData.heatingSource = activeSource;
             markContainerHeated(container, Number(nextTemperature.toFixed(2)));
+            this.debugHeatingCheck(container, activeSource);
             this.debugHeating(activeSource, container, nearestDistance, supportStand);
         } else {
             nextTemperature = Math.max(this.minTemperature, current - this.coolingPower * deltaTime);
             container.userData.isHeating = false;
-            if (!container.userData.isOnHeatingSource) container.userData.heatingSource = null;
-            if (supportStand) container.userData.heatingSource = null;
+            container.userData.heatingSource = null;
+            this.debugHeatingCheck(container, null);
             if (Math.abs(nextTemperature - current) > 0.001) {
                 const rounded = Number(nextTemperature.toFixed(2));
                 container.userData.currentTemperature = rounded;
@@ -580,6 +689,24 @@ export class HeatingManager {
         if (activeSource && Math.abs(nextTemperature - current) > 0.001) {
             notifyPendingReaction(container);
         }
+    }
+
+    findActiveHeatingSourceBelowContainer(container) {
+        if (!isHeatTarget(container)) return null;
+        const containerPos = getWorldPosition(container);
+        return this.heatingSources.find(source => {
+            if (!source?.parent) return false;
+            if (source.userData?.isHeatingSource !== true) return false;
+            if (source.userData?.isOn !== true) return false;
+
+            const sourcePos = getWorldPosition(source);
+            const dx = sourcePos.x - containerPos.x;
+            const dz = sourcePos.z - containerPos.z;
+            const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+            const sourceBelow = sourcePos.y < containerPos.y;
+
+            return horizontalDist < 0.8 && sourceBelow;
+        }) || null;
     }
 
     findActiveHeatingSourceUnderSupport(support) {
@@ -606,6 +733,16 @@ export class HeatingManager {
         if (source.userData?.isHeatingSource !== true) return null;
         if (source.userData?.isOn !== true) return null;
         return source;
+    }
+
+    debugHeatingCheck(container, source) {
+        const now = performance.now();
+        if (now - this.lastDebugAt < 1000) return;
+        console.log('[HeatingCheck] container:', toolName(container));
+        console.log('[HeatingCheck] source below:', source ? toolName(source) : 'none');
+        console.log('[HeatingCheck] source isOn:', source?.userData?.isOn);
+        console.log('[HeatingCheck] heating allowed:', !!source);
+        this.lastDebugAt = now;
     }
 
     debugSupportHeatingState(container, support, source) {

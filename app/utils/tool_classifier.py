@@ -379,6 +379,9 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
         "scale_y": ("double precision", "1"),
         "scale_z": ("double precision", "1"),
         "has_custom_scale": ("boolean", "false"),
+        "rotation_x": ("double precision", "0"),
+        "rotation_y": ("double precision", "0"),
+        "rotation_z": ("double precision", "0"),
         "capabilities": ("jsonb", "'[]'::jsonb"),
         "ports": ("jsonb", "'{}'::jsonb"),
         "attach_points": ("jsonb", "'{}'::jsonb"),
@@ -388,6 +391,7 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
         "model_generation_status": ("text", "'pending'"),
         "model_job_id": ("text", "NULL"),
         "force_regenerate_model": ("boolean", "false"),
+        "is_deleted": ("boolean", "false"),
     }
 
     if dialect == "sqlite":

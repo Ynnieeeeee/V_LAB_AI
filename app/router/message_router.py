@@ -58,7 +58,7 @@ async def get_messages(conversation_id: uuid.UUID, user: Profiles = Depends(get_
         msg_stmt = select(Messages).where(Messages.id_conv == conversation_id).order_by(Messages.created_at.asc())
         messages = session.exec(msg_stmt).all()
 
-        tool_stmt = select(Tools).where(Tools.id_conv == conversation_id)
+        tool_stmt = select(Tools).where(Tools.id_conv == conversation_id, Tools.is_deleted == False)
         tools = session.exec(tool_stmt).all()
 
         return{

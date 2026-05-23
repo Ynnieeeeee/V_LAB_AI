@@ -790,6 +790,8 @@ function materializeRule(rule) {
         priority: rule.priority || 0,
         consumes: rule.consumes || rule.result?.consumes || {},
         producesState: rule.producesState || rule.result?.producesState || {},
+        requiredSetup: rule.requiredSetup || rule.required_setup || rule.result?.requiredSetup || rule.result?.required_setup || {},
+        required_setup: rule.requiredSetup || rule.required_setup || rule.result?.requiredSetup || rule.result?.required_setup || {},
         has_reaction: true
     };
 
