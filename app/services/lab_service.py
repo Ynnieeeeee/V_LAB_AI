@@ -79,6 +79,12 @@ class LabServices:
                 ).limit(1)
                 
                 template_tool = session.exec(statement).first()
+                if template_tool and template_tool.model_3d_url:
+                    print(
+                        "[LabService] Template model exists but new user-requested tool will regenerate:",
+                        item.name_en,
+                        template_tool.model_3d_url,
+                    )
 
                 # luôn tạo mới bản ghi Tool cho cuộc hội thoại này
                 new_tool = Tools(
@@ -90,7 +96,11 @@ class LabServices:
                     description=f"Dụng cụ {subject_name}: {item.name_vi}",
                     # Copy đầy đủ từ mẫu nếu có
                     image_2d_url=template_tool.image_2d_url if template_tool else None,
-                    model_3d_url=template_tool.model_3d_url if template_tool else None,
+                    image_hash=template_tool.image_hash if template_tool else None,
+                    model_3d_url=None,
+                    model_image_hash=None,
+                    model_generation_status="pending",
+                    force_regenerate_model=True,
                     material_color=template_tool.material_color if template_tool else "#ffffff",
                     material_type=template_tool.material_type if template_tool else None,
                     roughness=template_tool.roughness if template_tool else 0.5,

@@ -5,6 +5,7 @@ import re
 import unicodedata
 import numpy as np
 import trimesh
+from urllib.parse import urlparse
 from sqlmodel import select, Session
 from app.models.base_db import engine
 from app.config import PUBLIC_BASE_URL, TRIPO_API_KEY
@@ -12,6 +13,7 @@ from app.models.tools import Tools
 from app.services.image_service import (
     SINGLE_IMAGE_FAILURE_MESSAGE,
     clean_tool_image_for_3d,
+    compute_image_hash,
     validate_single_object_image,
 )
 from app.services.vision_service import VisionService
@@ -49,6 +51,7 @@ class MeshService:
         }
         self.base_url = "https://api.tripo3d.ai/v2/openapi"
         self.model_dir = os.path.join("app", "static", "models")
+        self.last_image_url_error = None
         if not os.path.exists(self.model_dir):
             os.makedirs(self.model_dir, exist_ok=True)
 
@@ -109,18 +112,49 @@ class MeshService:
 
     def _to_public_image_url(self, image_url):
         if not image_url:
+            self.last_image_url_error = "missing_image_url"
             return None
         if image_url.startswith("http://") or image_url.startswith("https://"):
             return image_url
         if image_url.startswith("/static/"):
-            if not PUBLIC_BASE_URL:
+            public_base_url = os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_PUBLIC_URL") or PUBLIC_BASE_URL
+            if not public_base_url:
+                self.last_image_url_error = "missing_public_base_url_for_cleaned_image"
                 print(
-                    "[3DPipeline] Cleaned local image requires PUBLIC_BASE_URL before sending to Tripo: "
-                    f"{image_url}"
+                    "[Image2Model] ERROR: cleaned image is local and PUBLIC_BASE_URL is missing; "
+                    "cannot call 3D API."
+                )
+                print(
+                    "[Image2Model] Set PUBLIC_BASE_URL or APP_PUBLIC_URL to a public backend URL "
+                    f"so Tripo can fetch: {image_url}"
                 )
                 return None
-            return f"{PUBLIC_BASE_URL.rstrip('/')}{image_url}"
+            if self._is_non_public_base_url(public_base_url):
+                self.last_image_url_error = "non_public_base_url_for_cleaned_image"
+                print(
+                    "[Image2Model] ERROR: PUBLIC_BASE_URL is not publicly reachable by Tripo; "
+                    f"cannot call 3D API with local/private host: {public_base_url}"
+                )
+                return None
+            return f"{public_base_url.rstrip('/')}{image_url}"
         return image_url
+
+    def _is_non_public_base_url(self, public_base_url):
+        parsed = urlparse(public_base_url)
+        host = (parsed.hostname or "").lower()
+        if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+            return True
+        if host.startswith("127.") or host.startswith("10.") or host.startswith("192.168."):
+            return True
+        if host.startswith("172."):
+            parts = host.split(".")
+            if len(parts) > 1:
+                try:
+                    second = int(parts[1])
+                    return 16 <= second <= 31
+                except ValueError:
+                    return False
+        return False
 
     def _is_slender_tool(self, tool_name_en="", name_vi="", tool_type=""):
         text_value = self._normalize_tool_text(f"{name_vi} {tool_name_en} {tool_type}")
@@ -143,14 +177,24 @@ class MeshService:
             prompt += " Previous result incorrectly created multiple copies. Regenerate only ONE single object."
         return prompt
 
-    def create_3d_task(self, image_url, tool_name_en="", name_vi="", tool_type="", attempt=1):
+    def create_3d_task(self, image_url, tool_name_en="", name_vi="", tool_type="", attempt=1, fallback_public_url=None):
         """Tạo task image-to-3d"""
+        self.last_image_url_error = None
         public_image_url = self._to_public_image_url(image_url)
         if not public_image_url:
-            return None
+            if fallback_public_url and (fallback_public_url.startswith("http://") or fallback_public_url.startswith("https://")):
+                print(
+                    f"[Image2Model] Cleaned image is local and PUBLIC_BASE_URL is missing/private. "
+                    f"Falling back to original public URL: {fallback_public_url}"
+                )
+                public_image_url = fallback_public_url
+                self.last_image_url_error = None
+            else:
+                return None
         file_type = "png" if public_image_url.lower().split("?")[0].endswith(".png") else "jpg"
         prompt = self.build_image_to_model_prompt(tool_name_en, name_vi, tool_type, attempt)
         print(f"[Image2Model] input image: {image_url}")
+        print(f"[Image2Model] public image_url used: {public_image_url}")
         print(f"[Image2Model] tool name: {name_vi or tool_name_en}")
         print(f"[Image2Model] prompt: {prompt}")
         payload = {
@@ -167,6 +211,7 @@ class MeshService:
             "pbr": True
         }
         try:
+            print("[Image2Model] calling 3D API now...")
             response = requests.post(f"{self.base_url}/task", headers=self.headers, json=payload, timeout=60)
             result = response.json()
             if result.get("code") == 0:
@@ -420,11 +465,13 @@ class MeshService:
             return repaired
         return validation
 
-    def download_and_get_local_url(self, model_url, tool_name_en):
+    def download_and_get_local_url(self, model_url, tool_name_en, image_hash=None, tool_id=None):
         """Tải file và trả về đường dẫn tương đối để lưu DB"""
         try:
             safe_name = tool_name_en.lower().replace(' ', '_')
-            filename = f"{safe_name}_{int(time.time())}.glb"
+            hash_part = str(image_hash or "nohash")[:16]
+            tool_part = str(tool_id or safe_name)[:16]
+            filename = f"{tool_part}_{hash_part}_{int(time.time())}.glb"
             file_path = os.path.join(self.model_dir, filename)
             
             resp = requests.get(model_url, stream=True, timeout=60)
@@ -471,6 +518,22 @@ def run_3d_pipeline(engine):
                 print(f"[ImageValidation] rejected existing image: {validation.get('reason')}")
                 print(f"{SINGLE_IMAGE_FAILURE_MESSAGE} ({tool.name_tool_en})")
                 continue
+            
+            original_public_url = tool.image_2d_url if (tool.image_2d_url and tool.image_2d_url.startswith(("http://", "https://"))) else None
+            if tool.image_2d_url and tool.image_2d_url.startswith("/static/"):
+                public_base_url = os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_PUBLIC_URL") or PUBLIC_BASE_URL
+                if not public_base_url or service._is_non_public_base_url(public_base_url):
+                    print(f"[3DPipeline] Local image found but PUBLIC_BASE_URL is missing/private. Searching for public image URL to use as fallback...")
+                    from app.services.image_service import search_tool_image
+                    public_search_url = search_tool_image(
+                        tool.name_tool_en,
+                        tool.name_tool_vi,
+                        tool.tool_type,
+                        tool.subject_type,
+                    )
+                    if public_search_url:
+                        print(f"[3DPipeline] Found public search URL: {public_search_url}")
+                        original_public_url = public_search_url
 
             cleaned_image_url = clean_tool_image_for_3d(
                 tool.image_2d_url,
@@ -480,6 +543,14 @@ def run_3d_pipeline(engine):
             )
             if cleaned_image_url and cleaned_image_url != tool.image_2d_url:
                 tool.image_2d_url = cleaned_image_url
+                tool.image_hash = compute_image_hash(cleaned_image_url)
+                tool.model_3d_url = None
+                tool.model_generation_status = "pending"
+                tool.force_regenerate_model = True
+                session.add(tool)
+                session.commit()
+            elif tool.image_2d_url and not tool.image_hash:
+                tool.image_hash = compute_image_hash(tool.image_2d_url)
                 session.add(tool)
                 session.commit()
 
@@ -503,11 +574,28 @@ def run_3d_pipeline(engine):
                 tool.name_tool_vi,
                 tool.tool_type,
                 1,
+                fallback_public_url=original_public_url,
             )
             
             if not task_id:
+                if service.last_image_url_error in {
+                    "missing_public_base_url_for_cleaned_image",
+                    "non_public_base_url_for_cleaned_image",
+                }:
+                    tool.model_generation_status = "failed_public_image_url"
+                    tool.force_regenerate_model = True
+                    tool.model_3d_url = None
+                    tool.model_image_hash = None
+                    tool.model_job_id = None
+                    session.add(tool)
+                    session.commit()
                 print(f"Bỏ qua {tool.name_tool_en} do lỗi tạo Task.")
                 continue
+
+            tool.model_job_id = task_id
+            tool.model_generation_status = "running"
+            session.add(tool)
+            session.commit()
 
             success = False
             retry_count = 0
@@ -516,7 +604,12 @@ def run_3d_pipeline(engine):
                 
                 if isinstance(res, str) and res.startswith("http"):
                     print(f"Link thành công: {res[:60]}...")
-                    local_link = service.download_and_get_local_url(res, tool.name_tool_en)
+                    local_link = service.download_and_get_local_url(
+                        res,
+                        tool.name_tool_en,
+                        tool.image_hash,
+                        tool.id_tool,
+                    )
                     
                     if local_link:
                         local_path = service.local_model_path_from_url(local_link)
@@ -531,6 +624,9 @@ def run_3d_pipeline(engine):
                             print(f"[ModelValidation] rejected duplicated model: {validation.get('reason')}")
                             break
                         tool.model_3d_url = local_link
+                        tool.model_image_hash = tool.image_hash
+                        tool.model_generation_status = "completed"
+                        tool.force_regenerate_model = False
                         session.add(tool)
                         session.commit()
                         print(f"Hoàn tất: {tool.name_tool_en} -> {local_link}")

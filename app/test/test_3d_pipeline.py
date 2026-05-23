@@ -2,6 +2,8 @@ import time
 from sqlmodel import Session, select
 from app.models.base_db import engine
 from app.models.tools import Tools
+from app.models.conversations import Conversations
+from app.models.profiles import Profiles
 from app.services.mesh_service import MeshService
 
 def check_db_before_test():
@@ -34,7 +36,19 @@ def run_test():
         for index, tool in enumerate(pending_tools):
             print(f"\n[{index + 1}/{len(pending_tools)}] Xử lý: {tool.name_tool_en}")
             
-            task_id = service.create_3d_task(tool.image_2d_url)
+            original_public_url = tool.image_2d_url if (tool.image_2d_url and tool.image_2d_url.startswith(("http://", "https://"))) else None
+            if tool.image_2d_url and tool.image_2d_url.startswith("/static/"):
+                from app.services.image_service import search_tool_image
+                original_public_url = search_tool_image(tool.name_tool_en, tool.name_tool_vi, tool.tool_type, tool.subject_type)
+
+            task_id = service.create_3d_task(
+                tool.image_2d_url,
+                tool.name_tool_en,
+                tool.name_tool_vi,
+                tool.tool_type,
+                1,
+                fallback_public_url=original_public_url
+            )
             if not task_id:
                 print(f"Bỏ qua {tool.name_tool_en} do lỗi tạo Task.")
                 continue

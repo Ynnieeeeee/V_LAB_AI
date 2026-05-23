@@ -16,6 +16,11 @@ class Tools (SQLModel, table=True):
     material_type: Optional[str] = None
     image_2d_url: Optional[str] = None
     model_3d_url: Optional[str] = None
+    image_hash: Optional[str] = None
+    model_image_hash: Optional[str] = None
+    model_generation_status: str = Field(default="pending")
+    model_job_id: Optional[str] = None
+    force_regenerate_model: bool = Field(default=False)
     material_color: Optional[str] = None
     roughness: Optional[float] = Field(default=0.5) 
     metalness: Optional[float] = Field(default=0.0) 

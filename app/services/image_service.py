@@ -3,6 +3,7 @@ import unicodedata
 import io
 import os
 import time
+import hashlib
 from urllib.parse import urlparse
 
 import requests
@@ -938,6 +939,34 @@ def _load_image_for_cleaning(image_url: str):
     return Image.open(io.BytesIO(response.content))
 
 
+def _read_image_bytes(image_url: str):
+    if not image_url:
+        return None
+    if image_url.startswith("/static/"):
+        local_path = _static_url_to_local_path(image_url)
+        if local_path and os.path.exists(local_path):
+            with open(local_path, "rb") as file:
+                return file.read()
+        return None
+    if os.path.exists(image_url):
+        with open(image_url, "rb") as file:
+            return file.read()
+    response = requests.get(
+        image_url,
+        timeout=IMAGE_FETCH_TIMEOUT,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def compute_image_hash(image_url: str):
+    data = _read_image_bytes(image_url)
+    if not data:
+        return None
+    return hashlib.sha256(data).hexdigest()
+
+
 def _resize_for_cleaning(image, max_side=1000):
     image = image.convert("RGBA")
     width, height = image.size
@@ -1104,11 +1133,16 @@ def clean_tool_image_for_3d(image_url: str, tool_name_en: str = "", tool_id=None
             print(f"[ImageClean] no foreground found; using original image: {image_url}")
             return image_url
 
+        output = io.BytesIO()
+        cleaned.save(output, format="PNG")
+        cleaned_bytes = output.getvalue()
+        image_hash = hashlib.sha256(cleaned_bytes).hexdigest()
         os.makedirs(CLEANED_IMAGE_DIR, exist_ok=True)
         suffix = str(tool_id or int(time.time()))[:8]
-        filename = f"{_safe_filename(tool_name_en)}_{suffix}.png"
+        filename = f"{_safe_filename(tool_name_en)}_{suffix}_{image_hash[:16]}.png"
         output_path = os.path.join(CLEANED_IMAGE_DIR, filename)
-        cleaned.save(output_path, format="PNG")
+        with open(output_path, "wb") as file:
+            file.write(cleaned_bytes)
         cleaned_url = f"{CLEANED_IMAGE_URL_PREFIX}/{filename}"
         print(f"[ImageClean] saved cleaned image: {cleaned_url} source={image_url}")
         return cleaned_url

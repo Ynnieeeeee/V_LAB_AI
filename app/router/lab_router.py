@@ -4,6 +4,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from app.models.base_db import engine, get_session
@@ -94,7 +95,11 @@ async def generate_lab(
 def _queue_pending_3d_tools(id_conv, backgroundtask: BackgroundTasks, session: Session) -> None:
     pending_statement = select(Tools).where(
         Tools.id_conv == id_conv,
-        Tools.model_3d_url == None,
+        or_(
+            Tools.model_3d_url == None,
+            Tools.force_regenerate_model == True,
+            and_(Tools.image_hash != None, Tools.model_image_hash != Tools.image_hash),
+        ),
     )
     pending_tools = session.exec(pending_statement).all()
     processing_ids = get_processing_tool_ids()
@@ -127,10 +132,90 @@ async def get_tool_status(
     statement = select(Tools).where(
         Tools.id_conv == id_conv,
         Tools.model_3d_url != None,
+        Tools.force_regenerate_model == False,
+        or_(
+            and_(Tools.image_hash != None, Tools.model_image_hash == Tools.image_hash),
+            and_(Tools.image_hash == None, Tools.model_image_hash == None),
+        ),
     )
     result = session.exec(statement).all()
     print(f"[LabStatus] ready tools for {id_conv}: {len(result)}")
     return result
+
+
+def _should_regenerate_model(tool: Tools) -> bool:
+    if not tool.model_3d_url or tool.force_regenerate_model:
+        return True
+    if tool.image_hash and tool.model_image_hash == tool.image_hash:
+        return False
+    return not (tool.image_hash is None and tool.model_image_hash is None)
+
+
+@router.get("/tools/{id_tool}/model-debug")
+async def get_tool_model_debug(
+    id_tool: str,
+    session: Session = Depends(get_session),
+):
+    ensure_tools_metadata_columns(session)
+    session.commit()
+    try:
+        tool_uuid = uuid.UUID(str(id_tool))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id_tool khong hop le")
+
+    tool = session.get(Tools, tool_uuid)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
+
+    return {
+        "id_tool": tool.id_tool,
+        "image_2d_url": tool.image_2d_url,
+        "image_hash": tool.image_hash,
+        "model_3d_url": tool.model_3d_url,
+        "model_image_hash": tool.model_image_hash,
+        "model_generation_status": tool.model_generation_status,
+        "model_job_id": tool.model_job_id,
+        "force_regenerate_model": tool.force_regenerate_model,
+        "shouldRegenerateModel": _should_regenerate_model(tool),
+    }
+
+
+@router.post("/tools/{id_tool}/regenerate-model")
+async def regenerate_tool_model(
+    id_tool: str,
+    backgroundtask: BackgroundTasks,
+    session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
+):
+    ensure_tools_metadata_columns(session)
+    session.commit()
+    try:
+        tool_uuid = uuid.UUID(str(id_tool))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id_tool khong hop le")
+
+    tool = session.get(Tools, tool_uuid)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
+    conversation = session.get(Conversations, tool.id_conv) if tool.id_conv else None
+    if conversation and conversation.id_profile != user.id_profile:
+        raise HTTPException(status_code=403, detail="Khong co quyen cap nhat dung cu nay")
+
+    tool.force_regenerate_model = True
+    tool.model_3d_url = None
+    tool.model_image_hash = None
+    tool.model_generation_status = "pending"
+    tool.model_job_id = None
+    tool.updated_at = datetime.utcnow()
+    session.add(tool)
+    session.commit()
+    backgroundtask.add_task(start_3d_pipeline_task, [tool.id_tool], engine)
+    return {
+        "status": "queued",
+        "id_tool": tool.id_tool,
+        "force_regenerate_model": tool.force_regenerate_model,
+        "model_generation_status": tool.model_generation_status,
+    }
 
 
 def _coerce_scale(value, field_name: str) -> float:

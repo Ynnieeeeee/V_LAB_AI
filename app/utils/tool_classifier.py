@@ -383,6 +383,11 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
         "ports": ("jsonb", "'{}'::jsonb"),
         "attach_points": ("jsonb", "'{}'::jsonb"),
         "assembly_role": ("text", "'none'"),
+        "image_hash": ("text", "NULL"),
+        "model_image_hash": ("text", "NULL"),
+        "model_generation_status": ("text", "'pending'"),
+        "model_job_id": ("text", "NULL"),
+        "force_regenerate_model": ("boolean", "false"),
     }
 
     if dialect == "sqlite":
