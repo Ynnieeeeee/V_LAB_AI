@@ -7,6 +7,7 @@ from app.models.messages import Messages
 from app.models.tools import Tools
 from app.schema.chat_response import ChatRequest
 from app.utils.get_current_user import get_current_user
+from app.utils.subscription_utils import require_tool_limit, require_active_plan
 from app.services.lab_service import LabServices
 import uuid
 
@@ -16,6 +17,7 @@ router = APIRouter()
 async def send_messages(req: ChatRequest, user: Profiles = Depends(get_current_user)):
     """gửi tin nhắn đến hệ thống"""
     with Session(engine) as session:
+        plan_limit = require_tool_limit(session, user.id_profile, requested_quantity=1)
         if not req.id_conv:
             db_conv = Conversations(
                 id_profile=user.id_profile,
@@ -36,7 +38,8 @@ async def send_messages(req: ChatRequest, user: Profiles = Depends(get_current_u
         tool_result = await lab_service.process_user_request(
             user_text=req.question,
             id_conv=conv_id,
-            subject_code=current_subject
+            subject_code=current_subject,
+            max_quantity_per_request=plan_limit.get("remaining_tools_today"),
         )
         return{
             "conversation_id": conv_id,
@@ -48,6 +51,7 @@ async def send_messages(req: ChatRequest, user: Profiles = Depends(get_current_u
 async def get_messages(conversation_id: uuid.UUID, user: Profiles = Depends(get_current_user)):
     """Lấy toàn bộ dữ liệu của 1 cuộc hội thoại"""
     with Session(engine) as session:
+        require_active_plan(session, user.id_profile)
         conversation = session.get(Conversations, conversation_id)
         if not conversation or conversation.id_profile != user.id_profile:
             raise HTTPException(

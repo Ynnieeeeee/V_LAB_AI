@@ -1,6 +1,8 @@
 document.addEventListener("DOMContentLoaded", () => {
 
     const userArea = document.getElementById("user-area")
+    if (!userArea) return
+
     const user = JSON.parse(localStorage.getItem("user"))
 
     if (user) {
@@ -26,7 +28,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         class="w-full text-left px-4 py-3 text-sm hover:bg-gray-100 flex items-center gap-2">
                         <i class="fa-solid fa-crown text-yellow-500"></i>
                         Nâng cấp
-                    </button>
+                    </button>  
 
                     <button id="logout-btn"
                         class="w-full text-left px-4 py-3 text-sm hover:bg-gray-100 flex items-center gap-2">
@@ -60,7 +62,7 @@ document.addEventListener("DOMContentLoaded", () => {
         })
 
         document.getElementById("update-btn").addEventListener("click", () => {
-            window.location.href = "/subscription"
+            window.location.href = "/assets/subscription.html"
         })
 
     }

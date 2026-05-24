@@ -4,9 +4,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
+from pathlib import Path
 import uuid
-
 from app.models.base_db import check_db_connection, create_db_and_tables, engine
 from sqlmodel import Session
 from app.utils.tool_classifier import ensure_tools_metadata_columns
@@ -18,6 +18,8 @@ from app.router.conversation_router import router as conversation_router
 from app.router.message_mascot_router import router as mascot_router
 from app.router.chemical_router import router as chemical_router
 from app.router.reaction_rule_router import router as reaction_router
+from app.router.subscription_router import router as subscription_router
+from app.router.payment_router import router as payment_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -43,12 +45,20 @@ app.add_middleware(
     allow_headers=["*"], 
 )
 
-templates = Jinja2Templates(directory="app/src")
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATE_DIR = BASE_DIR / "src"
+ASSETS_DIR = TEMPLATE_DIR / "assets"
+STATIC_DIR = BASE_DIR / "static"
+
+templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 app.add_middleware(SessionMiddleware, secret_key="super-secret-key")
 
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+# Mount bằng đường dẫn tuyệt đối để tránh lỗi 500/TemplateNotFound khi chạy uvicorn
+# từ thư mục khác. Chỉ mount /static nếu thư mục thật sự tồn tại.
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-app.mount("/assets", StaticFiles(directory="app/src/assets"), name="assets")
+app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 app.include_router(lab_router)
 app.include_router(google_login)
@@ -57,7 +67,9 @@ app.include_router(message_router)
 app.include_router(conversation_router)
 app.include_router(mascot_router)
 app.include_router(chemical_router)
-app.include_router(reaction_router)     
+app.include_router(reaction_router)   
+app.include_router(subscription_router) 
+app.include_router(payment_router) 
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -74,6 +86,11 @@ async def chat_conversation_page(request: Request, conversation_id: str):
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
+
+@app.get("/subscription", response_class=HTMLResponse)
+@app.get("/subscription.html", response_class=HTMLResponse)
+async def subscription_page(request: Request):
+    return FileResponse(TEMPLATE_DIR / "subscription.html", media_type="text/html")
 
 @app.get("/{conversation_id}", response_class=HTMLResponse)
 async def legacy_conversation_page(request: Request, conversation_id: str):

@@ -14,6 +14,7 @@ from app.models.tools import Tools
 from app.services.lab_service import LabServices
 from app.task.lab_task import get_processing_tool_ids, start_3d_pipeline_task
 from app.utils.get_current_user import get_current_user
+from app.utils.subscription_utils import require_tool_limit, require_active_plan
 from app.utils.tool_classifier import ensure_tools_metadata_columns
 
 
@@ -39,6 +40,10 @@ async def generate_lab(
     if not user_text:
         raise HTTPException(status_code=400, detail="Thieu thong tin mo ta")
 
+    # Chặn ngay từ backend theo subscription_plans.tool_limit_per_day.
+    # Kiểm tra tối thiểu 1 lượt trước khi gọi AI.
+    plan_limit = require_tool_limit(session, user.id_profile, requested_quantity=1)
+
     if not id_conv or id_conv == "null" or id_conv == "undefined":
         new_conv = Conversations(
             id_profile=user.id_profile,
@@ -50,7 +55,13 @@ async def generate_lab(
         session.refresh(new_conv)
         id_conv = new_conv.id_conv
 
-    extracted_data = await lab_service.process_user_request(user_text, id_conv, subject)
+    extracted_data = await lab_service.process_user_request(
+        user_text,
+        id_conv,
+        subject,
+        max_quantity_per_request=plan_limit.get("remaining_tools_today"),
+    )
+
     tool_ids_to_process = []
     response_data = []
 
@@ -128,7 +139,14 @@ async def get_tool_status(
     id_conv: str,
     backgroundtask: BackgroundTasks,
     session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
 ):
+    require_active_plan(session, user.id_profile)
+
+    conversation = session.get(Conversations, uuid.UUID(str(id_conv)))
+    if not conversation or conversation.id_profile != user.id_profile or conversation.is_deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     ensure_tools_metadata_columns(session)
     session.commit()
     _queue_pending_3d_tools(id_conv, backgroundtask, session)
@@ -160,7 +178,10 @@ def _should_regenerate_model(tool: Tools) -> bool:
 async def get_tool_model_debug(
     id_tool: str,
     session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
 ):
+    require_active_plan(session, user.id_profile)
+
     ensure_tools_metadata_columns(session)
     session.commit()
     try:
@@ -171,6 +192,10 @@ async def get_tool_model_debug(
     tool = session.get(Tools, tool_uuid)
     if not tool:
         raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
+
+    conversation = session.get(Conversations, tool.id_conv) if tool.id_conv else None
+    if conversation and conversation.id_profile != user.id_profile:
+        raise HTTPException(status_code=403, detail="Khong co quyen xem dung cu nay")
 
     return {
         "id_tool": tool.id_tool,
@@ -192,6 +217,7 @@ async def regenerate_tool_model(
     session: Session = Depends(get_session),
     user: Profiles = Depends(get_current_user),
 ):
+    require_tool_limit(session, user.id_profile, requested_quantity=1)
     ensure_tools_metadata_columns(session)
     session.commit()
     try:

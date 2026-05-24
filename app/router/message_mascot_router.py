@@ -4,6 +4,7 @@ from app.models.messages import Messages
 from app.models.conversations import Conversations
 from app.schema.chat_response import ChatRequest
 from app.utils.get_current_user import get_current_user
+from app.utils.subscription_utils import require_mascot_limit, require_active_plan
 from app.models.profiles import Profiles
 from app.models.conversations import Conversations
 from app.models.chemicals import Chemicals
@@ -275,6 +276,7 @@ def _persist_experiment_plan_steps(session: Session, id_conversation, experiment
 @router.post("/message/send")
 def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_user)):
     with Session(engine) as session:
+        require_mascot_limit(session, user.id_profile)
         current_subject = req.subject
         id_conversation = _as_uuid(req.id_conv)
         existing_conv = session.get(Conversations, id_conversation) if id_conversation else None
@@ -358,6 +360,7 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
 @router.get("/api/experiment-steps/{id_conversation}")
 def get_experiment_steps(id_conversation: str, user: Profiles = Depends(get_current_user)):
     with Session(engine) as session:
+        require_active_plan(session, user.id_profile)
         conv_id = _as_uuid(id_conversation)
         conversation = session.get(Conversations, conv_id) if conv_id else None
         if not conversation or conversation.id_profile != user.id_profile or conversation.is_deleted:
@@ -378,6 +381,7 @@ def get_experiment_steps(id_conversation: str, user: Profiles = Depends(get_curr
 @router.patch("/api/experiment-steps/{id_step}")
 def update_experiment_step(id_step: str, payload: dict, user: Profiles = Depends(get_current_user)):
     with Session(engine) as session:
+        require_active_plan(session, user.id_profile)
         step_id = _as_uuid(id_step)
         step = session.get(ExpermentSteps, step_id) if step_id else None
         if not step:
@@ -419,6 +423,7 @@ def update_experiment_step(id_step: str, payload: dict, user: Profiles = Depends
 @router.get("/api/message/full_history/{id_conversation}")
 def get_full_history(id_conversation: str, user: Profiles = Depends(get_current_user)):
     with Session(engine) as session:
+        require_active_plan(session, user.id_profile)
         conv_id = _as_uuid(id_conversation)
         conversation = session.get(Conversations, conv_id) if conv_id else None
         if not conversation or conversation.id_profile != user.id_profile or conversation.is_deleted:

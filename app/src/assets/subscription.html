@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/assets/css/output.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css">
+    <link rel="stylesheet" href="/assets/font/fontawesome-free-6.7.2-web/css/all.css">
+    <title>Subscription</title>
+</head>
+<body class="min-h-screen bg-[#f3f3f3] flex items-center justify-center font-sans py-10">
+    <section class="flex gap-8 flex-wrap justify-center px-6">
+        <div class="w-64 min-h-[500px] pb-28 rounded-2xl overflow-hidden shadow-xl bg-gradient-to-b from-[#00f0c8] to-[#006f78] text-white flex flex-col relative">
+            <div class="p-6">
+                <h2 class="text-xl font-bold flex items-center gap-2">
+                    <i class="fa-solid fa-gear"></i> BASIC
+                </h2>
+            </div>
+            <div class="bg-white text-[#00a99d] rounded-r-full w-[220px] py-4 px-6">
+                <p class="text-4xl font-extrabold">0vnd</p>
+                <p class="font-semibold">/Month</p>
+            </div>
+            <div class="px-7 mt-8 space-y-4 text-sm flex-1">
+                <p><i class="fa-solid fa-check mr-2"></i>Tao toi da 5 dung cu/ngay</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Hoi mascot toi da 5 lan/thang</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Trai nghiem tuong tac 3D cot loi</p>
+                <div class="h-[2px] bg-white mt-6"></div>
+            </div>
+            <button data-plan="basic" class="upgrade-btn absolute bottom-8 left-1/2 -translate-x-1/2 border-2 border-white rounded-full px-8 py-3 font-bold hover:bg-white hover:text-[#007b7b] transition">
+                START NOW
+            </button>
+        </div>
+
+        <div class="w-64 min-h-[500px] pb-28 rounded-2xl overflow-hidden shadow-xl bg-gradient-to-b from-[#e85b9a] to-[#3157b7] text-white flex flex-col relative">
+            <div class="p-6">
+                <h2 class="text-xl font-bold flex items-center gap-2">
+                    <i class="fa-solid fa-gauge-high"></i> PRO
+                </h2>
+            </div>
+            <div class="bg-white text-[#7d4fa3] rounded-r-full w-[220px] py-4 px-6">
+                <p class="text-3xl font-extrabold">50.000vnd</p>
+                <p class="font-semibold">/Month</p>
+            </div>
+            <div class="px-7 mt-8 space-y-4 text-sm flex-1">
+                <p><i class="fa-solid fa-check mr-2"></i>Tao toi da 10 dung cu/ngay</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Hoi mascot toi da 10 lan/ngay</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Trai nghiem tuong tac 3D cot loi</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Mo khoa luu tru trang thai ban Lab</p>
+                <div class="h-[2px] bg-white mt-6"></div>
+            </div>
+            <button data-plan="pro" class="upgrade-btn absolute bottom-8 left-1/2 -translate-x-1/2 border-2 border-white rounded-full px-8 py-3 font-bold hover:bg-white hover:text-[#3157b7] transition">
+                START NOW
+            </button>
+        </div>
+
+        <div class="w-64 min-h-[500px] pb-28 rounded-2xl overflow-hidden shadow-xl bg-gradient-to-br from-[#ff4f8b] via-[#ff7a88] to-[#ffc36b] text-white flex flex-col relative">
+            <div class="p-6">
+                <h2 class="text-xl font-bold flex items-center gap-2">
+                    <i class="fa-solid fa-globe"></i> PREMIUM
+                </h2>
+            </div>
+            <div class="bg-white text-[#ff6f72] rounded-r-full w-[220px] py-4 px-6">
+                <p class="text-3xl font-extrabold">70.000vnd</p>
+                <p class="font-semibold">/Month</p>
+            </div>
+            <div class="px-7 mt-8 space-y-4 text-sm flex-1">
+                <p><i class="fa-solid fa-check mr-2"></i>Tao toi da 20 dung cu/ngay</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Hoi Mascot KHONG GIOI HAN</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Trai nghiem tuong tac 3D cot loi</p>
+                <p><i class="fa-solid fa-check mr-2"></i>Mo khoa luu tru trang thai ban Lab</p>
+                <div class="h-[2px] bg-white mt-6"></div>
+            </div>
+            <button data-plan="premium" class="upgrade-btn absolute bottom-8 left-1/2 -translate-x-1/2 border-2 border-white rounded-full px-8 py-3 font-bold hover:bg-white hover:text-[#ff6f72] transition">
+                START NOW
+            </button>
+        </div>
+    </section>
+
+    <script type="module" src="/assets/js/payment.js?v=20260524d"></script>
+</body>
+</html>

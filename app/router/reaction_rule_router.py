@@ -1,20 +1,34 @@
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
-from app.models.base_db import get_session
-from app.models.reaction_rules import ReactionRules
-from app.models.chemicals import Chemicals
-from app.utils.chemistry_engine import ChemLite, predict_accurate_reaction
+from sqlmodel import Session
 import uuid
+
+from app.models.base_db import get_session
+from app.models.chemicals import Chemicals
+from app.models.profiles import Profiles
+from app.utils.chemistry_engine import ChemLite, predict_accurate_reaction
+from app.utils.get_current_user import get_current_user
+from app.utils.subscription_utils import require_active_plan
+
 
 router = APIRouter()
 
+
 @router.get("/api/reactions/check")
-def check_reaction(source_id: uuid.UUID, target_id: uuid.UUID, session: Session = Depends(get_session)):
+def check_reaction(
+    source_id: uuid.UUID,
+    target_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
+):
+    """Kiểm tra phản ứng hóa học, chỉ cho user có gói hợp lệ."""
+    require_active_plan(session, user.id_profile)
+
     print("=" * 60)
     print("CHECKING REACTION")
     print("=" * 60)
     print("SOURCE ID:", source_id)
     print("TARGET ID:", target_id)
+
     source_chem = session.get(Chemicals, source_id)
     target_chem = session.get(Chemicals, target_id)
 
@@ -22,15 +36,12 @@ def check_reaction(source_id: uuid.UUID, target_id: uuid.UUID, session: Session 
     print("TARGET CHEM:", target_chem)
 
     if not source_chem or not target_chem:
-
         return {
-
             "has_reaction": False,
-            "reason": "chemical_not_found"
+            "reason": "chemical_not_found",
         }
 
     print("SOURCE TYPE:", source_chem.chemical_type)
-
     print("TARGET TYPE:", target_chem.chemical_type)
 
     accurate_result = predict_accurate_reaction(

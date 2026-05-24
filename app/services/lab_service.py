@@ -1,4 +1,5 @@
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from fastapi import HTTPException
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 from app.config import HF_TOKEN
@@ -42,7 +43,7 @@ class LabServices:
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
         )
 
-    async def process_user_request(self, user_text: str, id_conv: uuid.UUID, subject_code: str = "general"):
+    async def process_user_request(self, user_text: str, id_conv: uuid.UUID, subject_code: str = "general", max_quantity_per_request: int | None = None):
         subject_map = {
             "chemistry": "Hóa học",
             "physics": "Vật lý",
@@ -67,6 +68,16 @@ class LabServices:
             except Exception as e:
                 print(f"Error: {e}")
                 return []
+
+            requested_quantity = sum(max(1, int(item.quantity or 1)) for item in extracted_data.tools)
+            if max_quantity_per_request is not None and requested_quantity > max_quantity_per_request:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Yêu cầu này cần {requested_quantity} dụng cụ, "
+                        f"nhưng gói hiện tại chỉ còn {max_quantity_per_request} dụng cụ trong hôm nay."
+                    )
+                )
 
             for item in extracted_data.tools:
                 tool_meta = classify_tool_by_name(item.name_vi, item.name_en)
