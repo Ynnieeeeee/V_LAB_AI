@@ -117,14 +117,80 @@ function hasEffectType(reaction, types) {
     }));
 }
 
+function hasEffectListType(reaction, types) {
+    const wanted = new Set(types);
+    return effectListOf(reaction).some(effect => wanted.has(effect?.type) && positiveFlag(effect));
+}
+
+function hasMappedEffectType(reaction, types) {
+    return effectMapOf(reaction).some(map => types.some(type => {
+        const camel = type === 'vapor' ? 'vaporEffect' : `${type}Effect`;
+        const snake = type === 'vapor' ? 'vapor_effect' : `${type}_effect`;
+        return positiveFlag(map?.[type]) || positiveFlag(map?.[camel]) || positiveFlag(map?.[snake]);
+    }));
+}
+
 function hasTopLevelGasFlag(reaction) {
     const raw = rawReaction(reaction);
     return positiveFlag(reaction?.gas)
-        || positiveFlag(reaction?.smoke)
+        || positiveFlag(raw?.gas);
+}
+
+function hasTopLevelSmokeFlag(reaction) {
+    const raw = rawReaction(reaction);
+    return positiveFlag(reaction?.smoke)
         || positiveFlag(reaction?.vapor)
-        || positiveFlag(raw?.gas)
         || positiveFlag(raw?.smoke)
         || positiveFlag(raw?.vapor);
+}
+
+function hasHeatSignal(reaction) {
+    const raw = rawReaction(reaction);
+    return positiveFlag(reaction?.heat)
+        || positiveFlag(raw?.heat)
+        || hasEffectType(reaction, ['heat']);
+}
+
+function smokeTextOf(reaction) {
+    const raw = rawReaction(reaction);
+    const data = reactionData(reaction);
+    return [
+        reaction?.phenomenon,
+        reaction?.mascotText,
+        reaction?.mascot_speech,
+        reaction?.description,
+        data?.phenomenon,
+        data?.description,
+        raw?.phenomenon,
+        raw?.mascotText,
+        raw?.mascot_speech,
+        raw?.description,
+        raw?.reaction_data?.phenomenon,
+        raw?.reaction_data?.description,
+        ...productsOf(reaction),
+        ...equationsOf(reaction)
+    ].filter(Boolean).join(' ');
+}
+
+function hasSmokeOrVaporText(reaction) {
+    const text = normalizeText(smokeTextOf(reaction));
+    return /\b(smoke|fume|vapor|vapour|steam|mist)\b|khoi|hoi nuoc|hoi trang|khi trang|khoi trang|boc hoi|bay hoi|nh4cl_smoke|smoke_product/.test(text);
+}
+
+function hasRealSmokeSignal(reaction) {
+    const explicitEffect = hasEffectListType(reaction, ['smoke', 'vapor']);
+    const mappedEffect = hasMappedEffectType(reaction, ['smoke', 'vapor']);
+    const topLevelFlag = hasTopLevelSmokeFlag(reaction);
+    const smokeText = hasSmokeOrVaporText(reaction);
+
+    if (explicitEffect || smokeText) return true;
+
+    // Many analyzed rules mark hot reactions as vapor/smoke just because heat is present.
+    // If there is no gas/smoke product and no explicit smoke effect, treat heat-only smoke
+    // metadata as visual noise.
+    if (hasHeatSignal(reaction)) return false;
+
+    return topLevelFlag || mappedEffect;
 }
 
 function hasGasName(value) {
@@ -150,17 +216,13 @@ export function hasGasProduct(reaction) {
 
 export function shouldEmitSmokeOrGas(reaction) {
     return hasTopLevelGasFlag(reaction)
-        || hasEffectType(reaction, ['gas', 'smoke', 'vapor'])
+        || hasEffectType(reaction, ['gas'])
+        || hasRealSmokeSignal(reaction)
         || hasGasProduct(reaction);
 }
 
 export function hasExplicitSmoke(reaction) {
-    const raw = rawReaction(reaction);
-    return positiveFlag(reaction?.smoke)
-        || positiveFlag(reaction?.vapor)
-        || positiveFlag(raw?.smoke)
-        || positiveFlag(raw?.vapor)
-        || hasEffectType(reaction, ['smoke', 'vapor']);
+    return hasRealSmokeSignal(reaction);
 }
 
 export function hasExplicitGas(reaction) {

@@ -46,6 +46,7 @@ import {
     moveObjectByWorldDelta
 } from './toolAnchors.js';
 const THREE = three;
+const DEFAULT_REACTION_HEAT_TEMPERATURE = 45;
 
 function isEditableTarget(event) {
     const target = event?.target;
@@ -183,10 +184,30 @@ function getPhysicalState(obj) {
 function getVisiblePourAmount(quantity = {}) {
     const amount = Number(quantity.amount);
     const unit = String(quantity.unit || 'ml').toLowerCase();
-    if (!Number.isFinite(amount) || amount <= 0) return 0.07;
-    if (unit.includes('ml')) return three.MathUtils.clamp(amount * 0.014, 0.07, 0.24);
-    if (unit.includes('l')) return three.MathUtils.clamp(amount * 0.35, 0.08, 0.3);
-    return three.MathUtils.clamp(amount * 0.018, 0.05, 0.18);
+    if (!Number.isFinite(amount) || amount <= 0) return 0.12;
+    if (unit.includes('ml')) return three.MathUtils.clamp(amount * 0.035, 0.12, 0.42);
+    if (unit.includes('l')) return three.MathUtils.clamp(amount * 0.55, 0.16, 0.52);
+    return three.MathUtils.clamp(amount * 0.04, 0.1, 0.35);
+}
+
+function queueLiquidLevelRise(container, amount = 0.003, options = {}) {
+    if (!container?.userData) return 0;
+
+    const current = Number(container.userData.liquidLevel || 0);
+    const queued = Number.isFinite(Number(container.userData.targetLiquidLevel))
+        ? Number(container.userData.targetLiquidLevel)
+        : current;
+    const increment = Math.max(0, Number(amount) || 0.003);
+    const nextTarget = three.MathUtils.clamp(Math.max(current, queued) + increment, 0, 0.86);
+
+    container.userData.targetLiquidLevel = nextTarget;
+    container.userData.liquidRiseSpeed = options.direct ? 0.0018 : 0.0028;
+
+    if (current <= 0 && nextTarget > 0) {
+        container.userData.liquidLevel = Math.min(nextTarget, 0.015);
+    }
+
+    return nextTarget;
 }
 
 function rememberContainerContents(container, ...items) {
@@ -1751,7 +1772,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             raw?.requiredTemperature ??
             raw?.required_temperature;
         const n = Number(value);
-        return Number.isFinite(n) ? n : null;
+        if (Number.isFinite(n)) return n;
+        if (reaction?.heating_required || reaction?.heatingRequired) return DEFAULT_REACTION_HEAT_TEMPERATURE;
+        return null;
     }
 
     function reactionRequiresHeating(reaction) {
@@ -1860,7 +1883,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             precipitateColor: reaction.precipitateColor
         });
 
-        targetObject.userData.liquidLevel = Math.min(0.8, (targetObject.userData.liquidLevel || 0) + 0.003);
+        queueLiquidLevelRise(targetObject, 0.003);
         const volume = pouringEffect.getOrCreateVolume(targetObject);
 
         if (reaction.color && volume) {
@@ -1873,9 +1896,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         }
 
         const allowGasVisual = shouldEmitSmokeOrGas(reaction);
+        const allowContinuousSmoke = allowGasVisual && hasExplicitSmoke(reaction);
         targetObject.userData.hasGasEffect = allowGasVisual;
-        if (volume) volume.userData.hasGasEffect = allowGasVisual;
-        if (!allowGasVisual) pouringEffect.clearSmokeEffectForTarget?.(targetObject);
+        targetObject.userData.hasSmokeEffect = allowContinuousSmoke;
+        if (volume) {
+            volume.userData.hasGasEffect = allowGasVisual;
+            volume.userData.hasSmokeEffect = allowContinuousSmoke;
+        }
+        if (!allowContinuousSmoke) pouringEffect.clearSmokeEffectForTarget?.(targetObject);
 
         if (targetObject.userData.hasSolidDeposit) {
             clearDissolvablePowder(targetObject);
@@ -2136,11 +2164,15 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             target.userData.hasSolidDeposit = false;
         }
 
-        target.userData.liquidLevel = (target.userData.liquidLevel || 0) + (options.amount || 0.003);
-        if (target.userData.liquidLevel > 0.8) target.userData.liquidLevel = 0.8;
+        queueLiquidLevelRise(target, options.amount || 0.003, { direct: options.direct });
 
         const volume = pouringEffect.getOrCreateVolume(target);
         volume.position.set(0, 0, 0);
+        target.userData.hasGasEffect = false;
+        target.userData.hasSmokeEffect = false;
+        volume.userData.hasGasEffect = false;
+        volume.userData.hasSmokeEffect = false;
+        pouringEffect.clearSmokeEffectForTarget?.(target);
 
         const sourceColor = new three.Color(sourceColorValue || '#3498db');
 
@@ -2220,7 +2252,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             addSourceContentToContainer(target, source, {
                 replaceIdentity: true,
                 forceSourceColor: true,
-                amount: visualAmount
+                amount: visualAmount,
+                direct: options.direct
             });
             if (hasActiveExperimentPlan() && pourRecord.recorded) {
                 const guidance = describeNextRequirement(target);
@@ -2263,7 +2296,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
                         forceSourceColor: false,
-                        amount: visualAmount
+                        amount: visualAmount,
+                        direct: options.direct
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(validation.message || 'Thí nghiệm chưa đúng điều kiện nên phản ứng chưa xảy ra.');
@@ -2276,15 +2310,18 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             console.log("REACTION RESULT:", reaction);
 
             if (reaction?.has_reaction || isPendingReactionResult(reaction)) {
+                const reactionForSetup = isPendingReactionResult(reaction) ? getPendingReactionPayload(reaction) : reaction;
                 const setupValidation = window.labAssemblyManager?.validateReactionSetup?.(
-                    isPendingReactionResult(reaction) ? getPendingReactionPayload(reaction) : reaction,
+                    reactionForSetup,
                     target
                 );
-                if (setupValidation && !setupValidation.ok) {
+                const allowPendingHeatSetup = setupValidation?.missing === 'heating' && reactionRequiresHeating(reactionForSetup);
+                if (setupValidation && !setupValidation.ok && !allowPendingHeatSetup) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
                         forceSourceColor: false,
-                        amount: visualAmount
+                        amount: visualAmount,
+                        direct: options.direct
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(setupValidation.message || 'Cần lắp đúng bộ dụng cụ trước khi phản ứng xảy ra.');
@@ -2296,7 +2333,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 addSourceContentToContainer(target, source, {
                     replaceIdentity: false,
                     forceSourceColor: false,
-                    amount: visualAmount
+                    amount: visualAmount,
+                    direct: options.direct
                 });
                 storePendingReaction(target, reaction, source);
                 target.userData.isReacting = false;
@@ -2309,7 +2347,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 addSourceContentToContainer(target, source, {
                     replaceIdentity: false,
                     forceSourceColor: false,
-                    amount: visualAmount
+                    amount: visualAmount,
+                    direct: options.direct
                 });
                 storePendingReaction(target, {
                     pending_reaction: true,
@@ -2329,7 +2368,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
                         forceSourceColor: false,
-                        amount: visualAmount
+                        amount: visualAmount,
+                        direct: options.direct
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(conditionValidation.message || 'Thí nghiệm chưa đủ điều kiện nên phản ứng chưa xảy ra.');
@@ -2340,7 +2380,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
                         forceSourceColor: false,
-                        amount: visualAmount
+                        amount: visualAmount,
+                        direct: options.direct
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(reactionValidation.message || 'Phản ứng chưa khớp thí nghiệm đã chọn nên chưa được sinh ra.');
@@ -2372,8 +2413,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 });
 
                 // Bảo đảm phản ứng lỏng + rắn cũng có pha lỏng trong dụng cụ để hiển thị/tiếp tục trộn.
-                targetObject.userData.liquidLevel = (targetObject.userData.liquidLevel || 0) + visualAmount;
-                if (targetObject.userData.liquidLevel > 0.8) targetObject.userData.liquidLevel = 0.8;
+                queueLiquidLevelRise(targetObject, visualAmount, { direct: options.direct });
 
                 const volume = pouringEffect.getOrCreateVolume(targetObject);
 
@@ -2395,9 +2435,12 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
                 // hiệu ứng khí chỉ bật khi phản ứng có sản phẩm khí/flag gas-smoke-vapor rõ ràng.
                 const allowGasVisual = shouldEmitSmokeOrGas(reaction);
+                const allowContinuousSmoke = allowGasVisual && hasExplicitSmoke(reaction);
                 volume.userData.hasGasEffect = allowGasVisual;
+                volume.userData.hasSmokeEffect = allowContinuousSmoke;
                 targetObject.userData.hasGasEffect = allowGasVisual;
-                if (!allowGasVisual) {
+                targetObject.userData.hasSmokeEffect = allowContinuousSmoke;
+                if (!allowContinuousSmoke) {
                     pouringEffect.clearSmokeEffectForTarget?.(targetObject);
                 }
 
@@ -2530,9 +2573,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 addSourceContentToContainer(target, source, {
                     replaceIdentity: false,
                     forceSourceColor: false,
-                    amount: visualAmount
+                    amount: visualAmount,
+                    direct: options.direct
                 });
                 target.userData.hasGasEffect = false;
+                target.userData.hasSmokeEffect = false;
                 pouringEffect.clearSmokeEffectForTarget?.(target);
                 target.userData.isReacting = false;
                 return;
@@ -2541,8 +2586,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         // Tăng mực nước dâng lên khi đổ chất liên tục sau phản ứng thật.
         if (!options.direct) {
-            target.userData.liquidLevel = (target.userData.liquidLevel || 0) + visualAmount;
-            if (target.userData.liquidLevel > 0.8) target.userData.liquidLevel = 0.8;
+            queueLiquidLevelRise(target, visualAmount, { direct: options.direct });
         }
     }
 

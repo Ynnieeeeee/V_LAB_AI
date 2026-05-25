@@ -21,6 +21,8 @@ import {
     reactionGasDebug
 } from './reactionGasUtils.js';
 
+const DEFAULT_REACTION_HEAT_TEMPERATURE = 45;
+
 /**
  * ReactionManager
  * Trung tâm render phản ứng:
@@ -82,7 +84,9 @@ export class ReactionManager {
             raw.requiredTemperature ??
             raw.required_temperature;
         const n = Number(value);
-        return Number.isFinite(n) ? n : null;
+        if (Number.isFinite(n)) return n;
+        if (reaction.heating_required || reaction.heatingRequired) return DEFAULT_REACTION_HEAT_TEMPERATURE;
+        return null;
     }
 
     checkTemperature(container, reaction = {}) {

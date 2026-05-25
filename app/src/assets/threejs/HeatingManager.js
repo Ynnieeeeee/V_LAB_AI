@@ -40,12 +40,59 @@ function getCenter(object) {
 
 function getBoxCenterAndSize(object) {
     object?.updateMatrixWorld?.(true);
-    const box = new THREE.Box3().setFromObject(object);
+    const box = new THREE.Box3();
+    let hasBounds = false;
+    object?.traverse?.(child => {
+        const data = child?.userData || {};
+        if (
+            !child?.isMesh ||
+            data.ignoreInteraction ||
+            data.notDraggable ||
+            data.isReactionEffect ||
+            data.isLiquid ||
+            child.name === 'fluid_volume' ||
+            child.name === 'heating_source_visual' ||
+            child.name === 'heating_anchor'
+        ) {
+            return;
+        }
+
+        const childBox = new THREE.Box3().setFromObject(child);
+        if (!childBox.isEmpty()) {
+            box.union(childBox);
+            hasBounds = true;
+        }
+    });
+
+    if (!hasBounds) box.setFromObject(object);
     const center = new THREE.Vector3();
     const size = new THREE.Vector3();
     box.getCenter(center);
     box.getSize(size);
     return { box, center, size };
+}
+
+function hasHorizontalHeatingAlignment(containerInfo, sourceInfo) {
+    const overlapX = Math.min(containerInfo.box.max.x, sourceInfo.box.max.x) -
+        Math.max(containerInfo.box.min.x, sourceInfo.box.min.x);
+    const overlapZ = Math.min(containerInfo.box.max.z, sourceInfo.box.max.z) -
+        Math.max(containerInfo.box.min.z, sourceInfo.box.min.z);
+    if (overlapX > -0.12 && overlapZ > -0.12) return true;
+
+    const dx = sourceInfo.center.x - containerInfo.center.x;
+    const dz = sourceInfo.center.z - containerInfo.center.z;
+    const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+    const containerRadius = Math.max(0.18, Math.min(containerInfo.size.x, containerInfo.size.z) * 0.5);
+    const sourceRadius = Math.max(0.12, Math.min(sourceInfo.size.x, sourceInfo.size.z) * 0.5);
+    const maxDistance = Math.min(1.15, Math.max(0.48, containerRadius + sourceRadius + 0.18));
+    return horizontalDist <= maxDistance;
+}
+
+function isSourceVerticallyUnderContainer(containerInfo, sourceInfo, tableY) {
+    const sourceOnTable = sourceInfo.box.min.y >= tableY - 0.16;
+    const sourceCenterBelow = sourceInfo.center.y < containerInfo.center.y;
+    const verticalGap = containerInfo.box.min.y - sourceInfo.box.max.y;
+    return sourceOnTable && sourceCenterBelow && verticalGap >= -0.35 && verticalGap <= 1.15;
 }
 
 function isToggleableHeatingSource(source) {
@@ -711,12 +758,10 @@ export class HeatingManager {
             if (source.userData?.isOn !== true) return false;
 
             const sourceInfo = getBoxCenterAndSize(source);
-            const dx = sourceInfo.center.x - containerInfo.center.x;
-            const dz = sourceInfo.center.z - containerInfo.center.z;
-            const horizontalDist = Math.sqrt(dx * dx + dz * dz);
-            const sourceBelow = sourceInfo.center.y < containerInfo.center.y && sourceInfo.box.min.y >= tableY - 0.08;
+            const horizontalAligned = hasHorizontalHeatingAlignment(containerInfo, sourceInfo);
+            const sourceBelow = isSourceVerticallyUnderContainer(containerInfo, sourceInfo, tableY);
 
-            return horizontalDist < 0.8 && sourceBelow;
+            return horizontalAligned && sourceBelow;
         }) || null;
     }
 

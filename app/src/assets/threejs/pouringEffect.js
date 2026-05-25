@@ -435,6 +435,9 @@ export class PouringEffect {
         if (target.userData.liquidLevel === undefined) {
             target.userData.liquidLevel = 0;
         }
+        if (target.userData.targetLiquidLevel === undefined) {
+            target.userData.targetLiquidLevel = target.userData.liquidLevel;
+        }
         return volume;
     }
 
@@ -462,11 +465,12 @@ export class PouringEffect {
         this.volumes.forEach((volume, target) => {
             this._updateVolumeEffect(volume, target);
             
-            // --- NẾU CÓ HIỆU ỨNG KHÍ, sinh bọt/khói từ MIỆNG DỤNG CỤ theo world-space ---
-            const shouldSpawnGasVisual = target
-                ? volume.userData.hasGasEffect === true && target.userData?.hasGasEffect === true
-                : volume.userData.hasGasEffect === true;
-            if (shouldSpawnGasVisual) {
+            // Chỉ phản ứng có smoke/vapor rõ ràng mới phun khói liên tục.
+            // Phản ứng chỉ sinh khí đã có gas cloud/bubble riêng, không dùng smoke.
+            const shouldSpawnSmokeVisual = target
+                ? volume.userData.hasSmokeEffect === true && target.userData?.hasSmokeEffect === true
+                : volume.userData.hasSmokeEffect === true;
+            if (shouldSpawnSmokeVisual) {
                 const surfacePos = this._getContainerSurfaceWorldPosition(volume, target);
                 this.spawnSmokeEffect(surfacePos, target);
             } else {
@@ -598,8 +602,21 @@ export class PouringEffect {
     //      .quaternion = identity (không bao giờ nghiêng theo tool).
     //   4. addBall với coords normalize [-0.45, 0.45]³.
     // ─────────────────────────────────────────────────────────────────────
+    _animateLiquidLevel(target) {
+        if (!target?.userData) return 0;
+
+        const current = Number(target.userData.liquidLevel || 0);
+        const desired = Number(target.userData.targetLiquidLevel);
+        if (!Number.isFinite(desired) || desired <= current) return current;
+
+        const speed = Math.max(0.001, Number(target.userData.liquidRiseSpeed ?? 0.0028) || 0.0028);
+        const next = Math.min(desired, current + speed);
+        target.userData.liquidLevel = next;
+        return next;
+    }
+
     _updateVolumeEffect(volume, target) {
-        const level = target.userData.liquidLevel || 0;
+        const level = this._animateLiquidLevel(target);
         if (level <= 0) {
             volume.userData.group.visible = false;
             return;
@@ -693,8 +710,9 @@ export class PouringEffect {
         // ── 4. Scale Volume khớp với Cavity (Padding nhỏ hơn cho Tripo) ─────
         const horizontalPadding = 0.82;
         const verticalPadding = 0.55;
+        const detectedSide = Math.min(cavitySize.x, cavitySize.z) * horizontalPadding;
         const squareSide = Math.max(
-            Math.min(cavitySize.x, cavitySize.z) * horizontalPadding,
+            detectedSide,
             1e-4
         );
         volume.scale.set(
