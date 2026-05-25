@@ -14,3 +14,4 @@ class Profiles(SQLModel, table=True):
     role: Optional[str] = Field(default="user")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    is_deleted: bool = Field(default=False)

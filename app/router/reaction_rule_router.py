@@ -7,7 +7,6 @@ from app.models.chemicals import Chemicals
 from app.models.profiles import Profiles
 from app.utils.chemistry_engine import ChemLite, predict_accurate_reaction
 from app.utils.get_current_user import get_current_user
-from app.utils.subscription_utils import require_active_plan
 
 
 router = APIRouter()
@@ -20,9 +19,7 @@ def check_reaction(
     session: Session = Depends(get_session),
     user: Profiles = Depends(get_current_user),
 ):
-    """Kiểm tra phản ứng hóa học, chỉ cho user có gói hợp lệ."""
-    require_active_plan(session, user.id_profile)
-
+    """Kiểm tra phản ứng hóa học cho user đã đăng nhập."""
     print("=" * 60)
     print("CHECKING REACTION")
     print("=" * 60)

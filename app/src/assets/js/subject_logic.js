@@ -6,12 +6,69 @@
 window.currentSubject = null;
 window.currentConvId = null;
 
+const SUBJECT_AUTH_TOKEN_KEY = "access_token";
+
+function getSubjectAuthToken() {
+    const storedToken = localStorage.getItem(SUBJECT_AUTH_TOKEN_KEY);
+    if (storedToken) return storedToken;
+
+    const params = new URLSearchParams(window.location.search);
+    return params.get("token");
+}
+
+function clearSubjectAuthState() {
+    localStorage.removeItem(SUBJECT_AUTH_TOKEN_KEY);
+    localStorage.removeItem("user");
+}
+
+function redirectToLogin() {
+    window.location.href = "/login";
+}
+
+async function canSelectSubject() {
+    const token = getSubjectAuthToken();
+    if (!token) {
+        clearSubjectAuthState();
+        return false;
+    }
+
+    try {
+        const response = await fetch("/auth/me", {
+            headers: {
+                Authorization: `Bearer ${token}`
+            }
+        });
+
+        if (response.ok) return true;
+
+        if (response.status === 401 || response.status === 404) {
+            clearSubjectAuthState();
+        }
+
+        return false;
+    } catch (error) {
+        console.error("Unable to verify login before selecting subject", error);
+        return false;
+    }
+}
+
+async function requireLoginBeforeSelectingSubject() {
+    if (await canSelectSubject()) return true;
+
+    redirectToLogin();
+    return false;
+}
+
 /**
  * Hàm xử lý khi người dùng chọn một môn học từ Overlay
  * @param {string} type - 'chemistry', 'physics', hoặc 'biology'
  * @param {string} name - Tên hiển thị tiếng Việt
  */
-window.selectSubject = function(type, name) {
+window.selectSubject = async function(type, name) {
+    if (!(await requireLoginBeforeSelectingSubject())) {
+        return;
+    }
+
     console.log(`Đã chọn phòng thí nghiệm: ${name}`);
     
     // 1. Thiết lập trạng thái ban đầu
@@ -64,7 +121,11 @@ window.selectSubject = function(type, name) {
 /**
  * Hàm mở lại Overlay (Dùng cho nút "Tạo đoạn chat mới")
  */
-window.showSubjectOverlay = function() {
+window.showSubjectOverlay = async function() {
+    if (!(await requireLoginBeforeSelectingSubject())) {
+        return;
+    }
+
     const overlay = document.getElementById('subject-overlay');
     if (overlay) {
         overlay.classList.remove('hidden', 'opacity-0');

@@ -1,7 +1,16 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js';
+import { setArmsVisibility } from './interaction.js?v=20260525-bottle-display-scale';
+
+function isEditableTarget(event) {
+    const target = event?.target;
+    if (!target) return false;
+    return Boolean(
+        target.isContentEditable ||
+        target.closest?.('input, textarea, select, [contenteditable="true"], [contenteditable=""]')
+    );
+}
 
 export function initControls(camera, domElement, cameraGroup) {
     const orbit = new OrbitControls(camera, domElement);
@@ -17,6 +26,7 @@ export function initControls(camera, domElement, cameraGroup) {
 
     // Lắng nghe sự kiện bàn phím
     const onKeyDown = (event) => {
+        if (isEditableTarget(event)) return;
         switch (event.code) {
             case 'ArrowUp':
             case 'KeyW': keys.forward = true; break;
@@ -30,6 +40,7 @@ export function initControls(camera, domElement, cameraGroup) {
     };
 
     const onKeyUp = (event) => {
+        if (isEditableTarget(event)) return;
         switch (event.code) {
             case 'ArrowUp':
             case 'KeyW': keys.forward = false; break;

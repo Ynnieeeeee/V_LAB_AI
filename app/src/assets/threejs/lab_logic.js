@@ -63,9 +63,15 @@ export function clearLab(scene) {
  */
 async function checkBackendStatus(scene) {
     const id_conv = window.currentConvId;
+    const token = localStorage.getItem('access_token');
 
     // SỬA LỖI 422: Nếu không có ID hợp lệ, không thực hiện gọi API
     if (!id_conv || id_conv === "null" || id_conv === "undefined") {
+        return;
+    }
+
+    if (!token) {
+        console.warn("Missing access token, skip lab status polling.");
         return;
     }
 
@@ -78,10 +84,26 @@ async function checkBackendStatus(scene) {
 
     try {
         // Gửi request kèm tham số id_conv rõ ràng
-        const res = await fetch(`${API_URL}/api/lab/status?id_conv=${id_conv}`);
+        const res = await fetch(`${API_URL}/api/lab/status?id_conv=${encodeURIComponent(id_conv)}`, {
+            headers: {
+                Authorization: `Bearer ${token}`
+            }
+        });
         
         if (res.status === 422) {
             console.warn("Backend báo lỗi 422: ID hội thoại không đúng định dạng.");
+            return;
+        }
+
+        if (res.status === 401 || res.status === 403) {
+            let detail = `Backend returned ${res.status} while loading lab tools`;
+            try {
+                const payload = await res.json();
+                detail = payload?.detail || detail;
+            } catch (_) {}
+            console.warn(detail);
+            const statusText = document.getElementById('status-text');
+            if (statusText) statusText.innerText = detail;
             return;
         }
 

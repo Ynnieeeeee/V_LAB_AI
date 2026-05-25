@@ -291,7 +291,14 @@ export async function detectReaction(source, target) {
 
     try {
         const url = `/api/reactions/check?source_id=${encodeURIComponent(sourceId)}&target_id=${encodeURIComponent(targetId)}`;
-        const response = await fetch(url);
+        const token = localStorage.getItem('access_token');
+        if (!token) throw new Error('Missing access token');
+
+        const response = await fetch(url, {
+            headers: {
+                Authorization: `Bearer ${token}`
+            }
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         const normalized = normalizeApiReaction(data);

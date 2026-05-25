@@ -20,12 +20,20 @@ from app.router.chemical_router import router as chemical_router
 from app.router.reaction_rule_router import router as reaction_router
 from app.router.subscription_router import router as subscription_router
 from app.router.payment_router import router as payment_router
+from app.router.admin_router import router as admin_router
+from app.utils.admin_schema import ensure_admin_schema
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Start application...")
     check_db_connection()
     create_db_and_tables()
+    try:
+        with Session(engine) as session:
+            ensure_admin_schema(session)
+            session.commit()
+    except Exception as exc:
+        print(f"Admin schema migration failed: {exc}")
     try:
         with Session(engine) as session:
             ensure_tools_metadata_columns(session, backfill_existing=True)
@@ -70,6 +78,7 @@ app.include_router(chemical_router)
 app.include_router(reaction_router)   
 app.include_router(subscription_router) 
 app.include_router(payment_router) 
+app.include_router(admin_router)
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -91,6 +100,10 @@ async def login_page(request: Request):
 @app.get("/subscription.html", response_class=HTMLResponse)
 async def subscription_page(request: Request):
     return FileResponse(TEMPLATE_DIR / "subscription.html", media_type="text/html")
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page(request: Request):
+    return FileResponse(TEMPLATE_DIR / "dashboard.html", media_type="text/html")
 
 @app.get("/{conversation_id}", response_class=HTMLResponse)
 async def legacy_conversation_page(request: Request, conversation_id: str):

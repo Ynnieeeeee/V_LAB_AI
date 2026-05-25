@@ -6,7 +6,7 @@ from langchain_core.documents import Document
 folder = "app/data/pdf"
 subjects = ["biology", "chemistry", "physics"]
 
-def load_documents(file_path=None):
+def load_documents(file_path=None, subject_tag="general"):
     """
         Sử dụng OCR để trích xuất văn bản từ PDF dạng ảnh.
         Trả về danh sách các đối tượng Document
@@ -47,7 +47,7 @@ def load_documents(file_path=None):
             return []
         
     if file_path:
-        return process_file(file_path, "general")
+        return process_file(file_path, subject_tag)
     
     for subject in subjects:
         subject_path = os.path.join(folder, subject)

@@ -26,6 +26,36 @@
     pointer-events: none;
 }
 
+#chat-input-shell {
+    isolation: isolate;
+}
+
+#chat-input-shell .chat-input-icon,
+#send-btn {
+    flex: 0 0 auto;
+}
+
+#chat-input {
+    min-width: 0;
+    width: 100%;
+    flex: 1 1 auto;
+    color: #fff !important;
+    caret-color: #fff;
+    direction: ltr;
+    unicode-bidi: plaintext;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    user-select: text !important;
+    -webkit-user-select: text !important;
+    position: relative;
+    z-index: 1;
+}
+
+#chat-input::selection {
+    background: rgba(37, 99, 235, 0.75);
+    color: #fff;
+}
+
 #menuSidebar > div {
     position: absolute;
     inset: 5rem 1.5rem auto 1.5rem;

@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 
 from app.models.conversations import Conversations
 from app.models.message_mascot import MascotMessages
+from app.models.profiles import Profiles
 from app.models.subscription_plans import SubscriptionPlans
 from app.models.subscriptions import Subscriptions
 from app.models.tools import Tools
@@ -52,6 +53,23 @@ def get_free_plan(session: Session):
     return session.exec(stmt).first()
 
 
+def _admin_plan_info(session: Session, id_profile: str | UUID) -> dict | None:
+    profile_id = _to_uuid(id_profile)
+    profile = session.get(Profiles, profile_id)
+    if not profile or profile.role != "admin" or getattr(profile, "is_deleted", False):
+        return None
+
+    return {
+        "has_plan": True,
+        "subscription": None,
+        "plan": None,
+        "plan_name": "Admin",
+        "tool_limit_per_day": -1,
+        "mascot_limit_per_day": -1,
+        "is_admin": True,
+    }
+
+
 def get_active_subscription(session: Session, id_profile: str | UUID):
     profile_id = _to_uuid(id_profile)
     current_time = _now()
@@ -90,6 +108,10 @@ def get_user_plan(session: Session, id_profile: str | UUID):
 
 
 def get_user_plan_info(session: Session, id_profile: str | UUID) -> dict:
+    admin_info = _admin_plan_info(session, id_profile)
+    if admin_info:
+        return admin_info
+
     subscription = get_active_subscription(session, id_profile)
     plan = session.get(SubscriptionPlans, subscription.id_plan) if subscription else get_free_plan(session)
 

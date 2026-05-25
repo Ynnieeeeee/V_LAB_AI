@@ -1,7 +1,7 @@
 import * as three from 'three';
 import { triggerMascotSpeech } from './mascot.js';
-import { PouringEffect } from './pouringEffect.js';
-import { detectReaction } from './reactionRules.js';
+import { PouringEffect, getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
+import { detectReaction } from './reactionRules.js?v=20260525-bottle-display-scale';
 import {
     getSelectedQuantity,
     recordPourAction,
@@ -44,6 +44,15 @@ import {
     resolveObjectOverlap
 } from './CollisionSeparationHelper.js';
 const THREE = three;
+
+function isEditableTarget(event) {
+    const target = event?.target;
+    if (!target) return false;
+    return Boolean(
+        target.isContentEditable ||
+        target.closest?.('input, textarea, select, [contenteditable="true"], [contenteditable=""]')
+    );
+}
 
 function isSolidChemical(obj) {
     const s = String(
@@ -273,25 +282,45 @@ function getWorldCenter(obj) {
     return center;
 }
 
+function getObjectWorldScale(object) {
+    const scale = new three.Vector3(1, 1, 1);
+    object?.updateMatrixWorld?.(true);
+    object?.getWorldScale?.(scale);
+    return scale;
+}
+
+function getLocalScaleForWorldScale(parent, worldScale) {
+    const parentScale = new three.Vector3(1, 1, 1);
+    parent?.updateMatrixWorld?.(true);
+    parent?.getWorldScale?.(parentScale);
+
+    return new three.Vector3(
+        worldScale.x / (Math.abs(parentScale.x) > 1e-6 ? parentScale.x : 1),
+        worldScale.y / (Math.abs(parentScale.y) > 1e-6 ? parentScale.y : 1),
+        worldScale.z / (Math.abs(parentScale.z) > 1e-6 ? parentScale.z : 1)
+    );
+}
+
 function getSavedScale(object) {
     if (!object?.scale) return new three.Vector3(1, 1, 1);
-    return object.userData?.customScale?.clone?.() || object.scale.clone();
+    return object.userData?.customWorldScale?.clone?.() || getObjectWorldScale(object);
 }
 
-function rememberCustomScale(object, scale = null) {
+function rememberCustomScale(object, worldScale = null) {
     if (!object?.userData || !object?.scale) return null;
-    const saved = scale?.clone?.() || object.scale.clone();
-    object.userData.customScale = saved;
+    const savedWorld = worldScale?.clone?.() || getObjectWorldScale(object);
+    object.userData.customWorldScale = savedWorld;
+    object.userData.customScale = getLocalScaleForWorldScale(object.parent, savedWorld);
     object.userData.hasCustomScale = true;
-    console.log('[Scale] saved customScale:', saved);
-    return saved;
+    console.log('[Scale] saved display scale:', savedWorld);
+    return savedWorld;
 }
 
-function restoreCustomScale(object, savedScale = null) {
+function restoreCustomScale(object, savedWorldScale = null) {
     if (!object?.scale) return;
-    const scale = savedScale?.clone?.() || object.userData?.customScale?.clone?.();
-    if (!scale) return;
-    object.scale.copy(scale);
+    const worldScale = savedWorldScale?.clone?.() || object.userData?.customWorldScale?.clone?.();
+    if (!worldScale) return;
+    object.scale.copy(getLocalScaleForWorldScale(object.parent, worldScale));
 }
 
 function updateOffsetToFloor(object) {
@@ -304,12 +333,10 @@ function updateOffsetToFloor(object) {
 function attachKeepWorldTransform(parent, child) {
     if (!parent || !child) return;
     child.updateMatrixWorld(true);
-    const worldScale = new three.Vector3();
-    child.getWorldScale(worldScale);
-    const savedScale = child.userData?.customScale?.clone?.() || child.scale.clone() || worldScale;
+    const savedScale = getSavedScale(child);
     console.log('[Scale] before move:', child.scale);
     parent.attach(child);
-    child.scale.copy(savedScale);
+    restoreCustomScale(child, savedScale);
     rememberCustomScale(child, savedScale);
     child.updateMatrixWorld(true);
     console.log('[Scale] after move:', child.scale);
@@ -677,15 +704,21 @@ rightArmGroup.add(rightArm);
 
 export function registerDraggableObject(obj) {
     obj.updateMatrixWorld(true);
-    if (!obj.userData.hasCustomScale || !obj.userData.customScale) {
+    if (obj.userData?.id_chemical && !obj.userData?.toolData) {
+        const bottleScale = obj.userData.customScale?.clone?.() || obj.scale.clone();
+        const displayScale = obj.userData.customWorldScale?.clone?.() || getObjectWorldScale(obj);
+        obj.userData.customScale = bottleScale.clone();
+        obj.userData.customWorldScale = displayScale.clone();
+        obj.userData.originalWorldScale = displayScale.clone();
+        obj.userData.hasCustomScale = true;
+    }
+    if (!obj.userData.hasCustomScale || !obj.userData.customScale || !obj.userData.customWorldScale) {
         rememberCustomScale(obj);
     }
 
     // Lưu Scale và Quaternion nguyên bản ngay khi đăng ký
     if (!obj.userData.originalWorldScale) {
-        const worldScale = new three.Vector3();
-        obj.getWorldScale(worldScale);
-        obj.userData.originalWorldScale = worldScale.x;
+        obj.userData.originalWorldScale = getObjectWorldScale(obj);
     }
     if (!obj.userData.originalQuaternion) {
         const worldQuat = new three.Quaternion();
@@ -873,9 +906,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 const slot = arm.getObjectByName("itemSlot");
                 if (slot) {
                     // Lưu trạng thái gốc trong không gian thế giới (World) để khôi phục chính xác
-                    const worldScale = new three.Vector3();
-                    root.getWorldScale(worldScale);
-                    root.userData.originalWorldScale = worldScale.x;
+                    if (!root.userData.originalWorldScale) {
+                        root.userData.originalWorldScale = getObjectWorldScale(root);
+                    }
 
                     const worldQuat = new three.Quaternion();
                     root.getWorldQuaternion(worldQuat);
@@ -956,6 +989,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     };
 
     window.addEventListener('keydown', (e) => {
+        if (isEditableTarget(e)) return;
         const key = e.key.toLowerCase();
         const axisByModifier = { r: 'y', t: 'x', y: 'z' };
         const axis = axisByModifier[key];
@@ -992,6 +1026,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     }, true);
 
     window.addEventListener('keyup', (e) => {
+        if (isEditableTarget(e)) return;
         const key = e.key.toLowerCase();
         if ({ r: true, t: true, y: true }[key] && toolRotateState.activeAxis) {
             e.preventDefault();
@@ -1029,6 +1064,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     }, true);
 
     window.addEventListener('keydown', (e) => {
+        if (isEditableTarget(e)) return;
         if (!fps.isLocked) return;
         const key = e.key.toLowerCase();
         if (key === 'e') {
@@ -1046,6 +1082,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     });
 
     window.addEventListener('keydown', (e) => {
+        if (isEditableTarget(e)) return;
         if (e.code === 'Space') {
             const heldObj = heldObjectRight || heldObjectLeft || draggedObject; // Kiểm tra cả tay và chuột
             if (!heldObj) return;
@@ -1089,12 +1126,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     });
 
     window.addEventListener('keyup', (e) => {
+        if (isEditableTarget(e)) return;
         const key = e.key.toLowerCase();
         if (key === 'f') isInspectingRight = false;
         if (key === 'r') isInspectingLeft = false;
     });
 
     window.addEventListener('keyup', (e) => {
+        if (isEditableTarget(e)) return;
         if (e.code === 'Space') {
             const heldObj = heldObjectRight || heldObjectLeft || draggedObject;
             if (heldObj) {
@@ -2092,9 +2131,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             // Khôi phục scale và hướng xoay chuẩn (World)
             if (!draggedObject.userData.originalWorldScale) {
-                const worldScale = new three.Vector3();
-                draggedObject.getWorldScale(worldScale);
-                draggedObject.userData.originalWorldScale = worldScale.x;
+                draggedObject.userData.originalWorldScale = getObjectWorldScale(draggedObject);
             }
             if (!draggedObject.userData.originalQuaternion) {
                 const worldQuat = new three.Quaternion();
@@ -2408,6 +2445,9 @@ function ensureLocalEffectGroup(container, name = 'local_reaction_effects') {
 
 function getCavityLocalInfo(container) {
     const points = container?.userData?.cavityPoints || [];
+    const toolLocalBox = getToolLocalMeshBox(container);
+    const toolCenter = toolLocalBox?.getCenter?.(new three.Vector3());
+
     if (points.length > 0) {
         const box = new three.Box3();
         let minY = Infinity;
@@ -2420,8 +2460,8 @@ function getCavityLocalInfo(container) {
         });
         if (isFinite(minY) && isFinite(maxY) && !box.isEmpty()) {
             return {
-                centerX: (box.min.x + box.max.x) * 0.5,
-                centerZ: (box.min.z + box.max.z) * 0.5,
+                centerX: toolCenter?.x ?? (box.min.x + box.max.x) * 0.5,
+                centerZ: toolCenter?.z ?? (box.min.z + box.max.z) * 0.5,
                 radiusX: Math.max((box.max.x - box.min.x) * 0.28, 0.035),
                 radiusZ: Math.max((box.max.z - box.min.z) * 0.28, 0.035),
                 bottomY: minY + 0.015,
@@ -2431,11 +2471,13 @@ function getCavityLocalInfo(container) {
     }
 
     // Fallback an toàn cho model chưa detect được cavity.
-    const localBox = new three.Box3().setFromObject(container);
-    const inv = container.matrixWorld.clone().invert();
-    const worldCenter = new three.Vector3();
-    localBox.getCenter(worldCenter);
-    const localCenter = worldCenter.applyMatrix4(inv);
+    const localCenter = toolCenter || new three.Vector3();
+    if (!toolCenter) {
+        const localBox = new three.Box3().setFromObject(container);
+        const inv = container.matrixWorld.clone().invert();
+        localBox.getCenter(localCenter);
+        localCenter.applyMatrix4(inv);
+    }
     return {
         centerX: localCenter.x,
         centerZ: localCenter.z,

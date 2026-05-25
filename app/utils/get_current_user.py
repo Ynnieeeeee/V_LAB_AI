@@ -7,12 +7,18 @@ from app.config import SECRET_KEY
 from sqlmodel import Session, select
 from app.models.base_db import engine
 from app.models.profiles import Profiles
+from app.utils.admin_schema import ensure_admin_schema
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials | None = Depends(security)
 ):
+    if not credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing authentication token"
+        )
 
     token = credentials.credentials
 
@@ -34,6 +40,8 @@ def get_current_user(
         )
 
     with Session(engine) as session:
+        ensure_admin_schema(session)
+        session.commit()
 
         stmt = select(Profiles).where(
             Profiles.id_profile == id_user

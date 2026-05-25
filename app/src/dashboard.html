@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard</title>
+    <link rel="stylesheet" href="/assets/css/output.css">
+    <link rel="stylesheet" href="/assets/font/fontawesome-free-6.7.2-web/css/all.css">
+    <link rel="stylesheet" href="/assets/css/dashboard.css">
+</head>
+
+<body class="admin-dashboard-body">
+    <div id="admin-app" class="admin-frame">
+        <aside class="admin-sidebar">
+            <div class="brand-row">
+                <a href="/dashboard" class="brand-mark">
+                    <span class="brand-text">vlab</span>
+                    <span class="brand-dot"></span>
+                </a>
+                <button id="mobileNavBtn" class="mobile-nav-btn" type="button" aria-label="Mở menu">
+                    <i class="fa-solid fa-bars"></i>
+                </button>
+            </div>
+
+            <nav id="adminNav" class="admin-nav">
+                <p class="nav-group-label">General</p>
+                <button class="admin-nav-btn" data-view="overview" type="button">
+                    <i class="fa-solid fa-border-all"></i>
+                    Dashboard
+                </button>
+                <button class="admin-nav-btn" data-view="users" type="button">
+                    <i class="fa-solid fa-user-group"></i>
+                    Người dùng
+                </button>
+                <button class="admin-nav-btn" data-view="documents" type="button">
+                    <i class="fa-solid fa-book-open-reader"></i>
+                    Tài liệu AI/RAG
+                </button>
+                <button class="admin-nav-btn" data-view="tools" type="button">
+                    <i class="fa-solid fa-flask-vial"></i>
+                    Dụng cụ lab
+                </button>
+                <button class="admin-nav-btn" data-view="revenue" type="button">
+                    <i class="fa-solid fa-chart-pie"></i>
+                    Doanh thu
+                </button>
+
+                <p class="nav-group-label tools-label">Tools</p>
+                <a href="/chat" class="admin-nav-link">
+                    <i class="fa-solid fa-comments"></i>
+                    Phòng lab
+                </a>
+                <button id="logoutBtn" class="admin-nav-link logout-link" type="button">
+                    <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                    Đăng xuất
+                </button>
+            </nav>
+        </aside>
+
+        <main class="admin-main">
+            <section class="hero-row">
+                <div>
+                    <p class="eyebrow">Virtual Lab AI</p>
+                    <h1 id="viewTitle">Tổng quan</h1>
+                    <p id="adminGreeting" class="hero-copy">Chào mừng admin quay lại. Hệ thống đã sẵn sàng để quản trị dữ liệu, dụng cụ và doanh thu.</p>
+                </div>
+                <div class="hero-user">
+                    <span id="adminName">Admin</span>
+                    <span class="avatar-bubble"><i class="fa-solid fa-user-shield"></i></span>
+                </div>
+            </section>
+
+            <div class="content-scroll">
+                <section id="panel-overview" class="admin-panel overview-panel">
+                    <div class="metric-grid">
+                        <article class="metric-card card-yellow">
+                            <div>
+                                <span>Người dùng</span>
+                                <strong id="totalUsers">0</strong>
+                            </div>
+                            <i class="fa-solid fa-users"></i>
+                        </article>
+                        <article class="metric-card card-pink">
+                            <div>
+                                <span>Tài liệu RAG</span>
+                                <strong id="totalDocuments">0</strong>
+                            </div>
+                            <i class="fa-solid fa-file-pdf"></i>
+                        </article>
+                        <article class="metric-card card-green">
+                            <div>
+                                <span>Dụng cụ</span>
+                                <strong id="totalTools">0</strong>
+                            </div>
+                            <i class="fa-solid fa-microscope"></i>
+                        </article>
+                        <article class="metric-card card-blue">
+                            <div>
+                                <span>Doanh thu</span>
+                                <strong id="totalRevenue">0 ₫</strong>
+                            </div>
+                            <i class="fa-solid fa-coins"></i>
+                        </article>
+                    </div>
+
+                    <div class="dashboard-split">
+                        <section class="summary-card visits-card">
+                            <div class="section-heading">
+                                <h2>Doanh thu theo tháng</h2>
+                                <button type="button">Show all</button>
+                            </div>
+                            <div id="monthlyChart" class="line-chart-host"></div>
+                        </section>
+
+                        <section class="summary-card status-card">
+                            <div class="section-heading">
+                                <h2>Trạng thái thanh toán</h2>
+                                <i class="fa-solid fa-receipt"></i>
+                            </div>
+                            <div id="paymentStatus" class="status-list"></div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="panel-users" class="admin-panel hidden">
+                    <div class="panel-toolbar">
+                        <label class="input-shell">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input id="userSearch" placeholder="Tìm người dùng" type="search">
+                        </label>
+                        <label class="switch-shell">
+                            <input id="includeDeletedUsers" type="checkbox">
+                            Đã xóa
+                        </label>
+                        <button id="addUserBtn" class="primary-action" type="button">
+                            <i class="fa-solid fa-user-plus"></i>
+                            Thêm
+                        </button>
+                    </div>
+                    <div class="table-card">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Tên</th>
+                                    <th>Email</th>
+                                    <th>Quyền</th>
+                                    <th>Nguồn</th>
+                                    <th>Trạng thái</th>
+                                    <th class="text-right">Thao tác</th>
+                                </tr>
+                            </thead>
+                            <tbody id="usersTable"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section id="panel-documents" class="admin-panel hidden">
+                    <form id="docUploadForm" class="upload-card">
+                        <input id="docTitle" placeholder="Tên tài liệu" type="text">
+                        <select id="docSubject">
+                            <option value="chemistry">Hóa học</option>
+                            <option value="physics">Vật lý</option>
+                            <option value="biology">Sinh học</option>
+                            <option value="general">Chung</option>
+                        </select>
+                        <input id="docFile" accept="application/pdf" type="file" required>
+                        <button class="primary-action" type="submit">
+                            <i class="fa-solid fa-upload"></i>
+                            Tải lên
+                        </button>
+                    </form>
+
+                    <div class="panel-toolbar">
+                        <label class="input-shell">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input id="docSearch" placeholder="Tìm tài liệu" type="search">
+                        </label>
+                        <select id="docSubjectFilter" class="select-shell">
+                            <option value="all">Tất cả môn</option>
+                            <option value="chemistry">Hóa học</option>
+                            <option value="physics">Vật lý</option>
+                            <option value="biology">Sinh học</option>
+                            <option value="general">Chung</option>
+                        </select>
+                        <label class="switch-shell">
+                            <input id="includeDeletedDocs" type="checkbox">
+                            Đã xóa
+                        </label>
+                    </div>
+
+                    <div class="table-card">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Tài liệu</th>
+                                    <th>Môn</th>
+                                    <th>Vector</th>
+                                    <th>Chunks</th>
+                                    <th>Ngày tạo</th>
+                                    <th class="text-right">Thao tác</th>
+                                </tr>
+                            </thead>
+                            <tbody id="docsTable"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section id="panel-tools" class="admin-panel hidden">
+                    <div class="panel-toolbar">
+                        <label class="input-shell">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input id="toolSearch" placeholder="Tìm dụng cụ" type="search">
+                        </label>
+                        <select id="toolSubjectFilter" class="select-shell">
+                            <option value="all">Tất cả môn</option>
+                            <option value="chemistry">Hóa học</option>
+                            <option value="physics">Vật lý</option>
+                            <option value="biology">Sinh học</option>
+                            <option value="general">Chung</option>
+                        </select>
+                        <label class="switch-shell">
+                            <input id="includeDeletedTools" type="checkbox" checked>
+                            Đã xóa
+                        </label>
+                    </div>
+                    <div class="table-card">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Dụng cụ</th>
+                                    <th>Môn</th>
+                                    <th>Loại</th>
+                                    <th>SL</th>
+                                    <th>Trạng thái</th>
+                                    <th>Xóa mềm</th>
+                                    <th class="text-right">Thao tác</th>
+                                </tr>
+                            </thead>
+                            <tbody id="toolsTable"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section id="panel-revenue" class="admin-panel hidden">
+                    <div class="revenue-toolbar">
+                        <div id="revenueStats" class="revenue-stats"></div>
+                        <button id="exportRevenueBtn" class="primary-action" type="button">
+                            <i class="fa-solid fa-file-export"></i>
+                            Xuất CSV
+                        </button>
+                    </div>
+                    <div class="table-card">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Người dùng</th>
+                                    <th>Gói</th>
+                                    <th>Số tiền</th>
+                                    <th>Trạng thái</th>
+                                    <th>Phương thức</th>
+                                    <th>Ngày tạo</th>
+                                </tr>
+                            </thead>
+                            <tbody id="revenueTable"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <div id="userModal" class="modal-backdrop hidden">
+        <form id="userForm" class="modal-card">
+            <div class="modal-head">
+                <h2 id="userModalTitle">Người dùng</h2>
+                <button class="close-modal icon-btn" data-modal="userModal" type="button">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <input id="userId" type="hidden">
+            <div class="modal-grid">
+                <label>Tên<input id="userUsername" type="text"></label>
+                <label>Email<input id="userEmail" type="email"></label>
+                <label>Quyền<select id="userRole"><option value="user">User</option><option value="admin">Admin</option></select></label>
+                <label>Nguồn<input id="userProvider" type="text" value="local"></label>
+                <label class="span-2">Avatar URL<input id="userAvatar" type="url"></label>
+            </div>
+            <div class="modal-actions">
+                <button class="secondary-action close-modal" data-modal="userModal" type="button">Hủy</button>
+                <button class="primary-action" type="submit"><i class="fa-solid fa-floppy-disk"></i>Lưu</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="documentModal" class="modal-backdrop hidden">
+        <form id="documentForm" class="modal-card">
+            <div class="modal-head">
+                <h2>Tài liệu</h2>
+                <button class="close-modal icon-btn" data-modal="documentModal" type="button">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <input id="documentId" type="hidden">
+            <div class="modal-grid">
+                <label class="span-2">Tên tài liệu<input id="documentTitle" type="text"></label>
+                <label>Môn<select id="documentSubject"><option value="chemistry">Hóa học</option><option value="physics">Vật lý</option><option value="biology">Sinh học</option><option value="general">Chung</option></select></label>
+                <label class="checkbox-label"><input id="documentReindex" type="checkbox">Tạo vector lại</label>
+            </div>
+            <div class="modal-actions">
+                <button class="secondary-action close-modal" data-modal="documentModal" type="button">Hủy</button>
+                <button class="primary-action" type="submit"><i class="fa-solid fa-floppy-disk"></i>Lưu</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="toolModal" class="modal-backdrop hidden">
+        <form id="toolForm" class="modal-card">
+            <div class="modal-head">
+                <h2>Dụng cụ</h2>
+                <button class="close-modal icon-btn" data-modal="toolModal" type="button">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <input id="toolId" type="hidden">
+            <div class="modal-grid">
+                <label>Tên tiếng Việt<input id="toolNameVi" type="text"></label>
+                <label>Tên tiếng Anh<input id="toolNameEn" type="text"></label>
+                <label>Loại<input id="toolType" type="text"></label>
+                <label>Số lượng<input id="toolQuantity" min="0" type="number"></label>
+                <label>Môn<select id="toolSubject"><option value="chemistry">Hóa học</option><option value="physics">Vật lý</option><option value="biology">Sinh học</option><option value="general">Chung</option></select></label>
+                <label>Trạng thái<select id="toolStatus"><option value="pending">Pending</option><option value="processing">Processing</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label>
+            </div>
+            <div class="modal-actions">
+                <button class="secondary-action close-modal" data-modal="toolModal" type="button">Hủy</button>
+                <button class="primary-action" type="submit"><i class="fa-solid fa-floppy-disk"></i>Lưu</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/assets/js/admin_dashboard.js?v=20260524"></script>
+</body>
+
+</html>

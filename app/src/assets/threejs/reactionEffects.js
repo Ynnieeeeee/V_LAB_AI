@@ -5,6 +5,7 @@ import {
     shouldEmitSmokeOrGas,
     reactionGasDebug
 } from './reactionGasUtils.js';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
 
 const loader = new THREE.TextureLoader();
 
@@ -711,10 +712,9 @@ export function mirrorSilver(container) {
     if (existing) existing.parent?.remove(existing);
 
     container.updateMatrixWorld?.(true);
-    const box = new THREE.Box3().setFromObject(container);
-    const inv = container.matrixWorld.clone().invert();
-    const min = box.min.clone().applyMatrix4(inv);
-    const max = box.max.clone().applyMatrix4(inv);
+    const localBox = getToolLocalMeshBox(container);
+    const min = localBox?.min || new THREE.Vector3(-0.08, -0.08, -0.08);
+    const max = localBox?.max || new THREE.Vector3(0.08, 0.08, 0.08);
     const radius = Math.max(0.045, Math.abs(max.x - min.x) * 0.28);
     const depthScale = Math.max(0.65, Math.abs(max.z - min.z) / Math.max(Math.abs(max.x - min.x), 0.001));
     const height = Math.max(0.08, Math.abs(max.y - min.y) * 0.32);
@@ -761,10 +761,9 @@ export function phaseSeparation(container, options = {}) {
     container.userData.lowerLayerColor = options.lowerColor || '#f8f8ff';
 
     container.updateMatrixWorld?.(true);
-    const box = new THREE.Box3().setFromObject(container);
-    const inv = container.matrixWorld.clone().invert();
-    const min = box.min.clone().applyMatrix4(inv);
-    const max = box.max.clone().applyMatrix4(inv);
+    const localBox = getToolLocalMeshBox(container);
+    const min = localBox?.min || new THREE.Vector3(-0.08, -0.08, -0.08);
+    const max = localBox?.max || new THREE.Vector3(0.08, 0.08, 0.08);
     const sizeX = Math.max(0.06, Math.abs(max.x - min.x) * 0.34);
     const sizeZ = Math.max(0.06, Math.abs(max.z - min.z) * 0.34);
     const h = Math.max(0.035, Math.abs(max.y - min.y) * 0.07);

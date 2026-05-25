@@ -141,8 +141,6 @@ async def get_tool_status(
     session: Session = Depends(get_session),
     user: Profiles = Depends(get_current_user),
 ):
-    require_active_plan(session, user.id_profile)
-
     conversation = session.get(Conversations, uuid.UUID(str(id_conv)))
     if not conversation or conversation.id_profile != user.id_profile or conversation.is_deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")

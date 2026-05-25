@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
 
 /**
  * PrecipitateSystem
@@ -29,6 +30,8 @@ export class PrecipitateSystem {
 
     getCavityInfo(container) {
         container.updateMatrixWorld(true);
+        const toolLocalBox = getToolLocalMeshBox(container);
+        const toolCenter = toolLocalBox?.getCenter?.(new THREE.Vector3());
 
         // Ưu tiên cavityPoints đã được PouringEffect detect theo local-space.
         // Cách này chính xác hơn Box3 toàn model, vì Box3 thường bao cả thành/cạnh ngoài của cốc.
@@ -49,8 +52,8 @@ export class PrecipitateSystem {
                 const liquidLevel = THREE.MathUtils.clamp(container.userData?.liquidLevel ?? 0.35, 0.05, 0.9);
                 const surfaceY = THREE.MathUtils.lerp(minY, maxY, liquidLevel);
                 return {
-                    centerX: (box.min.x + box.max.x) * 0.5,
-                    centerZ: (box.min.z + box.max.z) * 0.5,
+                    centerX: toolCenter?.x ?? (box.min.x + box.max.x) * 0.5,
+                    centerZ: toolCenter?.z ?? (box.min.z + box.max.z) * 0.5,
                     bottomY: minY + 0.018,
                     surfaceY: Math.max(minY + 0.055, surfaceY - 0.012),
                     // Thu nhỏ bán kính để hạt không lọt ra ngoài thành dụng cụ.
@@ -62,27 +65,8 @@ export class PrecipitateSystem {
         }
 
         // Fallback: dùng bounding box nhưng thu nhỏ mạnh, chỉ dùng khi chưa có cavityPoints.
-        const box = new THREE.Box3();
-        const inv = container.matrixWorld.clone().invert();
-
-        let hasMesh = false;
-        container.traverse(child => {
-            if (!child.isMesh) return;
-            if (child.name === 'fluid_volume') return;
-            if (child.userData?.isReactionEffect || child.userData?.isInternalChemicalVisual) return;
-            const childBox = new THREE.Box3().setFromObject(child);
-            if (!childBox.isEmpty()) {
-                box.union(childBox);
-                hasMesh = true;
-            }
-        });
-
-        if (!hasMesh || box.isEmpty()) {
-            box.setFromObject(container);
-        }
-
-        const min = box.min.clone().applyMatrix4(inv);
-        const max = box.max.clone().applyMatrix4(inv);
+        const min = toolLocalBox?.min || new THREE.Vector3(-0.08, -0.08, -0.08);
+        const max = toolLocalBox?.max || new THREE.Vector3(0.08, 0.08, 0.08);
         const sizeX = Math.max(0.04, Math.abs(max.x - min.x));
         const sizeY = Math.max(0.08, Math.abs(max.y - min.y));
         const sizeZ = Math.max(0.04, Math.abs(max.z - min.z));
@@ -93,8 +77,8 @@ export class PrecipitateSystem {
         const surfaceY = bottomY + sizeY * liquidLevel * 0.28;
 
         return {
-            centerX: (min.x + max.x) * 0.5,
-            centerZ: (min.z + max.z) * 0.5,
+            centerX: toolCenter?.x ?? (min.x + max.x) * 0.5,
+            centerZ: toolCenter?.z ?? (min.z + max.z) * 0.5,
             bottomY,
             surfaceY,
             radiusX: sizeX * 0.14,

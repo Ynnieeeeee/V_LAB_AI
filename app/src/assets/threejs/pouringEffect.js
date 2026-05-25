@@ -1,6 +1,103 @@
 import * as THREE from 'three';
 import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
 
+function shouldIgnoreCavityMesh(object) {
+    const data = object?.userData || {};
+    return (
+        !object?.isMesh ||
+        object.name === 'fluid_volume' ||
+        data.isLiquid ||
+        data.isPowder ||
+        data.isParticle ||
+        data.isReactionEffect ||
+        data.isInternalChemicalVisual ||
+        data.ignoreRaycast
+    );
+}
+
+function expandBoxByTransformedCorners(targetBox, sourceBox, matrix) {
+    const min = sourceBox.min;
+    const max = sourceBox.max;
+    for (const x of [min.x, max.x]) {
+        for (const y of [min.y, max.y]) {
+            for (const z of [min.z, max.z]) {
+                targetBox.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(matrix));
+            }
+        }
+    }
+}
+
+export function getToolLocalMeshBox(tool, meshes = null) {
+    if (!tool) return null;
+    tool.updateMatrixWorld(true);
+
+    const invMatrix = tool.matrixWorld.clone().invert();
+    const box = new THREE.Box3();
+    let hasBounds = false;
+    const sourceMeshes = meshes || [];
+
+    if (!meshes) {
+        tool.traverse(object => {
+            if (!shouldIgnoreCavityMesh(object)) sourceMeshes.push(object);
+        });
+    }
+
+    sourceMeshes.forEach(mesh => {
+        if (shouldIgnoreCavityMesh(mesh)) return;
+
+        if (mesh.geometry?.computeBoundingBox && !mesh.geometry.boundingBox) {
+            mesh.geometry.computeBoundingBox();
+        }
+
+        const geometryBox = mesh.geometry?.boundingBox;
+        if (geometryBox && !geometryBox.isEmpty()) {
+            const meshToTool = invMatrix.clone().multiply(mesh.matrixWorld);
+            expandBoxByTransformedCorners(box, geometryBox, meshToTool);
+            hasBounds = true;
+        } else {
+            const worldBox = new THREE.Box3().setFromObject(mesh);
+            if (!worldBox.isEmpty()) {
+                expandBoxByTransformedCorners(box, worldBox, invMatrix);
+                hasBounds = true;
+            }
+        }
+    });
+
+    if (hasBounds && !box.isEmpty()) return box;
+
+    const worldBox = new THREE.Box3().setFromObject(tool);
+    if (worldBox.isEmpty()) return null;
+    expandBoxByTransformedCorners(box, worldBox, invMatrix);
+    return box.isEmpty() ? null : box;
+}
+
+function getFallbackCavityPoints(tool) {
+    const box = getToolLocalMeshBox(tool);
+    if (!box || box.isEmpty()) return [];
+
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const halfX = Math.max(size.x * 0.22, 0.035);
+    const halfZ = Math.max(size.z * 0.22, 0.035);
+    const bottomY = box.min.y + size.y * 0.14;
+    const topY = box.min.y + size.y * 0.62;
+    const points = [];
+    const steps = [-1, -0.5, 0, 0.5, 1];
+
+    steps.forEach(ix => {
+        steps.forEach(iz => {
+            points.push({
+                lx: center.x + ix * halfX,
+                lz: center.z + iz * halfZ,
+                lyTop: topY,
+                lyBottom: bottomY
+            });
+        });
+    });
+
+    return points;
+}
+
 /**
  * PouringEffect – Particle stream + MarchingCubes liquid volume.
  *
@@ -109,17 +206,17 @@ export class PouringEffect {
                 attribute float size;
                 void main() {
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                    gl_PointSize = clamp(size * (120.0 / -mvPosition.z), 1.0, 35.0);
+                    gl_PointSize = clamp(size * (120.0 / -mvPosition.z), 1.2, 42.0);
                     gl_Position  = projectionMatrix * mvPosition;
                 }
             `,
             fragmentShader: `
                 uniform vec3 color;
                 void main() {
-                    float dist = distance(gl_PointCoord, vec2(0.5));
-                    if (dist > 0.5) discard;
-                    float alpha = smoothstep(0.5, 0.0, dist);
-                    gl_FragColor = vec4(color, alpha * 2.0);
+                    float edgeX = min(gl_PointCoord.x, 1.0 - gl_PointCoord.x);
+                    float edgeY = min(gl_PointCoord.y, 1.0 - gl_PointCoord.y);
+                    float edgeAlpha = smoothstep(0.0, 0.08, min(edgeX, edgeY));
+                    gl_FragColor = vec4(color, edgeAlpha * 0.95);
                 }
             `,
             transparent: true,
@@ -189,13 +286,9 @@ export class PouringEffect {
         tool.updateMatrixWorld(true);
         const invMatrix = tool.matrixWorld.clone().invert();
 
-        // CHỈ scan mesh dụng cụ
         const meshes = [];
         tool.traverse(o => {
-            if (!o.isMesh) return;
-            if (o.name === 'fluid_volume') return;
-            if (o.userData?.isLiquid || o.userData?.isPowder || o.userData?.isParticle || o.userData?.isReactionEffect || o.userData?.ignoreRaycast) return;
-            meshes.push(o);
+            if (!shouldIgnoreCavityMesh(o)) meshes.push(o);
         });
 
         const box = new THREE.Box3().setFromObject(tool);
@@ -247,9 +340,10 @@ export class PouringEffect {
             }
         }
 
-        console.log("[CAVITY]", tool.name || "Tool", points.length);
-        tool.userData.cavityPoints = points;
-        return points;
+        const usablePoints = points.length > 0 ? points : getFallbackCavityPoints(tool);
+        console.log("[CAVITY]", tool.name || "Tool", usablePoints.length);
+        tool.userData.cavityPoints = usablePoints;
+        return usablePoints;
     }
 
     /** Gọi từ interaction.js khi tool bị thả, scale đổi, hoặc gắn lại scene. */
@@ -388,8 +482,8 @@ export class PouringEffect {
     _spawnParticle(targetPos) {
         const idx = this.activeParticles % this.particleCount;
         const pos = this.spawnPos.clone();
-        pos.x += (Math.random() - 0.5) * 0.01;
-        pos.z += (Math.random() - 0.5) * 0.01;
+        pos.x += (Math.random() - 0.5) * 0.014;
+        pos.z += (Math.random() - 0.5) * 0.014;
 
         const vel = new THREE.Vector3(0, -1.2, 0);
         if (targetPos) vel.copy(targetPos.clone().sub(pos).normalize()).multiplyScalar(2.2);
@@ -424,7 +518,7 @@ export class PouringEffect {
                 p.life = 0;
 
             pos[i*3] = p.pos.x; pos[i*3+1] = p.pos.y; pos[i*3+2] = p.pos.z;
-            size[i]  = 5.0 * p.life;
+            size[i]  = 6.4 * p.life;
         }
         this.particleGeometry.attributes.position.needsUpdate = true;
         this.particleGeometry.attributes.size.needsUpdate     = true;
@@ -518,6 +612,7 @@ export class PouringEffect {
         let points = target.userData.cavityPoints;
         if (!points || points.length === 0) {
             points = this.detectCavity(target);
+            if (points.length === 0) points = getFallbackCavityPoints(target);
             if (points.length === 0) return;
         }
 
@@ -528,15 +623,50 @@ export class PouringEffect {
             isFinite(p.lyTop) &&
             isFinite(p.lyBottom)
         );
+        if (points.length === 0) points = getFallbackCavityPoints(target);
+        if (points.length === 0) return;
 
         // ── 2. Tính toán thông số Cavity (LOCAL) ──────────────────────────
+        const quantile = (values, ratio) => {
+            if (!values.length) return 0;
+            const sorted = values.slice().sort((a, b) => a - b);
+            const index = THREE.MathUtils.clamp(
+                Math.round((sorted.length - 1) * ratio),
+                0,
+                sorted.length - 1
+            );
+            return sorted[index];
+        };
+
+        const minCorePoints = Math.max(6, Math.floor(points.length * 0.35));
+        const trim = points.length >= 12 ? 0.08 : 0;
+        const minX = quantile(points.map(p => p.lx), trim);
+        const maxX = quantile(points.map(p => p.lx), 1 - trim);
+        const minZ = quantile(points.map(p => p.lz), trim);
+        const maxZ = quantile(points.map(p => p.lz), 1 - trim);
+
+        let corePoints = points.filter(p =>
+            p.lx >= minX && p.lx <= maxX &&
+            p.lz >= minZ && p.lz <= maxZ
+        );
+        if (corePoints.length < minCorePoints) corePoints = points;
+
         const pointsBox = new THREE.Box3();
-        points.forEach(p => pointsBox.expandByPoint(new THREE.Vector3(p.lx, 0, p.lz)));
+        corePoints.forEach(p => pointsBox.expandByPoint(new THREE.Vector3(p.lx, 0, p.lz)));
         const cavitySize = pointsBox.getSize(new THREE.Vector3());
 
-        const cavityMinY = points.reduce((m, p) => Math.min(m, p.lyBottom), Infinity);
-        const cavityMaxY = points.reduce((m, p) => Math.max(m, p.lyTop), -Infinity);
+        const cavityMinY = corePoints.reduce((m, p) => Math.min(m, p.lyBottom), Infinity);
+        const cavityMaxY = corePoints.reduce((m, p) => Math.max(m, p.lyTop), -Infinity);
         const cavityHeight = cavityMaxY - cavityMinY;
+        if (
+            pointsBox.isEmpty() ||
+            !Number.isFinite(cavityHeight) ||
+            cavityHeight <= 0 ||
+            cavitySize.x <= 0 ||
+            cavitySize.z <= 0
+        ) {
+            return;
+        }
 
         // ── 3. Định vị LiquidGroup (Sử dụng LOCAL vì đã là child của target) ──
         const cavityCenter = new THREE.Vector3(
@@ -544,25 +674,36 @@ export class PouringEffect {
             (cavityMinY + cavityMaxY) * 0.5,
             (pointsBox.min.z + pointsBox.max.z) * 0.5
         );
+        const toolLocalBox = getToolLocalMeshBox(target);
+        if (toolLocalBox && !toolLocalBox.isEmpty()) {
+            const toolCenter = toolLocalBox.getCenter(new THREE.Vector3());
+            cavityCenter.x = toolCenter.x;
+            cavityCenter.z = toolCenter.z;
+        }
 
         const liquidGroup = volume.userData.group;
         if (liquidGroup) {
             liquidGroup.position.copy(cavityCenter);
             liquidGroup.scale.set(1, 1, 1);
 
-            // Giữ mặt nước ngang tương đối (lazy leveling)
-            liquidGroup.rotation.x = -target.rotation.x * 0.15;
-            liquidGroup.rotation.z = -target.rotation.z * 0.15;
-            liquidGroup.rotation.y = 0; // Không xoay theo yaw
+            // Keep the liquid bound to the detected local cavity.
+            liquidGroup.rotation.set(0, 0, 0);
         }
 
         // ── 4. Scale Volume khớp với Cavity (Padding nhỏ hơn cho Tripo) ─────
-        const padding = 0.55;
-        volume.scale.set(
-            Math.max(cavitySize.x * padding, 1e-4),
-            Math.max(cavityHeight * 0.55, 1e-4),
-            Math.max(cavitySize.z * padding, 1e-4)
+        const horizontalPadding = 0.82;
+        const verticalPadding = 0.55;
+        const squareSide = Math.max(
+            Math.min(cavitySize.x, cavitySize.z) * horizontalPadding,
+            1e-4
         );
+        volume.scale.set(
+            squareSide,
+            Math.max(cavityHeight * verticalPadding, 1e-4),
+            squareSide
+        );
+        // MarchingCubes geometry is centered on its local origin.
+        volume.position.set(0, 0, 0);
 
         // ── 5. UPDATE MÀU DUNG DỊCH ─────────────────────────────
         if (volume.userData.isColorLerping && volume.userData.targetColor) {
@@ -620,9 +761,6 @@ export class PouringEffect {
         volume.reset();
         volume.isolation = 18;
 
-        const gridX = 18;
-        const gridZ = 18;
-
         const fillHeight = THREE.MathUtils.mapLinear(
             level,
             0,
@@ -631,36 +769,22 @@ export class PouringEffect {
             0.88
         );
 
+        const gridX = 18;
+        const gridZ = 18;
+
         for (let ix = 0; ix < gridX; ix++) {
             for (let iz = 0; iz < gridZ; iz++) {
+                const nx = THREE.MathUtils.mapLinear(ix, 0, gridX - 1, 0.18, 0.82);
+                const nz = THREE.MathUtils.mapLinear(iz, 0, gridZ - 1, 0.18, 0.82);
 
-                const nx = THREE.MathUtils.mapLinear(
-                    ix,
-                    0,
-                    gridX - 1,
-                    0.18,
-                    0.82
-                );
-
-                const nz = THREE.MathUtils.mapLinear(
-                    iz,
-                    0,
-                    gridZ - 1,
-                    0.18,
-                    0.82
-                );
-
-                // noise cực nhỏ để tránh mặt phẳng robot
                 const wave =
                     Math.sin(ix * 0.7 + this.time * 2.0) *
                     Math.cos(iz * 0.6 + this.time * 1.5) *
                     0.01;
 
-                const ny = fillHeight + wave;
-
                 volume.addBall(
                     nx,
-                    ny,
+                    fillHeight + wave,
                     nz,
                     0.085,
                     8

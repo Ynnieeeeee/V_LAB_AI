@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
 
 /**
  * PowderSystem
@@ -151,16 +152,41 @@ export class PowderSystem {
 
     getLocalCavityInfo(container) {
         container.updateMatrixWorld(true);
-        const box = new THREE.Box3().setFromObject(container);
-        const inv = container.matrixWorld.clone().invert();
-        const min = box.min.clone().applyMatrix4(inv);
-        const max = box.max.clone().applyMatrix4(inv);
+        const points = (container.userData?.cavityPoints || []).filter(p =>
+            Number.isFinite(p.lx) &&
+            Number.isFinite(p.lz) &&
+            Number.isFinite(p.lyBottom)
+        );
+        const localBox = getToolLocalMeshBox(container);
+        const toolCenter = localBox?.getCenter?.(new THREE.Vector3());
+
+        if (points.length > 0) {
+            const pointBox = new THREE.Box3();
+            let bottomY = Infinity;
+            points.forEach(p => {
+                pointBox.expandByPoint(new THREE.Vector3(p.lx, 0, p.lz));
+                bottomY = Math.min(bottomY, p.lyBottom);
+            });
+            const pointSize = pointBox.getSize(new THREE.Vector3());
+            if (!pointBox.isEmpty() && Number.isFinite(bottomY)) {
+                return {
+                    centerX: toolCenter?.x ?? (pointBox.min.x + pointBox.max.x) * 0.5,
+                    centerZ: toolCenter?.z ?? (pointBox.min.z + pointBox.max.z) * 0.5,
+                    bottomY: bottomY + 0.018,
+                    radiusX: Math.max(pointSize.x * 0.18, 0.018),
+                    radiusZ: Math.max(pointSize.z * 0.18, 0.018)
+                };
+            }
+        }
+
+        const min = localBox?.min || new THREE.Vector3(-0.08, -0.08, -0.08);
+        const max = localBox?.max || new THREE.Vector3(0.08, 0.08, 0.08);
         const sizeX = Math.max(0.04, Math.abs(max.x - min.x));
         const sizeZ = Math.max(0.04, Math.abs(max.z - min.z));
         const sizeY = Math.max(0.08, Math.abs(max.y - min.y));
         return {
-            centerX: (min.x + max.x) * 0.5,
-            centerZ: (min.z + max.z) * 0.5,
+            centerX: toolCenter?.x ?? (min.x + max.x) * 0.5,
+            centerZ: toolCenter?.z ?? (min.z + max.z) * 0.5,
             bottomY: Math.min(min.y, max.y) + sizeY * 0.12,
             radiusX: sizeX * 0.27,
             radiusZ: sizeZ * 0.27

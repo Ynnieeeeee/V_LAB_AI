@@ -63,4 +63,14 @@ export function initChatEvents() {
 
     btn.onclick = handleSend;
     btn.onkeypress = (e) => {if(e.key === 'Enter') handleSend(); };
+
+    input.addEventListener('keydown', (event) => {
+        event.stopPropagation();
+        if (event.key === 'Enter' && !event.isComposing) {
+            event.preventDefault();
+            handleSend();
+        }
+    });
+    input.addEventListener('keyup', (event) => event.stopPropagation());
+    input.addEventListener('keypress', (event) => event.stopPropagation());
 };

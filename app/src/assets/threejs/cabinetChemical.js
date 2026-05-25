@@ -1,10 +1,34 @@
 import * as THREE from 'three';
-import { registerDraggableObject } from './interaction.js';
+import { registerDraggableObject } from './interaction.js?v=20260525-bottle-display-scale';
 
 export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
     try {
-        const response = await fetch('/api/cabinet/chemicals');
+        const token = localStorage.getItem('access_token');
+        if (!token) {
+            console.warn('Missing access token, skip loading chemical cabinet.');
+            return;
+        }
+
+        const response = await fetch('/api/cabinet/chemicals', {
+            headers: {
+                Authorization: `Bearer ${token}`
+            }
+        });
+        if (!response.ok) {
+            let detail = `Backend returned ${response.status} while loading chemicals`;
+            try {
+                const payload = await response.json();
+                detail = payload?.detail || detail;
+            } catch (_) {}
+            console.warn(detail);
+            return;
+        }
+
         const chemicals = await response.json();
+        if (!Array.isArray(chemicals)) {
+            console.warn('Chemical cabinet response is not a list:', chemicals);
+            return;
+        }
         const textureLoader = new THREE.TextureLoader();
 
         // --- TỰ ĐỘNG DÒ TÌM TỌA ĐỘ Y CỦA CÁC TẦNG KỆ ---
@@ -58,7 +82,9 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
             if (!shelfCount[shelf]) shelfCount[shelf] = 0;
 
             // GIỮ NGUYÊN CÁC THÔNG SỐ CỦA BẠN
-            bottle.scale.set(0.2, 0.2, 0.2);
+            const bottleScale = new THREE.Vector3(0.2, 0.2, 0.2);
+            const displayBottleScale = bottleScale.clone().multiplyScalar(bookcaseModel?.scale?.x || 1);
+            bottle.scale.copy(bottleScale);
 
             const yOffset = 0.89;
             const yPos_local = (shelfPositionsY[shelf] !== undefined ? shelfPositionsY[shelf] : (shelfHeights[0] || 0.42)) + yOffset;
@@ -89,6 +115,11 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
                 isInteractable: true,
 
                 color: chem.material_color,
+
+                customScale: bottleScale.clone(),
+                customWorldScale: displayBottleScale.clone(),
+                originalWorldScale: displayBottleScale.clone(),
+                hasCustomScale: true,
             };
 
             // 1. GIỮ NGUYÊN VẬT LIỆU GỐC VÀ TÔ MÀU THEO CSDL

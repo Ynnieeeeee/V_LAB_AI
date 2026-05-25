@@ -6,6 +6,7 @@ from app.models.base_db import engine
 from app.models.profiles import Profiles
 from app.utils.create_access_token import create_access_token
 from app.utils.get_current_user import get_current_user
+from app.utils.admin_schema import ensure_admin_schema
 import uuid
 
 router = APIRouter()
@@ -24,6 +25,9 @@ async def google_callback(request: Request):
     avatar = user["picture"]
 
     with Session(engine) as session:
+        ensure_admin_schema(session)
+        session.commit()
+
         stmt = select(Profiles).where(Profiles.email == email)
         db_user = session.exec(stmt).first()
 
