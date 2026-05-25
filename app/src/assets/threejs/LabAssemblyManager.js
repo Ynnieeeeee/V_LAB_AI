@@ -1,16 +1,38 @@
 import * as THREE from 'three';
+import {
+    applyPlacementDelta,
+    getConnectionDistanceScore,
+    getPlacementDeltaForAnchors,
+    getToolAnchorPoints,
+    getToolBoxInfo,
+    getToolLabel,
+    getTableSurfaceY,
+    isContainerTool,
+    isHeatingSourceTool,
+    isSupportStandTool,
+    keepObjectAboveTable
+} from './toolAnchors.js';
 
 export const PORT_COMPATIBILITY = {
     liquid_out: ['liquid_in', 'opening'],
-    gas_out: ['gas_in'],
+    liquid_in: ['liquid_out', 'gas_out', 'gas_in', 'support_target', 'bottom_slot'],
+    opening: ['liquid_out', 'gas_out', 'gas_in', 'support_target', 'bottom_slot'],
+    gas_out: ['gas_in', 'opening', 'liquid_in'],
+    gas_in: ['gas_out', 'opening', 'liquid_in'],
     support: ['support_top', 'support_target'],
-    support_top: ['support_target'],
-    support_target: ['support_top'],
+    support_top: ['support_target', 'bottom_slot'],
+    support_target: ['support_top', 'top_slot', 'container_slot', 'opening', 'liquid_in'],
+    top_slot: ['bottom_slot', 'support_target'],
+    bottom_slot: ['top_slot', 'support_top', 'container_slot', 'opening', 'liquid_in'],
+    center_slot: ['center_slot'],
+    container_slot: ['bottom_slot', 'support_target'],
+    holder_slot: ['clamp_target', 'bottom_slot', 'support_target'],
     clamp: ['clamp_point', 'clamp_target'],
     clamp_point: ['clamp_target'],
-    clamp_target: ['clamp_point'],
-    heating_zone: ['heat_target'],
-    heat_target: ['heating_zone']
+    clamp_target: ['clamp_point', 'holder_slot'],
+    heating_zone: ['heat_target', 'heat_slot'],
+    heat_target: ['heating_zone', 'heat_slot'],
+    heat_slot: ['heating_zone', 'heat_target']
 };
 
 const CONNECTION_TYPES = {
@@ -22,25 +44,37 @@ const CONNECTION_TYPES = {
     support: 'support',
     support_top: 'support',
     support_target: 'support',
+    top_slot: 'support',
+    bottom_slot: 'support',
+    container_slot: 'support',
+    center_slot: 'generic',
+    holder_slot: 'clamp',
     clamp: 'clamp',
     clamp_point: 'clamp',
     clamp_target: 'clamp',
     heating_zone: 'heat',
-    heat_target: 'heat'
+    heat_target: 'heat',
+    heat_slot: 'heat'
 };
 
 const POINT_TYPE_ALIASES = {
     opening: ['liquid_in'],
     liquid_in: ['opening'],
     support: ['support_top', 'support_target'],
-    support_top: ['support'],
-    support_target: ['support'],
+    support_top: ['support', 'container_slot', 'top_slot'],
+    support_target: ['support', 'bottom_slot'],
+    top_slot: ['support_top'],
+    bottom_slot: ['support_target'],
+    container_slot: ['support_top'],
+    center_slot: ['center'],
+    holder_slot: ['clamp_point'],
     clamp: ['clamp_point', 'clamp_target'],
-    clamp_point: ['clamp'],
+    clamp_point: ['clamp', 'holder_slot'],
     clamp_target: ['clamp'],
-    heat: ['heating_zone', 'heat_target'],
-    heating_zone: ['heat'],
-    heat_target: ['heat']
+    heat: ['heating_zone', 'heat_target', 'heat_slot'],
+    heating_zone: ['heat', 'heat_slot'],
+    heat_target: ['heat', 'heat_slot'],
+    heat_slot: ['heat', 'heating_zone', 'heat_target']
 };
 
 function normalizeArray(value) {
@@ -70,19 +104,11 @@ function normalizeObject(value) {
 }
 
 function toolName(tool) {
-    return tool?.userData?.toolData?.name_tool_vi ||
-        tool?.userData?.toolData?.name_tool_en ||
-        tool?.name ||
-        'tool';
+    return getToolLabel(tool);
 }
 
 function pointEntries(tool) {
-    const ports = normalizeObject(tool?.userData?.ports);
-    const attachPoints = normalizeObject(tool?.userData?.attachPoints || tool?.userData?.attach_points);
-    return [
-        ...Object.entries(ports).map(([name, data = {}]) => ({ ...data, name, type: data.type || name, group: 'ports' })),
-        ...Object.entries(attachPoints).map(([name, data = {}]) => ({ ...data, name, type: data.type || name, group: 'attachPoints' }))
-    ].filter(point => point?.type);
+    return getToolAnchorPoints(tool);
 }
 
 function offsetToVector(offset = [0, 0, 0]) {
@@ -131,15 +157,18 @@ function compatible(a, b) {
 function connectionTypeFor(a, b) {
     const typesA = expandedTypes(a);
     const typesB = expandedTypes(b);
+    const hasOpening = typesA.has('opening') || typesA.has('liquid_in') || typesB.has('opening') || typesB.has('liquid_in');
+    const hasInsertEnd = [...typesA, ...typesB].some(type => ['support_target', 'bottom_slot', 'gas_in', 'gas_out'].includes(type));
+    if (hasOpening && hasInsertEnd) return (typesA.has('gas_in') || typesA.has('gas_out') || typesB.has('gas_in') || typesB.has('gas_out')) ? 'gas' : 'insert';
     if (typesA.has('gas_out') && typesB.has('gas_in') || typesB.has('gas_out') && typesA.has('gas_in')) return 'gas';
     if ([...typesA].some(type => ['liquid_out', 'liquid_in', 'opening'].includes(type)) &&
         [...typesB].some(type => ['liquid_out', 'liquid_in', 'opening'].includes(type))) return 'liquid';
-    if ([...typesA].some(type => ['support', 'support_top', 'support_target'].includes(type)) &&
-        [...typesB].some(type => ['support', 'support_top', 'support_target'].includes(type))) return 'support';
-    if ([...typesA].some(type => ['clamp', 'clamp_point', 'clamp_target'].includes(type)) &&
-        [...typesB].some(type => ['clamp', 'clamp_point', 'clamp_target'].includes(type))) return 'clamp';
-    if ([...typesA].some(type => ['heat', 'heating_zone', 'heat_target'].includes(type)) &&
-        [...typesB].some(type => ['heat', 'heating_zone', 'heat_target'].includes(type))) return 'heat';
+    if ([...typesA].some(type => ['support', 'support_top', 'support_target', 'top_slot', 'bottom_slot', 'container_slot'].includes(type)) &&
+        [...typesB].some(type => ['support', 'support_top', 'support_target', 'top_slot', 'bottom_slot', 'container_slot'].includes(type))) return 'support';
+    if ([...typesA].some(type => ['clamp', 'clamp_point', 'clamp_target', 'holder_slot'].includes(type)) &&
+        [...typesB].some(type => ['clamp', 'clamp_point', 'clamp_target', 'holder_slot'].includes(type))) return 'clamp';
+    if ([...typesA].some(type => ['heat', 'heating_zone', 'heat_target', 'heat_slot'].includes(type)) &&
+        [...typesB].some(type => ['heat', 'heating_zone', 'heat_target', 'heat_slot'].includes(type))) return 'heat';
     return CONNECTION_TYPES[a] || CONNECTION_TYPES[b] || 'generic';
 }
 
@@ -203,7 +232,8 @@ export class LabAssemblyManager {
         this.scene = scene;
         this.getObjects = options.getObjects || (() => []);
         this.connections = [];
-        this.snapDistance = Number(options.snapDistance ?? 0.45);
+        this.snapDistance = Number(options.snapDistance ?? 0.65);
+        this.tableY = Number.isFinite(options.tableY) ? options.tableY : getTableSurfaceY();
     }
 
     setObjectsProvider(getObjects) {
@@ -232,8 +262,68 @@ export class LabAssemblyManager {
         this.connections = this.connections.filter(conn => conn.fromTool?.parent && conn.toTool?.parent);
     }
 
+    unregisterObject(tool) {
+        if (!tool) return;
+        this.disconnectTool(tool);
+        this.connections = this.connections.filter(conn => conn.fromTool !== tool && conn.toTool !== tool);
+    }
+
     hasCapability(tool, capability) {
         return normalizeArray(tool?.userData?.capabilities).includes(capability);
+    }
+
+    isAllowedMatch(movingTool, fixedTool, pointA, pointB, connectionType) {
+        if (!movingTool || !fixedTool || movingTool === fixedTool) return false;
+
+        if (connectionType === 'heat') {
+            return isHeatingSourceTool(movingTool) && !isHeatingSourceTool(fixedTool);
+        }
+
+        if (connectionType === 'insert') {
+            return isContainerTool(fixedTool) && !isHeatingSourceTool(movingTool);
+        }
+
+        if (connectionType === 'gas') {
+            if (['opening', 'liquid_in'].includes(pointB.type)) return isContainerTool(fixedTool);
+            return true;
+        }
+
+        if (connectionType === 'support') {
+            if (!isSupportStandTool(fixedTool)) return false;
+            if (isHeatingSourceTool(movingTool)) return false;
+            return isContainerTool(movingTool) || ['support_target', 'bottom_slot', 'clamp_target', 'holder_slot'].includes(pointA.type);
+        }
+
+        if (connectionType === 'clamp') {
+            return isSupportStandTool(fixedTool) || this.hasCapability(fixedTool, 'clamp');
+        }
+
+        return true;
+    }
+
+    isSlotOccupied(fixedTool, fixedPoint, movingTool, connectionType) {
+        if (!fixedTool || !fixedPoint?.name) return false;
+        const fixedInfo = getToolBoxInfo(fixedTool);
+        const spacing = Math.max(0.22, Number(fixedTool?.userData?.supportSlotSpacing ?? 0.34) || 0.34);
+        return this.connections.some(conn => {
+            if (conn.fromTool === movingTool || conn.toTool === movingTool) return false;
+            if (conn.fixedTool !== fixedTool && conn.toTool !== fixedTool) return false;
+            if (connectionType && conn.connectionType !== connectionType) return false;
+
+            const connFixedPort = conn.fixedPort || conn.toPort;
+            if (connFixedPort === fixedPoint.name) return true;
+
+            if (connectionType === 'support' && isSupportStandTool(fixedTool)) {
+                const existingPoint = conn.fixedWorldPosition || getToolAnchorPoints(fixedTool).find(point => point.name === connFixedPort)?.worldPosition;
+                if (!existingPoint || !fixedPoint.worldPosition) return false;
+                const dx = existingPoint.x - fixedPoint.worldPosition.x;
+                const dz = existingPoint.z - fixedPoint.worldPosition.z;
+                const horizontal = Math.sqrt(dx * dx + dz * dz);
+                return horizontal < spacing * 0.45 && Math.abs(existingPoint.y - fixedPoint.worldPosition.y) < Math.max(0.18, fixedInfo.size.y * 0.25);
+            }
+
+            return false;
+        });
     }
 
     findNearestCompatiblePort(toolA, toolB, maxDistance = this.snapDistance) {
@@ -245,11 +335,29 @@ export class LabAssemblyManager {
         for (const pointA of pointsA) {
             for (const pointB of pointsB) {
                 if (!compatible(pointA.type, pointB.type)) continue;
-                const worldA = getPointWorldPosition(toolA, pointA);
-                const worldB = getPointWorldPosition(toolB, pointB);
-                const distance = worldA.distanceTo(worldB);
-                if (distance <= maxDistance && (!best || distance < best.distance)) {
-                    best = { toolA, pointA, worldA, toolB, pointB, worldB, distance };
+                const connectionType = connectionTypeFor(pointA.type, pointB.type);
+                if (!this.isAllowedMatch(toolA, toolB, pointA, pointB, connectionType)) continue;
+                if (this.isSlotOccupied(toolB, pointB, toolA, connectionType)) continue;
+
+                const placement = getPlacementDeltaForAnchors(toolA, pointA, toolB, pointB, connectionType, { tableY: this.tableY });
+                if (!placement.valid) continue;
+
+                const distance = getConnectionDistanceScore(pointA, pointB, connectionType);
+                const priority = Number(pointB.priority ?? 0) * 0.02;
+                const score = distance + priority;
+                if (distance <= maxDistance && (!best || score < best.score)) {
+                    best = {
+                        toolA,
+                        pointA,
+                        worldA: pointA.worldPosition.clone(),
+                        toolB,
+                        pointB,
+                        worldB: pointB.worldPosition.clone(),
+                        distance,
+                        score,
+                        connectionType,
+                        placement
+                    };
                 }
             }
         }
@@ -267,6 +375,12 @@ export class LabAssemblyManager {
             toTool,
             toPort: toPort.name,
             toPortType: toPort.type,
+            movingTool: options.movingTool || fromTool,
+            movingPort: options.movingPort || fromPort.name,
+            fixedTool: options.fixedTool || toTool,
+            fixedPort: options.fixedPort || toPort.name,
+            movingWorldPosition: fromPort.worldPosition?.clone?.() || null,
+            fixedWorldPosition: toPort.worldPosition?.clone?.() || null,
             connectionType: options.connectionType || connectionTypeFor(fromPort.type, toPort.type),
             createdAt: Date.now()
         };
@@ -310,6 +424,9 @@ export class LabAssemblyManager {
                     other.userData.isSnappedToSupport = false;
                     other.userData.supportStand = null;
                 }
+                if (tool.userData?.supportedTools) {
+                    tool.userData.supportedTools = tool.userData.supportedTools.filter(item => item !== other && item?.parent);
+                }
                 if (other.userData.heatingSource === tool) {
                     other.userData.isOnHeatingSource = false;
                     other.userData.isSnappedToHeatingSource = false;
@@ -320,11 +437,27 @@ export class LabAssemblyManager {
                     other.userData.isClamped = false;
                     other.userData.clampTool = null;
                 }
+                if (other.userData.heatTargetContainer === tool) {
+                    other.userData.isUnderContainer = false;
+                    other.userData.heatTargetContainer = null;
+                }
+                if (other.userData.supportedTools) {
+                    other.userData.supportedTools = other.userData.supportedTools.filter(item => item !== tool && item?.parent);
+                }
+                if (other.userData.insertedTools) {
+                    other.userData.insertedTools = other.userData.insertedTools.filter(item => item !== tool && item?.parent);
+                }
+                if (other.userData.insertedInto === tool) {
+                    other.userData.insertedInto = null;
+                    other.userData.isInsertedIntoContainer = false;
+                }
             }
         });
         if (tool.userData) {
             tool.userData.isAssemblySnapped = false;
             tool.userData.assemblyAnchorTool = null;
+            tool.userData.assemblySlotName = null;
+            tool.userData.assemblyConnectionType = null;
             tool.userData.isClamped = false;
             tool.userData.clampTool = null;
             tool.userData.isOnSupportStand = false;
@@ -334,15 +467,20 @@ export class LabAssemblyManager {
             tool.userData.isSnappedToHeatingSource = false;
             tool.userData.heatingSource = null;
             tool.userData.isUnderSupportStand = false;
+            tool.userData.isUnderContainer = false;
+            tool.userData.heatTargetContainer = null;
+            tool.userData.insertedInto = null;
+            tool.userData.isInsertedIntoContainer = false;
+            tool.userData.insertedTools = (tool.userData.insertedTools || []).filter(item => item?.parent);
         }
     }
 
     applyConnectionState(connection) {
         if (!connection) return;
         const tools = [connection.fromTool, connection.toTool];
-        const support = tools.find(tool => this.hasCapability(tool, 'support') || tool?.userData?.toolType === 'support_stand');
-        const heatSource = tools.find(tool => this.hasCapability(tool, 'heat') || tool?.userData?.isHeatingSource === true);
-        const container = tools.find(tool => tool?.userData?.toolType === 'container' || this.hasCapability(tool, 'react'));
+        const support = tools.find(tool => isSupportStandTool(tool));
+        const heatSource = tools.find(tool => isHeatingSourceTool(tool));
+        const container = tools.find(tool => isContainerTool(tool) && !isHeatingSourceTool(tool));
         const clamp = tools.find(tool => this.hasCapability(tool, 'clamp') && tool !== support);
         const clampedTool = tools.find(tool => tool !== clamp && tool !== support);
 
@@ -350,6 +488,8 @@ export class LabAssemblyManager {
             container.userData.isOnSupportStand = true;
             container.userData.supportStand = support;
             container.userData.isSnappedToSupport = true;
+            support.userData.supportedTools ??= [];
+            if (!support.userData.supportedTools.includes(container)) support.userData.supportedTools.push(container);
         }
 
         if (connection.connectionType === 'clamp' && clampedTool?.userData) {
@@ -367,37 +507,121 @@ export class LabAssemblyManager {
                 heatSource.userData.isUnderSupportStand = true;
                 heatSource.userData.supportStand = support;
             }
+            if (container?.userData && heatSource?.userData && connection.fixedTool === container) {
+                heatSource.userData.isUnderContainer = true;
+                heatSource.userData.heatTargetContainer = container;
+            }
+        }
+
+        if (connection.connectionType === 'insert' && connection.fixedTool?.userData && connection.movingTool?.userData) {
+            connection.movingTool.userData.insertedInto = connection.fixedTool;
+            connection.movingTool.userData.isInsertedIntoContainer = true;
+            connection.fixedTool.userData.insertedTools ??= [];
+            if (!connection.fixedTool.userData.insertedTools.includes(connection.movingTool)) {
+                connection.fixedTool.userData.insertedTools.push(connection.movingTool);
+            }
         }
     }
 
     snapAndConnect(movingTool, fixedTool, match) {
         if (!movingTool || !fixedTool || !match) return null;
-        const currentWorld = getObjectWorldPosition(movingTool);
-        const delta = match.worldB.clone().sub(match.worldA);
-        setObjectWorldPosition(movingTool, currentWorld.add(delta));
+        const connectionType = match.connectionType || connectionTypeFor(match.pointA.type, match.pointB.type);
+        const placement = match.placement || getPlacementDeltaForAnchors(
+            movingTool,
+            match.pointA,
+            fixedTool,
+            match.pointB,
+            connectionType,
+            { tableY: this.tableY }
+        );
+        if (!placement.valid) return null;
+        applyPlacementDelta(movingTool, placement, { tableY: this.tableY });
+        keepObjectAboveTable(movingTool, this.tableY);
+
         const connection = this.connectTools(
             movingTool,
             match.pointA,
             fixedTool,
             match.pointB,
-            { connectionType: connectionTypeFor(match.pointA.type, match.pointB.type) }
+            {
+                connectionType,
+                movingTool,
+                movingPort: match.pointA.name,
+                fixedTool,
+                fixedPort: match.pointB.name
+            }
         );
         movingTool.userData.isAssemblySnapped = true;
         movingTool.userData.assemblyAnchorTool = fixedTool;
+        movingTool.userData.assemblySlotName = match.pointB.name;
+        movingTool.userData.assemblyConnectionType = connectionType;
+        movingTool.updateMatrixWorld?.(true);
         return connection;
     }
 
-    tryAutoConnect(movingTool, objects = this.getObjects(), options = {}) {
+    findBestSnapMatch(movingTool, objects = this.getObjects(), options = {}) {
         this.syncObjects();
         const maxDistance = Number(options.maxDistance ?? this.snapDistance);
         let best = null;
         for (const candidate of objects) {
             if (!candidate || candidate === movingTool) continue;
             const match = this.findNearestCompatiblePort(movingTool, candidate, maxDistance);
-            if (match && (!best || match.distance < best.distance)) best = match;
+            if (match && (!best || match.score < best.score)) best = match;
         }
+        return best;
+    }
+
+    getSnapPreview(movingTool, objects = this.getObjects(), options = {}) {
+        const match = this.findBestSnapMatch(movingTool, objects, options);
+        if (!match) return null;
+        return {
+            match,
+            connectionType: match.connectionType,
+            targetTool: match.toolB,
+            targetSlot: match.pointB,
+            placement: match.placement
+        };
+    }
+
+    applySoftSnapPreview(movingTool, objects = this.getObjects(), options = {}) {
+        const preview = this.getSnapPreview(movingTool, objects, options);
+        if (!preview?.placement?.valid) return null;
+        const strength = Math.max(0, Math.min(1, Number(options.strength ?? 0.35)));
+        applyPlacementDelta(movingTool, {
+            valid: true,
+            delta: preview.placement.delta.clone().multiplyScalar(strength)
+        }, {
+            tableY: this.tableY,
+            keepAboveTable: true
+        });
+        return preview;
+    }
+
+    tryAutoConnect(movingTool, objects = this.getObjects(), options = {}) {
+        const best = this.findBestSnapMatch(movingTool, objects, options);
         if (!best) return null;
         return this.snapAndConnect(movingTool, best.toolB, best);
+    }
+
+    enforceConnectionPlacement(tool) {
+        const connection = this.connections.find(conn => conn.movingTool === tool || conn.fromTool === tool);
+        if (!connection?.fixedTool?.parent) return false;
+
+        const movingPoint = getToolAnchorPoints(tool).find(point => point.name === (connection.movingPort || connection.fromPort));
+        const fixedPoint = getToolAnchorPoints(connection.fixedTool).find(point => point.name === (connection.fixedPort || connection.toPort));
+        if (!movingPoint || !fixedPoint) return false;
+
+        const placement = getPlacementDeltaForAnchors(
+            tool,
+            movingPoint,
+            connection.fixedTool,
+            fixedPoint,
+            connection.connectionType,
+            { tableY: this.tableY }
+        );
+        if (!placement.valid) return false;
+        applyPlacementDelta(tool, placement, { tableY: this.tableY });
+        return true;
     }
 
     getNeighbors(tool, connectionType = null) {

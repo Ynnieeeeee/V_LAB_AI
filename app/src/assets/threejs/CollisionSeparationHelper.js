@@ -83,6 +83,8 @@ export function shouldIgnoreOverlap(object, other) {
 
     if (object.userData.connectedTo === other) return true;
     if (other.userData.connectedTo === object) return true;
+    if ((object.userData.assemblyConnections || []).some(conn => conn.fromTool === other || conn.toTool === other)) return true;
+    if ((other.userData.assemblyConnections || []).some(conn => conn.fromTool === object || conn.toTool === object)) return true;
 
     if (object.userData.parentTool === other) return true;
     if (other.userData.parentTool === object) return true;

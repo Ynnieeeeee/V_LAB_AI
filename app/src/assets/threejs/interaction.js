@@ -30,19 +30,21 @@ import {
     reactionGasDebug
 } from './reactionGasUtils.js';
 import {
-    autoSnapContainerToNearestSupportStand,
-    autoSnapContainerToNearestHeatingSource,
     canToggleHeatingSource,
     releaseHeatingSourceFromSupportStand,
     releaseContainerFromSupportStand,
     releaseContainerFromHeatingSource,
-    toggleHeatingSource,
-    tryPlaceHeatingSourceUnderSupport
+    toggleHeatingSource
 } from './HeatingManager.js';
 import {
     applySupportSlotOffset,
     resolveObjectOverlap
 } from './CollisionSeparationHelper.js';
+import {
+    getTableSurfaceY,
+    keepObjectAboveTable,
+    moveObjectByWorldDelta
+} from './toolAnchors.js';
 const THREE = three;
 
 function isEditableTarget(event) {
@@ -77,6 +79,87 @@ function isPourSource(obj) {
     return !!(obj?.userData && (obj.userData.id_chemical || obj.userData.chemicalId || isContainerWithChemical(obj)));
 }
 
+function isChemicalBottleObject(obj) {
+    return Boolean(obj?.userData && (obj.userData.id_chemical || obj.userData.chemicalId) && !obj.userData.toolData);
+}
+
+function getWorldQuaternionClone(object) {
+    const quaternion = new three.Quaternion();
+    object?.getWorldQuaternion?.(quaternion);
+    return quaternion;
+}
+
+function captureHoldRotationState(object) {
+    if (!object?.userData || !object.rotation) return;
+    object.updateMatrixWorld(true);
+    const worldQuaternion = getWorldQuaternionClone(object);
+    object.userData.rotationBeforeHold = object.rotation.clone();
+    object.userData.worldQuaternionBeforeHold = worldQuaternion.clone();
+
+    if (isChemicalBottleObject(object) && !object.userData.chemicalBottleUprightWorldQuaternion) {
+        object.userData.chemicalBottleUprightWorldQuaternion =
+            object.userData.originalWorldQuaternion?.clone?.() || worldQuaternion.clone();
+    }
+}
+
+function restoreRotationAfterHoldDrop(object, wasManuallyRotated = false) {
+    if (!object?.userData || !object.rotation) return false;
+
+    const applyWorldQuaternion = (quaternion) => {
+        if (!quaternion?.isQuaternion) return false;
+        object.quaternion.copy(quaternion);
+        object.rotation.setFromQuaternion(object.quaternion, object.rotation.order || 'YXZ');
+        object.updateMatrixWorld(true);
+        return true;
+    };
+
+    if (isChemicalBottleObject(object)) {
+        object.userData.keepManualRotation = false;
+        object.userData.wasManuallyRotated = false;
+        return applyWorldQuaternion(
+            object.userData.chemicalBottleUprightWorldQuaternion ||
+            object.userData.originalWorldQuaternion ||
+            object.userData.worldQuaternionBeforeHold
+        );
+    }
+
+    if (wasManuallyRotated) return false;
+
+    if (applyWorldQuaternion(object.userData.worldQuaternionBeforeHold)) return true;
+
+    if (object.userData.rotationBeforeHold) {
+        object.rotation.copy(object.userData.rotationBeforeHold);
+        object.updateMatrixWorld(true);
+        return true;
+    }
+
+    object.rotation.set(
+        object.userData.defaultRotationX || 0,
+        object.userData.defaultRotationY || 0,
+        object.userData.defaultRotationZ || 0
+    );
+    object.updateMatrixWorld(true);
+    return true;
+}
+
+function hasToolCapability(obj, capability) {
+    const capabilities = obj?.userData?.capabilities || obj?.userData?.toolData?.capabilities || [];
+    return Array.isArray(capabilities) && capabilities.includes(capability);
+}
+
+function isPourReceiver(obj) {
+    if (!obj?.userData?.toolData) return false;
+    if (obj.userData.isHeatingSource || obj.userData.isSupportStand || obj.userData.canSupportTools) return false;
+
+    const toolType = String(obj.userData.toolType || obj.userData.tool_type || obj.userData.toolData?.tool_type || '').toLowerCase();
+    if (toolType === 'container' || toolType === 'dropping_funnel') return true;
+
+    return hasToolCapability(obj, 'receive_liquid') ||
+        hasToolCapability(obj, 'contain_liquid') ||
+        hasToolCapability(obj, 'contain_solid') ||
+        hasToolCapability(obj, 'react');
+}
+
 function getChemicalId(obj) {
     return obj?.userData?.current_chemical_id || obj?.userData?.id_chemical || obj?.userData?.chemicalId || null;
 }
@@ -95,6 +178,15 @@ function getChemicalColor(obj) {
 
 function getPhysicalState(obj) {
     return obj?.userData?.current_physical_state || obj?.userData?.physical_state || obj?.userData?.physicalState || obj?.userData?.state || 'Lỏng';
+}
+
+function getVisiblePourAmount(quantity = {}) {
+    const amount = Number(quantity.amount);
+    const unit = String(quantity.unit || 'ml').toLowerCase();
+    if (!Number.isFinite(amount) || amount <= 0) return 0.07;
+    if (unit.includes('ml')) return three.MathUtils.clamp(amount * 0.014, 0.07, 0.24);
+    if (unit.includes('l')) return three.MathUtils.clamp(amount * 0.35, 0.08, 0.3);
+    return three.MathUtils.clamp(amount * 0.018, 0.05, 0.18);
 }
 
 function rememberContainerContents(container, ...items) {
@@ -530,6 +622,28 @@ function rotateToolObject(object, dx = 0, dy = 0, dz = 0, currentMode = 'normal'
     return true;
 }
 
+function translateToolObject(object, worldDelta, options = {}) {
+    if (!object?.isObject3D || !worldDelta) return false;
+    if (worldDelta.lengthSq?.() === 0) return false;
+
+    const savedScale = getSavedScale(object);
+    if (options.detachAssembly !== false) {
+        releaseHeatingSnapIfNeeded(object);
+    }
+
+    moveObjectByWorldDelta(object, worldDelta);
+    if (options.keepAboveTable !== false) {
+        keepObjectAboveTable(object, getTableSurfaceY(), 0);
+    }
+
+    restoreCustomScale(object, savedScale);
+    rememberCustomScale(object, savedScale);
+    updateOffsetToFloor(object);
+    if (pouringEffect) pouringEffect.invalidateCavity(object);
+    object.updateMatrixWorld(true);
+    return true;
+}
+
 
 function toggleHeatingForObject(object) {
     if (!canToggleHeatingSource(object)) {
@@ -550,32 +664,39 @@ function isHeatingSourceObject(object) {
     return object?.userData?.isHeatingSource === true;
 }
 
+function isAutoAssemblySnapEnabled() {
+    return window.ENABLE_AUTO_ASSEMBLY_SNAP === true;
+}
+
+function isAutoCollisionSeparationEnabled() {
+    return window.ENABLE_AUTO_COLLISION_SEPARATION === true;
+}
+
 function snapToHeatingSourceIfNear(object) {
+    if (!isAutoAssemblySnapEnabled()) {
+        if (object?.userData?.isUnderSupportStand) releaseHeatingSourceFromSupportStand(object);
+        return false;
+    }
+
     const tryAssemblyConnect = () => {
-        const connection = window.labAssemblyManager?.tryAutoConnect?.(object, draggableObjects, { maxDistance: 0.55 });
+        const connection = window.labAssemblyManager?.tryAutoConnect?.(object, draggableObjects, { maxDistance: 0.9 });
         if (connection && pouringEffect) pouringEffect.invalidateCavity(object);
         return Boolean(connection);
     };
+
+    if (tryAssemblyConnect()) return true;
 
     if (isHeatingSourceObject(object)) {
         // NEW HEATING RULE:
         // Không tự snap/đẩy/căn nguồn nhiệt vào giá đỡ hoặc dụng cụ cần đun.
         // Người dùng tự đặt nguồn nhiệt ở đâu thì giữ nguyên ở đó.
         if (object.userData?.isUnderSupportStand) releaseHeatingSourceFromSupportStand(object);
-        console.log('[HeatingSnap] heating source auto placement disabled:', object.name || object.userData?.toolData?.name_tool_vi || object.uuid);
         return false;
     }
-    if (!isHeatingContainer(object)) return tryAssemblyConnect();
-    const snappedToSupport = autoSnapContainerToNearestSupportStand(object, draggableObjects, { maxDistance: 1.0 });
-    const connected = tryAssemblyConnect();
-    if (snappedToSupport) {
-        if (pouringEffect) pouringEffect.invalidateCavity(object);
-        return true;
-    }
+    if (!isHeatingContainer(object)) return false;
 
     // Không snap container vào nguồn nhiệt nữa. HeatingManager chỉ kiểm tra vị trí thực tế.
-    autoSnapContainerToNearestHeatingSource(object, draggableObjects, { maxDistance: 1.0 });
-    return connected;
+    return false;
 }
 
 function releaseHeatingSnapIfNeeded(object) {
@@ -586,11 +707,48 @@ function releaseHeatingSnapIfNeeded(object) {
     if (object.userData.isUnderSupportStand) releaseHeatingSourceFromSupportStand(object);
 }
 
-function resolvePlacementOverlapAfterLegacyLogic(object) {
+function toolDisplayName(object) {
+    return object?.userData?.toolData?.name_tool_vi ||
+        object?.userData?.toolData?.name_tool_en ||
+        object?.userData?.name_vi ||
+        object?.name ||
+        'dụng cụ';
+}
+
+function toggleManualAssembly(object) {
+    if (!object?.isObject3D) return false;
+
+    if (object.userData?.isAssemblySnapped || object.userData?.assemblyConnections?.length) {
+        releaseHeatingSnapIfNeeded(object);
+        updateOffsetToFloor(object);
+        triggerMascotSpeech?.(`Đã tháo ${toolDisplayName(object)} khỏi vị trí lắp.`);
+        return true;
+    }
+
+    const connection = window.labAssemblyManager?.tryAutoConnect?.(object, draggableObjects, { maxDistance: 1.15 });
+    if (!connection) {
+        triggerMascotSpeech?.('Chưa có điểm lắp hợp lệ gần dụng cụ này. Hãy đưa dụng cụ lại gần cổ bình, giá đỡ, ống dẫn hoặc vị trí cần gắn rồi bấm M.');
+        return false;
+    }
+
+    updateOffsetToFloor(object);
+    resolvePlacementOverlapAfterLegacyLogic(object);
+    if (pouringEffect) pouringEffect.invalidateCavity(object);
+    triggerMascotSpeech?.(`Đã lắp ${toolDisplayName(object)} vào vị trí phù hợp.`);
+    return true;
+}
+
+function resolvePlacementOverlapAfterLegacyLogic(object, options = {}) {
     if (!object?.isObject3D) return;
     const savedScale = getSavedScale(object);
 
     if (object.userData?.isOnSupportStand && object.userData?.supportStand) {
+        if (object.userData?.isAssemblySnapped && window.labAssemblyManager?.enforceConnectionPlacement?.(object)) {
+            restoreCustomScale(object, savedScale);
+            rememberCustomScale(object, savedScale);
+            object.updateMatrixWorld(true);
+            return;
+        }
         // Dụng cụ trên giá đỡ phải bám tâm/slot của support anchor.
         // Không dùng collision push tự do vì dễ làm lệch khỏi tâm giá đỡ.
         applySupportSlotOffset(object, object.userData.supportStand);
@@ -600,10 +758,13 @@ function resolvePlacementOverlapAfterLegacyLogic(object) {
         return;
     }
 
-    resolveObjectOverlap(object, draggableObjects, {
-        padding: 0.08,
-        maxIterations: 5
-    });
+    const allowCollisionSeparation = options.allowCollisionSeparation ?? isAutoCollisionSeparationEnabled();
+    if (allowCollisionSeparation) {
+        resolveObjectOverlap(object, draggableObjects, {
+            padding: 0.08,
+            maxIterations: 5
+        });
+    }
 
     restoreCustomScale(object, savedScale);
     rememberCustomScale(object, savedScale);
@@ -614,6 +775,7 @@ export let pouringEffect;
 let lastPouredTarget = null;
 let isPouringAction = false;
 let activePourSource = null;
+let selectedDirectPourSource = null;
 export const pouringState = { currentPourTargetPos: null }; // Sử dụng object state chuẩn
 
 // Nhóm đại diện cho 2 tay người chơi, gắn vào camera
@@ -724,6 +886,15 @@ export function registerDraggableObject(obj) {
         const worldQuat = new three.Quaternion();
         obj.getWorldQuaternion(worldQuat);
         obj.userData.originalQuaternion = worldQuat.clone();
+        obj.userData.originalWorldQuaternion ??= worldQuat.clone();
+    } else if (!obj.userData.originalWorldQuaternion && obj.userData.originalQuaternion?.isQuaternion) {
+        obj.userData.originalWorldQuaternion = obj.userData.originalQuaternion.clone();
+    }
+    if (isChemicalBottleObject(obj) && !obj.userData.chemicalBottleUprightWorldQuaternion) {
+        obj.userData.chemicalBottleUprightWorldQuaternion =
+            obj.userData.originalWorldQuaternion?.clone?.() ||
+            obj.userData.originalQuaternion?.clone?.() ||
+            getWorldQuaternionClone(obj);
     }
 
     if (obj.userData.offsetToFloor === undefined) {
@@ -764,6 +935,7 @@ export function registerDraggableObject(obj) {
 export function initInteractionEvents(camera, controlsManager, scene) {
     const { orbit, fps } = controlsManager;
     const contextmenu = document.getElementById('context-menu');
+    const crosshair = document.getElementById('crosshair');
     pouringEffect = new PouringEffect(scene);
 
     // Thêm 2 tay vào camera
@@ -781,6 +953,202 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     };
 
     // --- LOGIC CẦM NẮM (FPS) ---
+    const ensureFpsAimLabel = () => {
+        let label = document.getElementById('fps-aim-label');
+        if (label) return label;
+
+        label = document.createElement('div');
+        label.id = 'fps-aim-label';
+        label.className = 'hidden pointer-events-none fixed left-1/2 z-50 rounded bg-black/70 px-2 py-1 text-xs font-semibold text-white shadow-lg';
+        label.style.top = 'calc(50% + 18px)';
+        label.style.transform = 'translateX(-50%)';
+        document.body.appendChild(label);
+        return label;
+    };
+
+    const fpsAimLabel = ensureFpsAimLabel();
+    const crosshairDot = crosshair?.querySelector?.('div') || null;
+
+    const getAimLabelText = (object) => {
+        const instanceId = object?.userData?.instanceId || object?.userData?.toolData?.id_tool || object?.uuid;
+        const suffix = instanceId ? ` #${String(instanceId).slice(-4)}` : '';
+        return `${toolDisplayName(object)}${suffix}`;
+    };
+
+    const updateFpsAimIndicator = () => {
+        requestAnimationFrame(updateFpsAimIndicator);
+
+        if (!fps.isLocked) {
+            window.currentFpsAimTool = null;
+            window.currentFpsAimHit = null;
+            fpsAimLabel.classList.add('hidden');
+            if (crosshairDot) {
+                crosshairDot.style.backgroundColor = '';
+                crosshairDot.style.transform = '';
+            }
+            return;
+        }
+
+        raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+        const oldFar = raycaster.far;
+        raycaster.far = 6;
+        const intersects = raycaster.intersectObjects(getInteractionCandidates(), true);
+        raycaster.far = oldFar;
+
+        const hit = intersects.find(item => resolveDraggableRoot(item.object));
+        const aimedTool = hit ? resolveDraggableRoot(hit.object) : null;
+        window.currentFpsAimTool = aimedTool;
+        window.currentFpsAimHit = hit || null;
+
+        if (!aimedTool) {
+            fpsAimLabel.classList.add('hidden');
+            if (crosshairDot) {
+                crosshairDot.style.backgroundColor = '';
+                crosshairDot.style.transform = '';
+            }
+            return;
+        }
+
+        fpsAimLabel.textContent = getAimLabelText(aimedTool);
+        fpsAimLabel.classList.remove('hidden');
+        if (crosshairDot) {
+            crosshairDot.style.backgroundColor = '#22d3ee';
+            crosshairDot.style.transform = 'scale(1.8)';
+        }
+    };
+
+    updateFpsAimIndicator();
+
+    function getPourSourceWorldPoint(sourceObj) {
+        const pourPoint = new three.Vector3();
+        if (!sourceObj?.isObject3D) return pourPoint;
+
+        sourceObj.updateMatrixWorld(true);
+        if (sourceObj.userData?.pourAnchor) {
+            pourPoint.copy(sourceObj.userData.pourAnchor).applyMatrix4(sourceObj.matrixWorld);
+            return pourPoint;
+        }
+
+        const box = new three.Box3().setFromObject(sourceObj);
+        pourPoint.set((box.min.x + box.max.x) / 2, box.max.y, (box.min.z + box.max.z) / 2);
+        return pourPoint;
+    }
+
+    function getDirectPourAimedTool() {
+        return fps.isLocked ? (window.currentFpsAimTool || null) : (selectedObjectForMenu || null);
+    }
+
+    function findFpsPourReceiverUnderCrosshair(sourceObj = null) {
+        if (!fps.isLocked) return null;
+
+        const receivers = getInteractionCandidates().filter(obj =>
+            obj &&
+            obj !== sourceObj &&
+            isPourReceiver(obj)
+        );
+        if (!receivers.length) return null;
+
+        raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+        const oldFar = raycaster.far;
+        raycaster.far = 8;
+        const hits = raycaster.intersectObjects(receivers, true);
+        raycaster.far = oldFar;
+
+        for (const hit of hits) {
+            const root = resolveDraggableRoot(hit.object);
+            if (root && root !== sourceObj && isPourReceiver(root)) return root;
+        }
+        return null;
+    }
+
+    function getPreferredPourTargetForSource(sourceObj = null) {
+        const crosshairTarget = findFpsPourReceiverUnderCrosshair(sourceObj);
+        if (crosshairTarget) return crosshairTarget;
+
+        const aimedTool = getDirectPourAimedTool();
+        if (aimedTool && aimedTool !== sourceObj && isPourReceiver(aimedTool)) return aimedTool;
+
+        return null;
+    }
+
+    function setDirectPourSource(sourceObj) {
+        if (selectedDirectPourSource?.userData) {
+            selectedDirectPourSource.userData.isDirectPourSource = false;
+        }
+        selectedDirectPourSource = sourceObj || null;
+        if (selectedDirectPourSource?.userData) {
+            selectedDirectPourSource.userData.isDirectPourSource = true;
+        }
+    }
+
+    function clearDirectPourSource(message = null) {
+        setDirectPourSource(null);
+        if (message) triggerMascotSpeech?.(message);
+    }
+
+    function previewDirectPour(sourceObj, targetObj, targetMouthPos) {
+        if (!pouringEffect || !sourceObj || !targetObj) return;
+
+        const pourPoint = getPourSourceWorldPoint(sourceObj);
+        pouringEffect.startPouring(
+            pourPoint,
+            getChemicalColor(sourceObj),
+            getChemicalName(sourceObj),
+            getChemicalType(sourceObj),
+            getPhysicalState(sourceObj)
+        );
+        pouringEffect.emit(pourPoint);
+        pouringState.currentPourTargetPos = targetMouthPos.clone();
+
+        window.setTimeout(() => {
+            if (!isPouringAction) {
+                pouringEffect.stop();
+                pouringState.currentPourTargetPos = null;
+            }
+        }, 450);
+    }
+
+    async function pourDirectlyIntoTarget(sourceObj, targetObj) {
+        if (!isPourSource(sourceObj) || !isPourReceiver(targetObj) || sourceObj === targetObj) return false;
+
+        const targetMouthPos = getContainerEffectPosition(targetObj);
+        previewDirectPour(sourceObj, targetObj, targetMouthPos);
+        await handlePourSuccess(sourceObj, targetObj, targetMouthPos, { direct: true });
+        return true;
+    }
+
+    async function handleDirectPourCommand() {
+        if (heldObjectRight || heldObjectLeft || draggedObject) return false;
+
+        const aimedTool = getDirectPourAimedTool();
+
+        if (!selectedDirectPourSource || !selectedDirectPourSource.parent) {
+            if (isPourSource(aimedTool)) {
+                setDirectPourSource(aimedTool);
+                triggerMascotSpeech?.(`Đã chọn nguồn rót: ${getChemicalName(aimedTool)}. Nhắm vào cốc/bình/ống nghiệm muốn nhận rồi bấm P hoặc Space.`);
+                return true;
+            }
+
+            triggerMascotSpeech?.('Hãy nhắm vào chai/lọ hoặc dụng cụ đang chứa hóa chất rồi bấm P để chọn nguồn rót.');
+            return false;
+        }
+
+        if (aimedTool && aimedTool !== selectedDirectPourSource && isPourSource(aimedTool) && !isPourReceiver(aimedTool)) {
+            setDirectPourSource(aimedTool);
+            triggerMascotSpeech?.(`Đã đổi nguồn rót sang: ${getChemicalName(aimedTool)}. Nhắm vào dụng cụ nhận rồi bấm P hoặc Space.`);
+            return true;
+        }
+
+        const target = getPreferredPourTargetForSource(selectedDirectPourSource);
+        if (!target) {
+            triggerMascotSpeech?.(`Đang chọn nguồn rót ${getChemicalName(selectedDirectPourSource)}. Hãy nhắm đúng vào dụng cụ nhận rồi bấm P hoặc Space.`);
+            return false;
+        }
+
+        await pourDirectlyIntoTarget(selectedDirectPourSource, target);
+        return true;
+    }
+
     const handleHandInteraction = (isRightHand = true) => {
         let currentHeld = isRightHand ? heldObjectRight : heldObjectLeft;
         const arm = isRightHand ? rightArm : leftArm;
@@ -788,24 +1156,13 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (currentHeld) {
             // Thả vật thể về Scene. Lưu scale/rotation trước khi attach để không lấy rotation tay/camera làm rotation cuối.
             const savedScale = getSavedScale(currentHeld);
-            const rotationBeforeHold = currentHeld.userData.rotationBeforeHold?.clone?.();
             const wasManuallyRotated = currentHeld.userData.wasManuallyRotated === true;
 
             attachKeepWorldTransform(scene, currentHeld);
 
             // Nếu người dùng KHÔNG chủ động xoay dụng cụ trong lúc cầm, trả về rotation trước khi cầm.
             // Không gọi invalidateCavity ở đây vì chỉ đổi parent/rotation; liquid volume vẫn bám theo dụng cụ.
-            if (!wasManuallyRotated) {
-                if (rotationBeforeHold) {
-                    currentHeld.rotation.copy(rotationBeforeHold);
-                } else {
-                    currentHeld.rotation.set(
-                        currentHeld.userData.defaultRotationX || 0,
-                        currentHeld.userData.defaultRotationY || 0,
-                        currentHeld.userData.defaultRotationZ || 0
-                    );
-                }
-            }
+            restoreRotationAfterHoldDrop(currentHeld, wasManuallyRotated);
             restoreCustomScale(currentHeld, savedScale);
             rememberCustomScale(currentHeld, savedScale);
             currentHeld.updateMatrixWorld(true);
@@ -870,6 +1227,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             // Sau khi thả xong, lần cầm sau sẽ bắt đầu trạng thái manual mới.
             delete currentHeld.userData.rotationBeforeHold;
+            delete currentHeld.userData.worldQuaternionBeforeHold;
             currentHeld.userData.wasManuallyRotated = false;
 
             if (isRightHand) heldObjectRight = null;
@@ -894,8 +1252,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
                 // Lưu rotation thực tế trước khi gắn vào tay. Rotation tay/camera chỉ dùng để hiển thị lúc đang cầm,
                 // không được trở thành rotation cuối khi thả nếu người dùng không xoay thủ công.
-                root.userData.rotationBeforeHold = root.rotation.clone();
+                captureHoldRotationState(root);
                 root.userData.wasManuallyRotated = false;
+                if (isChemicalBottleObject(root)) root.userData.keepManualRotation = false;
                 if (root.userData.defaultRotationX === undefined) root.userData.defaultRotationX = root.rotation.x || 0;
                 if (root.userData.defaultRotationY === undefined) root.userData.defaultRotationY = root.rotation.y || 0;
                 if (root.userData.defaultRotationZ === undefined) root.userData.defaultRotationZ = root.rotation.z || 0;
@@ -962,7 +1321,39 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         // nên khi đang kéo vật khác mà nhấn phím xoay thì nguồn nhiệt bị xoay.
         // draggedObject phải đứng trước selectedObjectForMenu.
         if (toolRotateState.targetTool) return toolRotateState.targetTool;
+        if (fps.isLocked) {
+            return heldObjectRight ||
+                heldObjectLeft ||
+                draggedObject ||
+                window.currentFpsAimTool ||
+                getRaycastToolUnderPointer(event) ||
+                selectedObjectForMenu;
+        }
         return heldObjectRight || heldObjectLeft || draggedObject || selectedObjectForMenu || getRaycastToolUnderPointer(event);
+    };
+
+    const getKeyboardMoveDelta = (event) => {
+        const step = event.shiftKey ? 0.25 : (event.altKey ? 0.025 : 0.08);
+        const moveKey = event.key.toLowerCase();
+        const forward = new three.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+        forward.y = 0;
+        if (forward.lengthSq() < 0.0001) forward.set(0, 0, -1);
+        forward.normalize();
+
+        const right = new three.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        right.y = 0;
+        if (right.lengthSq() < 0.0001) right.set(1, 0, 0);
+        right.normalize();
+
+        switch (moveKey) {
+            case 'arrowleft': return right.multiplyScalar(-step);
+            case 'arrowright': return right.multiplyScalar(step);
+            case 'arrowup': return forward.multiplyScalar(step);
+            case 'arrowdown': return forward.multiplyScalar(-step);
+            case 'f': return new three.Vector3(0, step, 0);
+            case 'g': return new three.Vector3(0, -step, 0);
+            default: return null;
+        }
     };
 
     const beginToolRotate = (axis, event = null) => {
@@ -971,6 +1362,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         toolRotateState.activeAxis = axis;
         toolRotateState.isDragging = true;
         toolRotateState.targetTool = tool;
+        selectedObjectForMenu = tool;
         orbit.enabled = false;
         markToolManuallyRotated(tool);
         contextmenu?.classList?.add('hidden');
@@ -994,6 +1386,41 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const axisByModifier = { r: 'y', t: 'x', y: 'z' };
         const axis = axisByModifier[key];
         const activeTool = getActiveToolForRotation();
+        const moveDelta = activeTool ? getKeyboardMoveDelta(e) : null;
+
+        if (key === 'escape' && selectedDirectPourSource) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            clearDirectPourSource('Đã hủy nguồn rót đang chọn.');
+            return;
+        }
+
+        if (key === 'p' && !e.repeat) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            handleDirectPourCommand().catch(error => console.error('[DirectPour] failed:', error));
+            return;
+        }
+
+        if (key === 'm' && activeTool) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            selectedObjectForMenu = activeTool;
+            toggleManualAssembly(activeTool);
+            return;
+        }
+
+        if (moveDelta && activeTool) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            selectedObjectForMenu = activeTool;
+            const isHeld = activeTool === heldObjectRight || activeTool === heldObjectLeft;
+            translateToolObject(activeTool, moveDelta, { detachAssembly: !isHeld });
+            if (!isHeld) {
+                resolvePlacementOverlapAfterLegacyLogic(activeTool);
+            }
+            return;
+        }
 
         if (axis && activeTool) {
             e.preventDefault();
@@ -1014,6 +1441,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             e.preventDefault();
             e.stopImmediatePropagation();
             const [stepAxis, amount] = stepMap[key];
+            selectedObjectForMenu = activeTool;
             rotateToolObject(
                 activeTool,
                 stepAxis === 'x' ? amount : 0,
@@ -1085,7 +1513,13 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (isEditableTarget(e)) return;
         if (e.code === 'Space') {
             const heldObj = heldObjectRight || heldObjectLeft || draggedObject; // Kiểm tra cả tay và chuột
-            if (!heldObj) return;
+            if (!heldObj) {
+                if (e.repeat) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                handleDirectPourCommand().catch(error => console.error('[DirectPour] failed:', error));
+                return;
+            }
 
             // Chống spam gọi API/Spam Space liên tục (1 giây cooldown)
             const now = performance.now();
@@ -1102,13 +1536,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 // Animation xoay lọ sẽ được xử lý liên tục trong updateArmsAnimation
 
                 // Xác định điểm đổ (miệng lọ) dựa trên thực tế xoay
-                let pourPoint = new three.Vector3();
-                if (heldObj.userData.pourAnchor) {
-                    pourPoint.copy(heldObj.userData.pourAnchor).applyMatrix4(heldObj.matrixWorld);
-                } else {
-                    const mouthOffset = new three.Vector3(0, 0.5, 0);
-                    pourPoint.copy(mouthOffset).applyMatrix4(heldObj.matrixWorld);
-                }
+                let pourPoint = getPourSourceWorldPoint(heldObj);
 
                 console.log({
                     chemical: getChemicalName(heldObj),
@@ -1555,7 +1983,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             // --- BƯỚC 3: SỬ DỤNG RAYCASTING ĐỂ "BUỘC" DÒNG CHẢY RƠI VÀO CỐC ---
             const allTargets = draggableObjects.filter(obj =>
-                obj && obj !== sourceObj && obj.userData.toolData
+                obj && obj !== sourceObj && isPourReceiver(obj)
             );
 
             // Tìm tâm mục tiêu gần nhất trước để định hướng dòng chảy
@@ -1593,8 +2021,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             let intersects = downRaycaster.intersectObjects(raycastTargets, true);
             let targetHit = null;
             let streamEnd = null;
+            const explicitTarget = getPreferredPourTargetForSource(sourceObj);
 
-            if (intersects.length > 0) {
+            if (explicitTarget) {
+                streamEnd = getContainerEffectPosition(explicitTarget);
+                targetHit = { object: explicitTarget, point: streamEnd };
+            }
+
+            if (!targetHit && intersects.length > 0) {
                 targetHit = intersects[0];
 
                 const targetObj =
@@ -1612,7 +2046,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     targetBox.max.y + 0.05, // Cao hơn miệng 1 chút để tạo tia đâm vào
                     targetCenter.z
                 );
-            } else {
+            } else if (!targetHit) {
                 // --- CƠ CHẾ TỰ ĐỘNG HÚT (MAGNETIC SNAP) CẢI TIẾN ---
                 // Tăng bán kính tìm kiếm lên 0.55m để dễ đổ trúng hơn
                 let bestDist = 0.55;
@@ -1741,6 +2175,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         rememberContainerContents(target, getChemicalName(source), getChemicalType(source), getChemicalId(source));
         addContainerComposition(target, getChemicalName(source), getChemicalType(source), getChemicalId(source));
+        pouringEffect.update?.(getContainerEffectPosition(target));
 
         return volume;
     }
@@ -1754,10 +2189,13 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     }
 
     // Hàm phụ xử lý khi đổ thành công
-    async function handlePourSuccess(source, target, targetMouthPos) {
+    async function handlePourSuccess(source, target, targetMouthPos, options = {}) {
         if (!target || !target.userData) return;
 
         const selectedQuantity = getSelectedQuantity(source);
+        const visualAmount = Number.isFinite(options.visualAmount)
+            ? options.visualAmount
+            : (options.direct ? getVisiblePourAmount(selectedQuantity) : 0.003);
         const pourRecord = recordPourAction({
             source,
             target,
@@ -1781,7 +2219,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (!targetChemType || targetId === sourceId) {
             addSourceContentToContainer(target, source, {
                 replaceIdentity: true,
-                forceSourceColor: true
+                forceSourceColor: true,
+                amount: visualAmount
             });
             if (hasActiveExperimentPlan() && pourRecord.recorded) {
                 const guidance = describeNextRequirement(target);
@@ -1823,7 +2262,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 if (!validation.ok) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
-                        forceSourceColor: false
+                        forceSourceColor: false,
+                        amount: visualAmount
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(validation.message || 'Thí nghiệm chưa đúng điều kiện nên phản ứng chưa xảy ra.');
@@ -1843,7 +2283,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 if (setupValidation && !setupValidation.ok) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
-                        forceSourceColor: false
+                        forceSourceColor: false,
+                        amount: visualAmount
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(setupValidation.message || 'Cần lắp đúng bộ dụng cụ trước khi phản ứng xảy ra.');
@@ -1854,7 +2295,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (isPendingReactionResult(reaction)) {
                 addSourceContentToContainer(target, source, {
                     replaceIdentity: false,
-                    forceSourceColor: false
+                    forceSourceColor: false,
+                    amount: visualAmount
                 });
                 storePendingReaction(target, reaction, source);
                 target.userData.isReacting = false;
@@ -1866,7 +2308,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (reaction?.has_reaction && reactionRequiresHeating(reaction) && !checkTemperature(target, reaction)) {
                 addSourceContentToContainer(target, source, {
                     replaceIdentity: false,
-                    forceSourceColor: false
+                    forceSourceColor: false,
+                    amount: visualAmount
                 });
                 storePendingReaction(target, {
                     pending_reaction: true,
@@ -1885,7 +2328,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 if (!conditionValidation.ok) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
-                        forceSourceColor: false
+                        forceSourceColor: false,
+                        amount: visualAmount
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(conditionValidation.message || 'Thí nghiệm chưa đủ điều kiện nên phản ứng chưa xảy ra.');
@@ -1895,7 +2339,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 if (!reactionValidation.ok) {
                     addSourceContentToContainer(target, source, {
                         replaceIdentity: false,
-                        forceSourceColor: false
+                        forceSourceColor: false,
+                        amount: visualAmount
                     });
                     target.userData.isReacting = false;
                     triggerMascotSpeech(reactionValidation.message || 'Phản ứng chưa khớp thí nghiệm đã chọn nên chưa được sinh ra.');
@@ -1927,7 +2372,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 });
 
                 // Bảo đảm phản ứng lỏng + rắn cũng có pha lỏng trong dụng cụ để hiển thị/tiếp tục trộn.
-                targetObject.userData.liquidLevel = (targetObject.userData.liquidLevel || 0) + 0.003;
+                targetObject.userData.liquidLevel = (targetObject.userData.liquidLevel || 0) + visualAmount;
                 if (targetObject.userData.liquidLevel > 0.8) targetObject.userData.liquidLevel = 0.8;
 
                 const volume = pouringEffect.getOrCreateVolume(targetObject);
@@ -2084,7 +2529,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 // nên khi cốc đang có chất rắn thì không hề tạo volume lỏng => nhìn như không đổ được lỏng vào rắn.
                 addSourceContentToContainer(target, source, {
                     replaceIdentity: false,
-                    forceSourceColor: false
+                    forceSourceColor: false,
+                    amount: visualAmount
                 });
                 target.userData.hasGasEffect = false;
                 pouringEffect.clearSmokeEffectForTarget?.(target);
@@ -2094,8 +2540,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         }
 
         // Tăng mực nước dâng lên khi đổ chất liên tục sau phản ứng thật.
-        target.userData.liquidLevel = (target.userData.liquidLevel || 0) + 0.003;
-        if (target.userData.liquidLevel > 0.8) target.userData.liquidLevel = 0.8;
+        if (!options.direct) {
+            target.userData.liquidLevel = (target.userData.liquidLevel || 0) + visualAmount;
+            if (target.userData.liquidLevel > 0.8) target.userData.liquidLevel = 0.8;
+        }
     }
 
     // --- LOGIC KÉO THẢ (MOUSE/ORBIT) ---
@@ -2181,6 +2629,13 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         // Luôn đảm bảo cao độ chuẩn xác
         draggedObject.position.y = targetY + (draggedObject.userData.offsetToFloor || 0);
+
+        if (isAutoAssemblySnapEnabled()) {
+            window.labAssemblyManager?.applySoftSnapPreview?.(draggedObject, draggableObjects, {
+                maxDistance: 0.9,
+                strength: 0.32
+            });
+        }
     });
 
     window.addEventListener('pointerup', () => {

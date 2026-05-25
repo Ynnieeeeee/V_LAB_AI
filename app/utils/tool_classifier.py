@@ -121,6 +121,15 @@ CLAMP_TOOL_KEYWORDS = (
     "bosshead",
 )
 
+STOPPER_KEYWORDS = (
+    "nut cao su",
+    "nut binh",
+    "nut day",
+    "rubber stopper",
+    "stopper",
+    "bung",
+)
+
 
 def normalize_text(value: str = "") -> str:
     normalized = unicodedata.normalize("NFD", value or "")
@@ -175,8 +184,12 @@ def _container_meta() -> dict:
         },
         attach_points={
             "bottom": {"type": "support_target", "offset": [0, -0.5, 0]},
+            "bottom_slot": {"type": "support_target", "offset": [0, -0.5, 0]},
+            "center_slot": {"type": "center_slot", "offset": [0, 0, 0]},
             "clamp_target": {"type": "clamp_target", "offset": [0, 0.45, 0]},
+            "holder_slot": {"type": "clamp_target", "offset": [0, 0.45, 0]},
             "heat_target": {"type": "heat_target", "offset": [0, -0.45, 0]},
+            "heat_slot": {"type": "heat_target", "offset": [0, -0.45, 0]},
         },
         assembly_role="reaction_vessel",
     )
@@ -189,8 +202,12 @@ def _support_meta() -> dict:
         capabilities=["support", "clamp", "heat_target"],
         attach_points={
             "support_top": {"type": "support_top", "offset": [0, 0.8, 0]},
+            "top_slot": {"type": "support_top", "offset": [0, 0.8, 0]},
+            "container_slot": {"type": "support_top", "offset": [0, 0.8, 0]},
             "clamp_point": {"type": "clamp_point", "offset": [0.3, 1.2, 0]},
+            "holder_slot": {"type": "clamp_point", "offset": [0.3, 1.2, 0]},
             "heat_target": {"type": "heat_target", "offset": [0, -0.35, 0]},
+            "heat_slot": {"type": "heat_target", "offset": [0, -0.35, 0]},
         },
         assembly_role="support",
     )
@@ -209,6 +226,8 @@ def _heating_source_meta() -> dict:
         capabilities=["heat"],
         attach_points={
             "heating_zone": {"type": "heating_zone", "offset": [0, 0.3, 0]},
+            "heat_slot": {"type": "heating_zone", "offset": [0, 0.3, 0]},
+            "top_slot": {"type": "heating_zone", "offset": [0, 0.3, 0]},
         },
         assembly_role="heating_source",
     )
@@ -255,6 +274,24 @@ def _gas_collector_meta() -> dict:
     )
 
 
+def _stopper_meta() -> dict:
+    return _base_meta(
+        "stopper",
+        capabilities=["seal", "connect_gas", "receive_liquid"],
+        ports={
+            "bottom": {"type": "liquid_out", "offset": [0, -0.5, 0]},
+            "opening": {"type": "liquid_in", "offset": [0, 0.5, 0]},
+            "gas_out": {"type": "gas_out", "offset": [0.5, 0.1, 0]},
+        },
+        attach_points={
+            "bottom_slot": {"type": "liquid_out", "offset": [0, -0.5, 0]},
+            "top_slot": {"type": "liquid_in", "offset": [0, 0.5, 0]},
+            "holder_slot": {"type": "clamp_target", "offset": [0, 0.15, 0]},
+        },
+        assembly_role="sealed_adapter",
+    )
+
+
 def _stirring_meta() -> dict:
     return _base_meta("stirring_tool", capabilities=["stir"], assembly_role="stirrer")
 
@@ -296,6 +333,9 @@ def classify_tool_by_name(name_vi: str = "", name_en: str = "") -> dict:
 
     if _contains_keyword(text_value, DROPPING_FUNNEL_KEYWORDS):
         return _dropping_funnel_meta()
+
+    if _contains_keyword(text_value, STOPPER_KEYWORDS):
+        return _stopper_meta()
 
     if _contains_keyword(text_value, GAS_TUBE_KEYWORDS):
         return _gas_tube_meta()
@@ -443,7 +483,7 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
             support_height = 0.8,
             support_radius = 1.0,
             capabilities = '["support","clamp","heat_target"]'::jsonb,
-            attach_points = '{"support_top":{"type":"support_top","offset":[0,0.8,0]},"clamp_point":{"type":"clamp_point","offset":[0.3,1.2,0]},"heat_target":{"type":"heat_target","offset":[0,-0.35,0]}}'::jsonb,
+            attach_points = '{"support_top":{"type":"support_top","offset":[0,0.8,0]},"top_slot":{"type":"support_top","offset":[0,0.8,0]},"container_slot":{"type":"support_top","offset":[0,0.8,0]},"clamp_point":{"type":"clamp_point","offset":[0.3,1.2,0]},"holder_slot":{"type":"clamp_point","offset":[0.3,1.2,0]},"heat_target":{"type":"heat_target","offset":[0,-0.35,0]},"heat_slot":{"type":"heat_target","offset":[0,-0.35,0]}}'::jsonb,
             assembly_role = 'support'
         WHERE (
             lower(name_tool_vi) LIKE '%giá đỡ%'
@@ -501,6 +541,30 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
     _safe_exec(session, f"""
         UPDATE {table_name}
         SET
+            tool_type = 'stopper',
+            is_heating_source = false,
+            heating_power = 0,
+            max_temperature = 25,
+            is_toggleable = false,
+            is_support_stand = false,
+            can_support_tools = false,
+            capabilities = '["seal","connect_gas","receive_liquid"]'::jsonb,
+            ports = '{"bottom":{"type":"liquid_out","offset":[0,-0.5,0]},"opening":{"type":"liquid_in","offset":[0,0.5,0]},"gas_out":{"type":"gas_out","offset":[0.5,0.1,0]}}'::jsonb,
+            attach_points = '{"bottom_slot":{"type":"liquid_out","offset":[0,-0.5,0]},"top_slot":{"type":"liquid_in","offset":[0,0.5,0]},"holder_slot":{"type":"clamp_target","offset":[0,0.15,0]}}'::jsonb,
+            assembly_role = 'sealed_adapter'
+        WHERE (tool_type IS NULL OR tool_type = 'unknown')
+          AND (
+            lower(name_tool_vi) LIKE '%nut cao su%'
+            OR lower(name_tool_vi) LIKE '%nut binh%'
+            OR lower(name_tool_en) LIKE '%rubber stopper%'
+            OR lower(name_tool_en) LIKE '%stopper%'
+            OR lower(name_tool_en) LIKE '%bung%'
+          )
+    """)
+
+    _safe_exec(session, f"""
+        UPDATE {table_name}
+        SET
             tool_type = 'gas_tube',
             capabilities = '["transfer_gas"]'::jsonb,
             ports = '{"gas_in":{"type":"gas_in","offset":[-0.5,0,0]},"gas_out":{"type":"gas_out","offset":[0.5,0,0]}}'::jsonb,
@@ -542,7 +606,7 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
             is_support_stand = false,
             can_support_tools = false,
             capabilities = '["heat"]'::jsonb,
-            attach_points = '{"heating_zone":{"type":"heating_zone","offset":[0,0.3,0]}}'::jsonb,
+            attach_points = '{"heating_zone":{"type":"heating_zone","offset":[0,0.3,0]},"heat_slot":{"type":"heating_zone","offset":[0,0.3,0]},"top_slot":{"type":"heating_zone","offset":[0,0.3,0]}}'::jsonb,
             assembly_role = 'heating_source'
         WHERE (tool_type IS NULL OR tool_type = 'unknown')
           AND (
@@ -571,7 +635,7 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
             can_support_tools = false,
             capabilities = '["contain_liquid","contain_solid","receive_liquid","react","heat_target"]'::jsonb,
             ports = '{"opening":{"type":"opening","offset":[0,1,0]},"gas_out":{"type":"gas_out","offset":[0.3,1,0]}}'::jsonb,
-            attach_points = '{"bottom":{"type":"support_target","offset":[0,-0.5,0]},"clamp_target":{"type":"clamp_target","offset":[0,0.45,0]},"heat_target":{"type":"heat_target","offset":[0,-0.45,0]}}'::jsonb,
+            attach_points = '{"bottom":{"type":"support_target","offset":[0,-0.5,0]},"bottom_slot":{"type":"support_target","offset":[0,-0.5,0]},"center_slot":{"type":"center_slot","offset":[0,0,0]},"clamp_target":{"type":"clamp_target","offset":[0,0.45,0]},"holder_slot":{"type":"clamp_target","offset":[0,0.45,0]},"heat_target":{"type":"heat_target","offset":[0,-0.45,0]},"heat_slot":{"type":"heat_target","offset":[0,-0.45,0]}}'::jsonb,
             assembly_role = 'reaction_vessel'
         WHERE (tool_type IS NULL OR tool_type = 'unknown')
           AND (

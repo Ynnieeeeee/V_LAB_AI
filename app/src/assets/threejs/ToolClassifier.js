@@ -54,6 +54,7 @@ const STIRRING_TOOL_KEYWORDS = ['dua thuy tinh', 'que khuay', 'glass rod', 'stir
 const MEASURING_TOOL_KEYWORDS = ['ong dong', 'ong do', 'ong chia vach', 'pipet', 'pipette', 'measuring cylinder', 'graduated cylinder', 'buret', 'burette'];
 const FUNNEL_KEYWORDS = ['pheu loc', 'pheu', 'filter funnel', 'funnel'];
 const CLAMP_TOOL_KEYWORDS = ['kep', 'kep ong nghiem', 'kep go', 'clamp', 'utility clamp', 'test tube clamp', 'bosshead'];
+const STOPPER_KEYWORDS = ['nut cao su', 'nut binh', 'nut day', 'rubber stopper', 'stopper', 'bung'];
 
 export function normalizeText(value = '') {
     return String(value || '')
@@ -114,8 +115,12 @@ function containerMeta() {
         },
         {
             bottom: { type: 'support_target', offset: [0, -0.5, 0] },
+            bottom_slot: { type: 'support_target', offset: [0, -0.5, 0] },
+            center_slot: { type: 'center_slot', offset: [0, 0, 0] },
             clamp_target: { type: 'clamp_target', offset: [0, 0.45, 0] },
-            heat_target: { type: 'heat_target', offset: [0, -0.45, 0] }
+            holder_slot: { type: 'clamp_target', offset: [0, 0.45, 0] },
+            heat_target: { type: 'heat_target', offset: [0, -0.45, 0] },
+            heat_slot: { type: 'heat_target', offset: [0, -0.45, 0] }
         },
         'reaction_vessel'
     );
@@ -128,8 +133,12 @@ function supportStandMeta() {
         {},
         {
             support_top: { type: 'support_top', offset: [0, 0.8, 0] },
+            top_slot: { type: 'support_top', offset: [0, 0.8, 0] },
+            container_slot: { type: 'support_top', offset: [0, 0.8, 0] },
             clamp_point: { type: 'clamp_point', offset: [0.3, 1.2, 0] },
-            heat_target: { type: 'heat_target', offset: [0, -0.35, 0] }
+            holder_slot: { type: 'clamp_point', offset: [0.3, 1.2, 0] },
+            heat_target: { type: 'heat_target', offset: [0, -0.35, 0] },
+            heat_slot: { type: 'heat_target', offset: [0, -0.35, 0] }
         },
         'support'
     );
@@ -141,7 +150,11 @@ function heatingSourceMeta() {
         'heating_source',
         ['heat'],
         {},
-        { heating_zone: { type: 'heating_zone', offset: [0, 0.3, 0] } },
+        {
+            heating_zone: { type: 'heating_zone', offset: [0, 0.3, 0] },
+            heat_slot: { type: 'heating_zone', offset: [0, 0.3, 0] },
+            top_slot: { type: 'heating_zone', offset: [0, 0.3, 0] }
+        },
         'heating_source'
     );
     return { ...meta, is_heating_source: true, heating_power: 8, max_temperature: 120, is_toggleable: true };
@@ -180,6 +193,24 @@ function gasCollectorMeta() {
         { gas_in: { type: 'gas_in', offset: [0, 0.8, 0] } },
         {},
         'gas_collector'
+    );
+}
+
+function stopperMeta() {
+    return baseMeta(
+        'stopper',
+        ['seal', 'connect_gas', 'receive_liquid'],
+        {
+            bottom: { type: 'liquid_out', offset: [0, -0.5, 0] },
+            opening: { type: 'liquid_in', offset: [0, 0.5, 0] },
+            gas_out: { type: 'gas_out', offset: [0.5, 0.1, 0] }
+        },
+        {
+            bottom_slot: { type: 'liquid_out', offset: [0, -0.5, 0] },
+            top_slot: { type: 'liquid_in', offset: [0, 0.5, 0] },
+            holder_slot: { type: 'clamp_target', offset: [0, 0.15, 0] }
+        },
+        'sealed_adapter'
     );
 }
 
@@ -226,6 +257,7 @@ export function classifyToolByName(nameVi = '', nameEn = '') {
     const text = normalizeText(`${nameVi} ${nameEn}`);
 
     if (hasKeyword(text, DROPPING_FUNNEL_KEYWORDS)) return droppingFunnelMeta();
+    if (hasKeyword(text, STOPPER_KEYWORDS)) return stopperMeta();
     if (hasKeyword(text, GAS_TUBE_KEYWORDS)) return gasTubeMeta();
     if (hasKeyword(text, GAS_COLLECTOR_KEYWORDS)) return gasCollectorMeta();
     if (isSupportStandName(text)) {

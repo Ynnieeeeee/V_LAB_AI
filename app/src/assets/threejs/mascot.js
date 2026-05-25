@@ -3,6 +3,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 let mascotModel;
 const MAX_MASCOT_MESSAGES = 8;
+const MASCOT_SCALE = 0.095;
+const MASCOT_BASE_POSITION = { x: 0.6, y: 0.0, z: -1.9 };
+const MASCOT_FLOAT_AMPLITUDE = 0.018;
 
 export function initMascot(scene, camera) {
     ensureMascotPanel();
@@ -10,10 +13,10 @@ export function initMascot(scene, camera) {
     const loader = new GLTFLoader();
     loader.load('./assets/models/mascot.glb', (gltf) => {
         mascotModel = gltf.scene;
-        mascotModel.scale.set(0.12, 0.12, 0.12);
+        mascotModel.scale.set(MASCOT_SCALE, MASCOT_SCALE, MASCOT_SCALE);
         camera.add(mascotModel);
-        mascotModel.position.set(0.73, 0, -1.8);
-        mascotModel.rotation.y = 0.2;
+        mascotModel.position.set(MASCOT_BASE_POSITION.x, MASCOT_BASE_POSITION.y, MASCOT_BASE_POSITION.z);
+        mascotModel.rotation.y = -0.2;
         console.log('Mascot loaded.');
     }, undefined, (error) => {
         console.error('Mascot model load error:', error);
@@ -103,8 +106,8 @@ window.ensureMascotPanel = ensureMascotPanel;
 export function updateMascot() {
     if (!mascotModel) return;
     const time = Date.now() * 0.002;
-    const floatOffset = Math.sin(time) * 0.03;
-    mascotModel.position.y = floatOffset;
+    const floatOffset = Math.sin(time) * MASCOT_FLOAT_AMPLITUDE;
+    mascotModel.position.y = MASCOT_BASE_POSITION.y + floatOffset;
 }
 
 document.addEventListener('DOMContentLoaded', ensureMascotPanel);

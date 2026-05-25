@@ -38,6 +38,16 @@ function getCenter(object) {
     return center;
 }
 
+function getBoxCenterAndSize(object) {
+    object?.updateMatrixWorld?.(true);
+    const box = new THREE.Box3().setFromObject(object);
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    return { box, center, size };
+}
+
 function isToggleableHeatingSource(source) {
     return Boolean(source?.userData?.isHeatingSource === true && source.userData.isToggleable === true);
 }
@@ -693,17 +703,18 @@ export class HeatingManager {
 
     findActiveHeatingSourceBelowContainer(container) {
         if (!isHeatTarget(container)) return null;
-        const containerPos = getWorldPosition(container);
+        const containerInfo = getBoxCenterAndSize(container);
+        const tableY = getTableSurfaceY();
         return this.heatingSources.find(source => {
             if (!source?.parent) return false;
             if (source.userData?.isHeatingSource !== true) return false;
             if (source.userData?.isOn !== true) return false;
 
-            const sourcePos = getWorldPosition(source);
-            const dx = sourcePos.x - containerPos.x;
-            const dz = sourcePos.z - containerPos.z;
+            const sourceInfo = getBoxCenterAndSize(source);
+            const dx = sourceInfo.center.x - containerInfo.center.x;
+            const dz = sourceInfo.center.z - containerInfo.center.z;
             const horizontalDist = Math.sqrt(dx * dx + dz * dz);
-            const sourceBelow = sourcePos.y < containerPos.y;
+            const sourceBelow = sourceInfo.center.y < containerInfo.center.y && sourceInfo.box.min.y >= tableY - 0.08;
 
             return horizontalDist < 0.8 && sourceBelow;
         }) || null;
@@ -711,16 +722,16 @@ export class HeatingManager {
 
     findActiveHeatingSourceUnderSupport(support) {
         if (!canSupportTools(support)) return null;
-        const supportPos = getWorldPosition(support);
+        const supportInfo = getBoxCenterAndSize(support);
         return this.heatingSources.find(source => {
             if (!source?.parent) return false;
             if (source.userData?.isHeatingSource !== true) return false;
             if (source.userData?.isOn !== true) return false;
-            const sourcePos = getWorldPosition(source);
-            const dx = sourcePos.x - supportPos.x;
-            const dz = sourcePos.z - supportPos.z;
+            const sourceInfo = getBoxCenterAndSize(source);
+            const dx = sourceInfo.center.x - supportInfo.center.x;
+            const dz = sourceInfo.center.z - supportInfo.center.z;
             const horizontalDist = Math.sqrt(dx * dx + dz * dz);
-            const sourceBelow = sourcePos.y < supportPos.y + 0.2;
+            const sourceBelow = sourceInfo.center.y < supportInfo.center.y + 0.2;
             return horizontalDist < 0.8 && sourceBelow;
         }) || null;
     }

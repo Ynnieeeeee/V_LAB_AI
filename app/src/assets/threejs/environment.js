@@ -63,6 +63,9 @@ export function initEnvironment(scene) {
     });
 
     scene.add(tableGroup);
+    window.tableObject = tableGroup;
+    window.labTable = tableGroup;
+    window.TABLE_Y = 1.6;
 
     // Sàn
     const grid = new three.GridHelper(20, 20, 0xCFECF3, 0x1e293b);
