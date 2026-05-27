@@ -1,7 +1,8 @@
 import * as three from 'three';
 import { triggerMascotSpeech } from './mascot.js';
-import { PouringEffect, getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
-import { detectReaction } from './reactionRules.js?v=20260525-bottle-display-scale';
+import { PouringEffect, getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-anchored-fill';
+import { detectReaction } from './reactionRules.js?v=20260527-liquid-anchored-fill';
+import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
 import {
     getSelectedQuantity,
     recordPourAction,
@@ -1599,9 +1600,36 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     const downRaycaster = new three.Raycaster();
     const downVector = new three.Vector3(0, -1, 0);
 
+    function getFilteredCavityPoints(container) {
+        const rawPoints = (container?.userData?.cavityPoints || []).filter(p =>
+            Number.isFinite(p?.lx) &&
+            Number.isFinite(p?.lz) &&
+            Number.isFinite(p?.lyTop) &&
+            Number.isFinite(p?.lyBottom) &&
+            p.lyTop > p.lyBottom
+        );
+        if (!rawPoints.length) return rawPoints;
+        return container?.userData?.cavitySource === 'csg_scaled_model' || container?.userData?.cavityCSG
+            ? selectDominantCavityPoints(rawPoints)
+            : rawPoints;
+    }
+
     function getContainerEffectPosition(container) {
         if (!container) return new three.Vector3();
         container.updateMatrixWorld(true);
+        const cavityPoints = getFilteredCavityPoints(container);
+        if (cavityPoints.length > 0) {
+            const box = new three.Box3();
+            let topY = -Infinity;
+            cavityPoints.forEach(point => {
+                box.expandByPoint(new three.Vector3(point.lx, 0, point.lz));
+                topY = Math.max(topY, point.lyTop);
+            });
+            if (!box.isEmpty() && Number.isFinite(topY)) {
+                const center = box.getCenter(new three.Vector3());
+                return new three.Vector3(center.x, topY + 0.035, center.z).applyMatrix4(container.matrixWorld);
+            }
+        }
         const box = new three.Box3().setFromObject(container);
         const center = new three.Vector3();
         box.getCenter(center);
@@ -2167,7 +2195,6 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         queueLiquidLevelRise(target, options.amount || 0.003, { direct: options.direct });
 
         const volume = pouringEffect.getOrCreateVolume(target);
-        volume.position.set(0, 0, 0);
         target.userData.hasGasEffect = false;
         target.userData.hasSmokeEffect = false;
         volume.userData.hasGasEffect = false;
@@ -2943,7 +2970,16 @@ function ensureLocalEffectGroup(container, name = 'local_reaction_effects') {
 }
 
 function getCavityLocalInfo(container) {
-    const points = container?.userData?.cavityPoints || [];
+    const rawPoints = (container?.userData?.cavityPoints || []).filter(p =>
+        Number.isFinite(p?.lx) &&
+        Number.isFinite(p?.lz) &&
+        Number.isFinite(p?.lyTop) &&
+        Number.isFinite(p?.lyBottom) &&
+        p.lyTop > p.lyBottom
+    );
+    const points = container?.userData?.cavitySource === 'csg_scaled_model' || container?.userData?.cavityCSG
+        ? selectDominantCavityPoints(rawPoints)
+        : rawPoints;
     const toolLocalBox = getToolLocalMeshBox(container);
     const toolCenter = toolLocalBox?.getCenter?.(new three.Vector3());
 
@@ -2958,9 +2994,10 @@ function getCavityLocalInfo(container) {
             maxY = Math.max(maxY, p.lyTop);
         });
         if (isFinite(minY) && isFinite(maxY) && !box.isEmpty()) {
+            const center = box.getCenter(new three.Vector3());
             return {
-                centerX: toolCenter?.x ?? (box.min.x + box.max.x) * 0.5,
-                centerZ: toolCenter?.z ?? (box.min.z + box.max.z) * 0.5,
+                centerX: center.x,
+                centerZ: center.z,
                 radiusX: Math.max((box.max.x - box.min.x) * 0.28, 0.035),
                 radiusZ: Math.max((box.max.z - box.min.z) * 0.28, 0.035),
                 bottomY: minY + 0.015,

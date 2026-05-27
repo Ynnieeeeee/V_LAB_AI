@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { autoScaleModel, animateScale } from './utils.js';
 import { applyAdvancedPBR } from './pbr.js';
 import { applyToolMetadataToObject } from './ToolClassifier.js';
+import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh
@@ -283,7 +284,7 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         ? tool.model_3d_url 
         : `${API_URL}${tool.model_3d_url}`;
 
-    loader.load(modelUrl, (gltf) => {
+    loader.load(modelUrl, async (gltf) => {
         const model = gltf.scene;
         applyToolMetadataToObject(model, tool);
 
@@ -368,6 +369,12 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         model.userData.customScale = targetScale.clone();
         model.userData.hasCustomScale = true;
         model.userData.offsetToFloor = offsetToFloor;
+
+        if (model.userData.toolType === 'container') {
+            await buildContainerCavityCSG(model, {
+                innerScale: [0.9, 0.95, 0.9]
+            });
+        }
 
         // Cho phép kéo thả nếu đã đăng ký module Draggable
         if (globalRegisterDraggable) {

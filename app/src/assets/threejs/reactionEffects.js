@@ -5,7 +5,7 @@ import {
     shouldEmitSmokeOrGas,
     reactionGasDebug
 } from './reactionGasUtils.js';
-import { getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-anchored-fill';
 
 const loader = new THREE.TextureLoader();
 

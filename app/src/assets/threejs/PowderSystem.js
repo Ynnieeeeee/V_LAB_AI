@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-anchored-fill';
+import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
 
 /**
  * PowderSystem
@@ -152,11 +153,16 @@ export class PowderSystem {
 
     getLocalCavityInfo(container) {
         container.updateMatrixWorld(true);
-        const points = (container.userData?.cavityPoints || []).filter(p =>
-            Number.isFinite(p.lx) &&
-            Number.isFinite(p.lz) &&
-            Number.isFinite(p.lyBottom)
+        const rawPoints = (container.userData?.cavityPoints || []).filter(p =>
+            Number.isFinite(p?.lx) &&
+            Number.isFinite(p?.lz) &&
+            Number.isFinite(p?.lyTop) &&
+            Number.isFinite(p?.lyBottom) &&
+            p.lyTop > p.lyBottom
         );
+        const points = container.userData?.cavitySource === 'csg_scaled_model' || container.userData?.cavityCSG
+            ? selectDominantCavityPoints(rawPoints)
+            : rawPoints;
         const localBox = getToolLocalMeshBox(container);
         const toolCenter = localBox?.getCenter?.(new THREE.Vector3());
 
@@ -169,9 +175,10 @@ export class PowderSystem {
             });
             const pointSize = pointBox.getSize(new THREE.Vector3());
             if (!pointBox.isEmpty() && Number.isFinite(bottomY)) {
+                const center = pointBox.getCenter(new THREE.Vector3());
                 return {
-                    centerX: toolCenter?.x ?? (pointBox.min.x + pointBox.max.x) * 0.5,
-                    centerZ: toolCenter?.z ?? (pointBox.min.z + pointBox.max.z) * 0.5,
+                    centerX: center.x,
+                    centerZ: center.z,
                     bottomY: bottomY + 0.018,
                     radiusX: Math.max(pointSize.x * 0.18, 0.018),
                     radiusZ: Math.max(pointSize.z * 0.18, 0.018)

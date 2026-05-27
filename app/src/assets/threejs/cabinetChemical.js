@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { registerDraggableObject } from './interaction.js?v=20260525-bottle-display-scale';
+import { registerDraggableObject } from './interaction.js?v=20260527-liquid-anchored-fill';
 
 export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
     try {

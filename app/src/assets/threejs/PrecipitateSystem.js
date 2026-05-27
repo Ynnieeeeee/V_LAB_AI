@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { getToolLocalMeshBox } from './pouringEffect.js?v=20260525-bottle-display-scale';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-anchored-fill';
+import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
 
 /**
  * PrecipitateSystem
@@ -35,7 +36,16 @@ export class PrecipitateSystem {
 
         // Ưu tiên cavityPoints đã được PouringEffect detect theo local-space.
         // Cách này chính xác hơn Box3 toàn model, vì Box3 thường bao cả thành/cạnh ngoài của cốc.
-        const points = container.userData?.cavityPoints || [];
+        const rawPoints = (container.userData?.cavityPoints || []).filter(p =>
+            Number.isFinite(p?.lx) &&
+            Number.isFinite(p?.lz) &&
+            Number.isFinite(p?.lyTop) &&
+            Number.isFinite(p?.lyBottom) &&
+            p.lyTop > p.lyBottom
+        );
+        const points = container.userData?.cavitySource === 'csg_scaled_model' || container.userData?.cavityCSG
+            ? selectDominantCavityPoints(rawPoints)
+            : rawPoints;
         if (points.length > 0) {
             const box = new THREE.Box3();
             let minY = Infinity;
@@ -51,9 +61,10 @@ export class PrecipitateSystem {
             if (!box.isEmpty() && Number.isFinite(minY) && Number.isFinite(maxY)) {
                 const liquidLevel = THREE.MathUtils.clamp(container.userData?.liquidLevel ?? 0.35, 0.05, 0.9);
                 const surfaceY = THREE.MathUtils.lerp(minY, maxY, liquidLevel);
+                const center = box.getCenter(new THREE.Vector3());
                 return {
-                    centerX: toolCenter?.x ?? (box.min.x + box.max.x) * 0.5,
-                    centerZ: toolCenter?.z ?? (box.min.z + box.max.z) * 0.5,
+                    centerX: center.x,
+                    centerZ: center.z,
                     bottomY: minY + 0.018,
                     surfaceY: Math.max(minY + 0.055, surfaceY - 0.012),
                     // Thu nhỏ bán kính để hạt không lọt ra ngoài thành dụng cụ.

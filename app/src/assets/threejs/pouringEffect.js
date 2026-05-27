@@ -1,5 +1,14 @@
 import * as THREE from 'three';
 import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
+import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
+
+if (typeof window !== 'undefined' && window.DEBUG_LIQUID_FILL === undefined) {
+    window.DEBUG_LIQUID_FILL = false;
+}
+
+function liquidFillDebugEnabled() {
+    return typeof window !== 'undefined' && window.DEBUG_LIQUID_FILL === true;
+}
 
 function shouldIgnoreCavityMesh(object) {
     const data = object?.userData || {};
@@ -11,6 +20,9 @@ function shouldIgnoreCavityMesh(object) {
         data.isParticle ||
         data.isReactionEffect ||
         data.isInternalChemicalVisual ||
+        data.isCavityDebug ||
+        data.isCSGCavityShell ||
+        data.isCavitySourceMesh ||
         data.ignoreRaycast
     );
 }
@@ -96,6 +108,215 @@ function getFallbackCavityPoints(tool) {
     });
 
     return points;
+}
+
+function isFiniteCavityPoint(point) {
+    return (
+        point &&
+        Number.isFinite(point.lx) &&
+        Number.isFinite(point.lz) &&
+        Number.isFinite(point.lyTop) &&
+        Number.isFinite(point.lyBottom) &&
+        point.lyTop > point.lyBottom
+    );
+}
+
+function usesCSGScaledCavity(target) {
+    return target?.userData?.cavitySource === 'csg_scaled_model' || !!target?.userData?.cavityCSG;
+}
+
+function normalizedInBox(value, min, max, inset = 0.06) {
+    if (!Number.isFinite(value) || !Number.isFinite(min) || !Number.isFinite(max) || max <= min) return 0.5;
+    const t = THREE.MathUtils.clamp((value - min) / (max - min), 0, 1);
+    return THREE.MathUtils.lerp(inset, 1 - inset, t);
+}
+
+function chooseLiquidColumns(points, maxColumns = 520) {
+    if (points.length <= maxColumns) return points;
+    const stride = Math.ceil(points.length / maxColumns);
+    return points.filter((_, index) => index % stride === 0);
+}
+
+function gridPointKey(x, z) {
+    return `${x},${z}`;
+}
+
+function nearestColumnSource(sources, gridX, gridZ) {
+    let best = sources[0] || null;
+    let bestDistance = Infinity;
+    sources.forEach(point => {
+        const distance = Math.abs(point.gridX - gridX) + Math.abs(point.gridZ - gridZ);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = point;
+        }
+    });
+    return best;
+}
+
+function buildFilledLiquidColumns(points, maxColumns = 420) {
+    const gridPoints = points.filter(point =>
+        Number.isInteger(point.gridX) &&
+        Number.isInteger(point.gridZ)
+    );
+    if (gridPoints.length < Math.max(14, points.length * 0.45)) {
+        return chooseLiquidColumns(points, maxColumns);
+    }
+
+    const byKey = new Map();
+    const byX = new Map();
+    const pointBox = new THREE.Box3();
+
+    gridPoints.forEach(point => {
+        const key = gridPointKey(point.gridX, point.gridZ);
+        byKey.set(key, point);
+        if (!byX.has(point.gridX)) byX.set(point.gridX, []);
+        byX.get(point.gridX).push(point);
+        pointBox.expandByPoint(new THREE.Vector3(point.lx, 0, point.lz));
+    });
+
+    if (pointBox.isEmpty()) return chooseLiquidColumns(points, maxColumns);
+
+    const minGridX = Math.min(...gridPoints.map(point => point.gridX));
+    const maxGridX = Math.max(...gridPoints.map(point => point.gridX));
+    const minGridZ = Math.min(...gridPoints.map(point => point.gridZ));
+    const maxGridZ = Math.max(...gridPoints.map(point => point.gridZ));
+    const spanX = Math.max(1, maxGridX - minGridX);
+    const spanZ = Math.max(1, maxGridZ - minGridZ);
+    const xStep = (pointBox.max.x - pointBox.min.x) / spanX || 0;
+    const zStep = (pointBox.max.z - pointBox.min.z) / spanZ || 0;
+    const filled = [];
+
+    for (const [gridX, row] of byX.entries()) {
+        const zValues = Array.from(new Set(row.map(point => point.gridZ))).sort((a, b) => a - b);
+        if (zValues.length < 2) {
+            filled.push(...row);
+            continue;
+        }
+
+        const segments = [];
+        let segmentStart = zValues[0];
+        let previous = zValues[0];
+        for (let index = 1; index < zValues.length; index++) {
+            const current = zValues[index];
+            if (current > previous + 1) {
+                segments.push([segmentStart, previous]);
+                segmentStart = current;
+            }
+            previous = current;
+        }
+        segments.push([segmentStart, previous]);
+
+        const rowCenter = (minGridZ + maxGridZ) * 0.5;
+        const bestSegment = segments.reduce((best, segment) => {
+            const width = segment[1] - segment[0] + 1;
+            const centerDistance = Math.abs((segment[0] + segment[1]) * 0.5 - rowCenter);
+            const score = width - centerDistance * 0.18;
+            return score > best.score ? { segment, score } : best;
+        }, { segment: segments[0], score: -Infinity }).segment;
+
+        const rowSources = row.filter(point => point.gridZ >= bestSegment[0] && point.gridZ <= bestSegment[1]);
+        for (let gridZ = bestSegment[0]; gridZ <= bestSegment[1]; gridZ++) {
+            const existing = byKey.get(gridPointKey(gridX, gridZ));
+            if (existing) {
+                filled.push(existing);
+                continue;
+            }
+
+            const source = nearestColumnSource(rowSources.length ? rowSources : row, gridX, gridZ);
+            if (!source) continue;
+            filled.push({
+                ...source,
+                lx: pointBox.min.x + (gridX - minGridX) * xStep,
+                lz: pointBox.min.z + (gridZ - minGridZ) * zStep,
+                gridX,
+                gridZ,
+                source: `${source.source || 'cavity'}_filled`
+            });
+        }
+    }
+
+    return chooseLiquidColumns(filled, maxColumns);
+}
+
+function liquidAnchorSignature(anchor) {
+    return [
+        anchor.centerX,
+        anchor.centerZ,
+        anchor.baseY,
+        anchor.maxFillHeight,
+        anchor.scaleX,
+        anchor.scaleZ
+    ].map(value => Number(value || 0).toFixed(5)).join('|');
+}
+
+function disposeObject3D(object) {
+    if (!object) return;
+    object.traverse?.(child => {
+        child.geometry?.dispose?.();
+        if (Array.isArray(child.material)) child.material.forEach(material => material?.dispose?.());
+        else child.material?.dispose?.();
+    });
+    object.parent?.remove(object);
+}
+
+function clearLiquidFillDebug(volume) {
+    const group = volume?.userData?.group;
+    const debug = group?.getObjectByName?.('liquid_fill_debug');
+    if (debug) disposeObject3D(debug);
+}
+
+function updateLiquidFillDebug(volume) {
+    const group = volume?.userData?.group;
+    const data = volume?.userData;
+    if (!group || !data) return;
+
+    if (!liquidFillDebugEnabled()) {
+        clearLiquidFillDebug(volume);
+        return;
+    }
+
+    let debug = group.getObjectByName('liquid_fill_debug');
+    if (!debug) {
+        debug = new THREE.Group();
+        debug.name = 'liquid_fill_debug';
+        debug.userData.isLiquid = true;
+        debug.userData.ignoreRaycast = true;
+        debug.userData.notDraggable = true;
+        group.add(debug);
+    }
+
+    debug.children.slice().forEach(child => disposeObject3D(child));
+    debug.clear();
+
+    const halfX = Math.max(data.scaleX * 0.5, 0.01);
+    const halfZ = Math.max(data.scaleZ * 0.5, 0.01);
+    const y = -data.maxFillHeight * 0.5 + data.currentFillHeight;
+    const geometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-halfX, y, -halfZ),
+        new THREE.Vector3(halfX, y, -halfZ),
+        new THREE.Vector3(halfX, y, halfZ),
+        new THREE.Vector3(-halfX, y, halfZ),
+        new THREE.Vector3(-halfX, y, -halfZ)
+    ]);
+    const material = new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.9 });
+    const line = new THREE.Line(geometry, material);
+    line.userData.isLiquid = true;
+    line.userData.ignoreRaycast = true;
+    debug.add(line);
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!data.lastFillDebugLog || now - data.lastFillDebugLog > 700) {
+        console.log('[LIQUID_FILL]', {
+            baseY: data.baseY,
+            currentFillHeight: data.currentFillHeight,
+            maxFillHeight: data.maxFillHeight,
+            currentVolume: data.currentVolume,
+            maxVolume: data.maxVolume,
+            fillRatio: data.fillRatio
+        });
+        data.lastFillDebugLog = now;
+    }
 }
 
 /**
@@ -349,6 +570,10 @@ export class PouringEffect {
     /** Gọi từ interaction.js khi tool bị thả, scale đổi, hoặc gắn lại scene. */
     invalidateCavity(tool) {
         if (!tool) return;
+        if (usesCSGScaledCavity(tool)) {
+            delete tool.userData.cavityWorldAABB;
+            return;
+        }
         delete tool.userData.cavityPoints;
         delete tool.userData.cavityWorldAABB;
     }
@@ -429,6 +654,13 @@ export class PouringEffect {
 
         volume.userData.container   = target;
         volume.userData.group       = liquidGroup;
+        volume.userData.baseY = 0;
+        volume.userData.currentFillHeight = 0;
+        volume.userData.maxFillHeight = 1;
+        volume.userData.currentVolume = target.userData.liquidLevel || 0;
+        volume.userData.maxVolume = 1;
+        volume.userData.fillRatio = 0;
+        volume.userData.containerCavity = null;
         target.userData.liquidColor = this.color.clone();
 
         this.volumes.set(target, volume);
@@ -607,18 +839,83 @@ export class PouringEffect {
 
         const current = Number(target.userData.liquidLevel || 0);
         const desired = Number(target.userData.targetLiquidLevel);
-        if (!Number.isFinite(desired) || desired <= current) return current;
+        if (!Number.isFinite(desired) || desired <= current) {
+            target.userData.currentLiquidVolume = current;
+            target.userData.maxLiquidVolume = 1;
+            return current;
+        }
 
         const speed = Math.max(0.001, Number(target.userData.liquidRiseSpeed ?? 0.0028) || 0.0028);
         const next = Math.min(desired, current + speed);
         target.userData.liquidLevel = next;
+        target.userData.currentLiquidVolume = next;
+        target.userData.maxLiquidVolume = 1;
         return next;
+    }
+
+    _ensureLiquidAnchor(volume, anchor) {
+        const liquidGroup = volume.userData.group;
+        if (!liquidGroup) return;
+
+        const signature = liquidAnchorSignature(anchor);
+        const anchorPosition = new THREE.Vector3(
+            anchor.centerX,
+            anchor.baseY + anchor.maxFillHeight * 0.5,
+            anchor.centerZ
+        );
+        const hasAnchor = volume.userData.anchorSignature === signature &&
+            volume.userData.anchorPosition?.isVector3;
+
+        if (!hasAnchor) {
+            liquidGroup.position.copy(anchorPosition);
+            liquidGroup.scale.set(1, 1, 1);
+            liquidGroup.rotation.set(0, 0, 0);
+            volume.userData.anchorSignature = signature;
+            volume.userData.anchorPosition = anchorPosition.clone();
+        } else {
+            const drift = liquidGroup.position.distanceTo(anchorPosition);
+            if (drift > 1e-4) {
+                if (liquidFillDebugEnabled()) {
+                    console.warn('[LIQUID_FILL] liquid group anchor drift corrected', {
+                        previous: liquidGroup.position.toArray(),
+                        expected: anchorPosition.toArray(),
+                        drift
+                    });
+                }
+                liquidGroup.position.copy(anchorPosition);
+            }
+        }
+
+        if (volume.position.lengthSq() > 1e-8) {
+            if (liquidFillDebugEnabled()) {
+                console.warn('[LIQUID_FILL] volume.position changed after anchoring; resetting to local origin', {
+                    previous: volume.position.toArray()
+                });
+            }
+            volume.position.set(0, 0, 0);
+        }
+
+        volume.scale.set(anchor.scaleX, anchor.maxFillHeight, anchor.scaleZ);
+        volume.userData.baseY = anchor.baseY;
+        volume.userData.maxFillHeight = anchor.maxFillHeight;
+        volume.userData.scaleX = anchor.scaleX;
+        volume.userData.scaleZ = anchor.scaleZ;
+        volume.userData.containerCavity = {
+            baseY: anchor.baseY,
+            maxFillHeight: anchor.maxFillHeight,
+            minY: anchor.cavityMinY,
+            maxY: anchor.cavityMaxY,
+            centerX: anchor.centerX,
+            centerZ: anchor.centerZ,
+            isCSGCavity: anchor.isCSGCavity
+        };
     }
 
     _updateVolumeEffect(volume, target) {
         const level = this._animateLiquidLevel(target);
         if (level <= 0) {
             volume.userData.group.visible = false;
+            clearLiquidFillDebug(volume);
             return;
         }
         volume.userData.group.visible = true;
@@ -633,13 +930,17 @@ export class PouringEffect {
             if (points.length === 0) return;
         }
 
-        // Lọc nhiễu ngoài cavity
-        points = points.filter(p =>
-            isFinite(p.lx) &&
-            isFinite(p.lz) &&
-            isFinite(p.lyTop) &&
-            isFinite(p.lyBottom)
-        );
+        const isCSGCavity = usesCSGScaledCavity(target);
+
+        // Lọc nhiễu ngoài cavity.
+        points = points.filter(isFiniteCavityPoint);
+        if (isCSGCavity) {
+            points = selectDominantCavityPoints(points);
+            if (points.length > 0) {
+                target.userData.cavityPoints = points;
+                if (target.userData.cavityCSG) target.userData.cavityCSG.pointCount = points.length;
+            }
+        }
         if (points.length === 0) points = getFallbackCavityPoints(target);
         if (points.length === 0) return;
 
@@ -656,7 +957,7 @@ export class PouringEffect {
         };
 
         const minCorePoints = Math.max(6, Math.floor(points.length * 0.35));
-        const trim = points.length >= 12 ? 0.08 : 0;
+        const trim = isCSGCavity ? (points.length >= 24 ? 0.025 : 0) : (points.length >= 12 ? 0.08 : 0);
         const minX = quantile(points.map(p => p.lx), trim);
         const maxX = quantile(points.map(p => p.lx), 1 - trim);
         const minZ = quantile(points.map(p => p.lz), trim);
@@ -686,42 +987,39 @@ export class PouringEffect {
         }
 
         // ── 3. Định vị LiquidGroup (Sử dụng LOCAL vì đã là child của target) ──
-        const cavityCenter = new THREE.Vector3(
-            (pointsBox.min.x + pointsBox.max.x) * 0.5,
-            (cavityMinY + cavityMaxY) * 0.5,
-            (pointsBox.min.z + pointsBox.max.z) * 0.5
-        );
+        let centerX = (pointsBox.min.x + pointsBox.max.x) * 0.5;
+        let centerZ = (pointsBox.min.z + pointsBox.max.z) * 0.5;
         const toolLocalBox = getToolLocalMeshBox(target);
-        if (toolLocalBox && !toolLocalBox.isEmpty()) {
+        if (!isCSGCavity && toolLocalBox && !toolLocalBox.isEmpty()) {
             const toolCenter = toolLocalBox.getCenter(new THREE.Vector3());
-            cavityCenter.x = toolCenter.x;
-            cavityCenter.z = toolCenter.z;
+            centerX = toolCenter.x;
+            centerZ = toolCenter.z;
         }
 
-        const liquidGroup = volume.userData.group;
-        if (liquidGroup) {
-            liquidGroup.position.copy(cavityCenter);
-            liquidGroup.scale.set(1, 1, 1);
+        // ── 4. Scale Volume khớp với Cavity (CSG dùng đúng footprint inner mesh) ──
+        const horizontalPadding = isCSGCavity ? 0.64 : 0.82;
+        const scaleX = isCSGCavity
+            ? Math.max(cavitySize.x * horizontalPadding, 1e-4)
+            : Math.max(Math.min(cavitySize.x, cavitySize.z) * horizontalPadding, 1e-4);
+        const scaleZ = isCSGCavity
+            ? Math.max(cavitySize.z * horizontalPadding, 1e-4)
+            : scaleX;
+        const baseClearance = Math.max(cavityHeight * 0.008, 0.0015);
+        const topClearance = Math.max(cavityHeight * (isCSGCavity ? 0.075 : 0.14), 0.006);
+        const baseY = cavityMinY + baseClearance;
+        const maxFillHeight = Math.max(cavityMaxY - topClearance - baseY, cavityHeight * 0.22, 1e-4);
 
-            // Keep the liquid bound to the detected local cavity.
-            liquidGroup.rotation.set(0, 0, 0);
-        }
-
-        // ── 4. Scale Volume khớp với Cavity (Padding nhỏ hơn cho Tripo) ─────
-        const horizontalPadding = 0.82;
-        const verticalPadding = 0.55;
-        const detectedSide = Math.min(cavitySize.x, cavitySize.z) * horizontalPadding;
-        const squareSide = Math.max(
-            detectedSide,
-            1e-4
-        );
-        volume.scale.set(
-            squareSide,
-            Math.max(cavityHeight * verticalPadding, 1e-4),
-            squareSide
-        );
-        // MarchingCubes geometry is centered on its local origin.
-        volume.position.set(0, 0, 0);
+        this._ensureLiquidAnchor(volume, {
+            centerX,
+            centerZ,
+            baseY,
+            maxFillHeight,
+            scaleX,
+            scaleZ,
+            cavityMinY,
+            cavityMaxY,
+            isCSGCavity
+        });
 
         // ── 5. UPDATE MÀU DUNG DỊCH ─────────────────────────────
         if (volume.userData.isColorLerping && volume.userData.targetColor) {
@@ -777,56 +1075,97 @@ export class PouringEffect {
 
         // ── 6. Reset + rải ball (sử dụng mapLinear để an toàn trong lưới) ──
         volume.reset();
-        volume.isolation = 18;
+        volume.isolation = isCSGCavity ? 20 : 18;
 
-        const fillHeight = THREE.MathUtils.mapLinear(
-            level,
-            0,
-            1,
-            0.08,
-            0.88
-        );
+        const fillRatio = THREE.MathUtils.clamp(level, 0.025, 0.92);
+        const currentFillHeight = maxFillHeight * fillRatio;
+        const surfaceY = baseY + currentFillHeight;
 
-        const gridX = 18;
-        const gridZ = 18;
+        volume.userData.currentVolume = level;
+        volume.userData.maxVolume = 1;
+        volume.userData.fillRatio = fillRatio;
+        volume.userData.currentFillHeight = currentFillHeight;
+        target.userData.currentLiquidVolume = level;
+        target.userData.maxLiquidVolume = 1;
 
-        for (let ix = 0; ix < gridX; ix++) {
-            for (let iz = 0; iz < gridZ; iz++) {
-                const nx = THREE.MathUtils.mapLinear(ix, 0, gridX - 1, 0.18, 0.82);
-                const nz = THREE.MathUtils.mapLinear(iz, 0, gridZ - 1, 0.18, 0.82);
+        if (isCSGCavity) {
+            const columns = buildFilledLiquidColumns(corePoints, 320);
+            const strength = columns.length > 260 ? 0.025 : 0.031;
+            const subtract = columns.length > 260 ? 7.4 : 7.8;
 
-                const wave =
-                    Math.sin(ix * 0.7 + this.time * 2.0) *
-                    Math.cos(iz * 0.6 + this.time * 1.5) *
-                    0.01;
+            columns.forEach((point, index) => {
+                const columnBottom = Math.max(point.lyBottom, baseY);
+                const columnTop = Math.min(point.lyTop, surfaceY, baseY + maxFillHeight);
+                if (columnTop <= columnBottom) return;
 
-                volume.addBall(
-                    nx,
-                    fillHeight + wave,
-                    nz,
-                    0.085,
-                    8
-                );
+                const nx = normalizedInBox(point.lx, pointsBox.min.x, pointsBox.max.x, 0.16);
+                const nz = normalizedInBox(point.lz, pointsBox.min.z, pointsBox.max.z, 0.16);
+                const bottomN = normalizedInBox(columnBottom, baseY, baseY + maxFillHeight, 0.035);
+                const topN = normalizedInBox(columnTop, baseY, baseY + maxFillHeight, 0.075);
+                const layers = THREE.MathUtils.clamp(Math.ceil((topN - bottomN) / 0.115) + 1, 2, 7);
+
+                for (let layer = 0; layer < layers; layer++) {
+                    const t = layers === 1 ? 1 : layer / (layers - 1);
+                    const wave = layer === layers - 1
+                        ? Math.sin((point.gridX ?? index) * 0.7 + this.time * 2.0) *
+                          Math.cos((point.gridZ ?? index) * 0.6 + this.time * 1.5) *
+                          0.004
+                        : 0;
+                    const ny = THREE.MathUtils.clamp(THREE.MathUtils.lerp(bottomN, topN, t) + wave, 0.035, 0.92);
+                    volume.addBall(nx, ny, nz, strength, subtract);
+                }
+            });
+        } else {
+            const gridX = 18;
+            const gridZ = 18;
+            const topN = THREE.MathUtils.lerp(0.09, 0.9, fillRatio);
+            const layers = THREE.MathUtils.clamp(Math.ceil(fillRatio * 7), 2, 7);
+
+            for (let ix = 0; ix < gridX; ix++) {
+                for (let iz = 0; iz < gridZ; iz++) {
+                    const nx = THREE.MathUtils.mapLinear(ix, 0, gridX - 1, 0.18, 0.82);
+                    const nz = THREE.MathUtils.mapLinear(iz, 0, gridZ - 1, 0.18, 0.82);
+
+                    for (let layer = 0; layer < layers; layer++) {
+                        const t = layers === 1 ? 1 : layer / (layers - 1);
+                        const wave = layer === layers - 1
+                            ? Math.sin(ix * 0.7 + this.time * 2.0) *
+                              Math.cos(iz * 0.6 + this.time * 1.5) *
+                              0.006
+                            : 0;
+
+                        volume.addBall(
+                            nx,
+                            THREE.MathUtils.clamp(THREE.MathUtils.lerp(0.045, topN, t) + wave, 0.04, 0.92),
+                            nz,
+                            0.062,
+                            8
+                        );
+                    }
+                }
             }
         }
 
         // Ripple tại tâm mặt thoáng
-        const rippleNy = THREE.MathUtils.mapLinear(level, 0, 1, 0.05, 0.92);
+        const rippleNy = normalizedInBox(surfaceY, baseY, baseY + maxFillHeight, 0.075);
         if (this.isPouring) {
             const ripple = Math.sin(this.time * 8.0) * 0.02;
             volume.addBall(
-                0.5 + ripple,
-                rippleNy,
+                THREE.MathUtils.clamp(0.5 + ripple, 0.18, 0.82),
+                THREE.MathUtils.clamp(rippleNy, 0.08, 0.92),
                 0.5,
-                0.35,
-                8
+                isCSGCavity ? 0.04 : 0.22,
+                isCSGCavity ? 7.5 : 8
             );
         }
 
         volume.update();
         if (volume.geometry) {
             volume.geometry.computeVertexNormals();
+            volume.geometry.computeBoundingBox();
+            volume.geometry.computeBoundingSphere();
         }
+        updateLiquidFillDebug(volume);
     }
 
     _getContainerSurfaceWorldPosition(volume, target) {
