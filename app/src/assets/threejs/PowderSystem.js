@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-anchored-fill';
-import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-soft-waves';
+import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 
 /**
  * PowderSystem

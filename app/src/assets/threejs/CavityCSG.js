@@ -5,7 +5,7 @@ if (typeof window !== 'undefined' && window.DEBUG_CAVITY === undefined) {
     window.DEBUG_CAVITY = false;
 }
 
-const DEFAULT_INNER_SCALE = new THREE.Vector3(0.9, 0.95, 0.9);
+const DEFAULT_INNER_SCALE = new THREE.Vector3(0.9, 0.86, 0.9);
 const DEBUG_GROUP_NAME = 'cavity_csg_debug';
 const SHELL_NAME = 'cavity_csg_shell';
 
@@ -128,20 +128,35 @@ function fitInnerTransform(outerBox, options = {}) {
     const center = outerBox.getCenter(new THREE.Vector3());
     const scale = finiteVector3(options.innerScale, DEFAULT_INNER_SCALE);
     scale.x = THREE.MathUtils.clamp(scale.x, 0.72, 0.98);
-    scale.y = THREE.MathUtils.clamp(scale.y, 0.72, 0.98);
     scale.z = THREE.MathUtils.clamp(scale.z, 0.72, 0.98);
+    scale.y = THREE.MathUtils.clamp(scale.y, 0.66, 0.96);
 
-    const requestedBottom = Number.isFinite(Number(options.bottomThickness))
+    const verticalScaleInset = THREE.MathUtils.clamp(
+        Number.isFinite(Number(options.verticalScaleInset)) ? Number(options.verticalScaleInset) : 0.035,
+        0.018,
+        0.08
+    );
+    const maxVerticalScale = Math.max(0.66, Math.min(scale.x, scale.z) - verticalScaleInset);
+    scale.y = Math.min(scale.y, maxVerticalScale);
+
+    const baseBottom = Number.isFinite(Number(options.bottomThickness))
         ? Number(options.bottomThickness)
-        : Math.max(size.y * 0.035, 0.012);
-    const minTopClearance = Math.max(size.y * 0.008, 0.002);
+        : Math.max(size.y * 0.052, 0.018);
+    const safetyLift = Number.isFinite(Number(options.bottomSafetyLift))
+        ? Math.max(0, Number(options.bottomSafetyLift))
+        : Math.max(size.y * 0.012, 0.004);
+    const requestedBottom = baseBottom + safetyLift;
+    const minTopClearance = Math.max(size.y * 0.014, 0.003);
     let halfYGap = size.y * (1 - scale.y) * 0.5;
 
     if (halfYGap < requestedBottom + minTopClearance) {
         scale.y = THREE.MathUtils.clamp(
-            1 - (2 * (requestedBottom + minTopClearance)) / Math.max(size.y, 1e-6),
-            0.72,
-            0.98
+            Math.min(
+                1 - (2 * (requestedBottom + minTopClearance)) / Math.max(size.y, 1e-6),
+                maxVerticalScale
+            ),
+            0.66,
+            0.96
         );
         halfYGap = size.y * (1 - scale.y) * 0.5;
     }
@@ -158,11 +173,11 @@ function fitInnerTransform(outerBox, options = {}) {
         .multiply(new THREE.Matrix4().makeScale(scale.x, scale.y, scale.z))
         .multiply(new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z));
 
-    return { transform, scale, bottomThickness, center, size };
+    return { transform, scale, bottomThickness, center, size, safetyLift };
 }
 
 function createInnerGeometry(outerGeometry, outerBox, options = {}) {
-    const { transform, scale, bottomThickness, center, size } = fitInnerTransform(outerBox, options);
+    const { transform, scale, bottomThickness, center, size, safetyLift } = fitInnerTransform(outerBox, options);
     const geometry = outerGeometry.clone();
     geometry.applyMatrix4(transform);
     geometry.computeVertexNormals();
@@ -190,10 +205,26 @@ function createInnerGeometry(outerGeometry, outerBox, options = {}) {
         geometry,
         scale,
         bottomThickness,
+        safetyLift,
         center,
         beforeBox: outerBox.clone(),
         afterBox: geometry.boundingBox.clone()
     };
+}
+
+function getLiquidFloorY(innerBox) {
+    if (!innerBox?.isBox3 || innerBox.isEmpty()) return null;
+    const size = innerBox.getSize(new THREE.Vector3());
+    return innerBox.min.y + Math.max(size.y * 0.012, 0.004);
+}
+
+function cleanCSGGeometry(geometry) {
+    if (!geometry) return geometry;
+    const cleaned = mergeVertices(geometry, 1e-5);
+    cleaned.computeVertexNormals();
+    cleaned.computeBoundingBox();
+    cleaned.computeBoundingSphere();
+    return cleaned;
 }
 
 function sampleCavityPoints(innerGeometry, options = {}) {
@@ -267,7 +298,7 @@ function sampleOpenCavityPointsFromShell(shellGeometry, innerBox, outerBox, opti
     const mesh = new THREE.Mesh(shellGeometry, material);
     mesh.updateMatrixWorld(true);
 
-    const points = [];
+    const candidates = [];
     const rayPad = Math.max(outerSize.y * 0.12, 0.04);
     const topY = box.max.y - Math.max(size.y * 0.035, 0.006);
     const topHitGate = box.min.y + size.y * 0.72;
@@ -296,11 +327,12 @@ function sampleOpenCavityPointsFromShell(shellGeometry, innerBox, outerBox, opti
             const bottom = Math.max(firstY + bottomClearance, box.min.y + bottomClearance);
             if (topY - bottom < minColumnHeight) continue;
 
-            points.push({
+            candidates.push({
                 lx,
                 lz,
                 lyTop: topY,
                 lyBottom: bottom,
+                firstHitY: firstY,
                 source: 'csg_shell_open',
                 gridX: ix,
                 gridZ: iz
@@ -309,7 +341,25 @@ function sampleOpenCavityPointsFromShell(shellGeometry, innerBox, outerBox, opti
     }
 
     material.dispose();
-    return points;
+
+    if (!candidates.length) return [];
+
+    const firstHits = candidates.map(point => point.firstHitY);
+    const lowHit = quantile(firstHits, 0.12);
+    const highHit = quantile(firstHits, 0.86);
+    const hitSpread = highHit - lowHit;
+    const spreadGate = Math.max(size.y * 0.16, 0.035);
+
+    let reachable = candidates;
+    if (hitSpread > spreadGate) {
+        const lowHitBand = Math.max(size.y * 0.085, 0.018);
+        const reachableGate = Math.min(box.min.y + size.y * 0.34, lowHit + lowHitBand);
+        reachable = candidates.filter(point => point.firstHitY <= reachableGate);
+    }
+
+    if (reachable.length < Math.max(10, candidates.length * 0.06)) return [];
+
+    return reachable.map(({ firstHitY, ...point }) => point);
 }
 
 function fallbackCavityPointsFromBox(box) {
@@ -734,12 +784,13 @@ export async function buildContainerCavityCSG(root, options = {}) {
     outerGeometry.computeBoundingBox();
     const outerBox = outerGeometry.boundingBox.clone();
     const inner = createInnerGeometry(outerGeometry, outerBox, options);
+    const liquidFloorY = getLiquidFloorY(inner.afterBox);
     const innerSamplePoints = selectDominantCavityPoints(sampleCavityPoints(inner.geometry, options), options);
     const outerOpenPoints = selectDominantCavityPoints(
         sampleOpenCavityPointsFromShell(outerGeometry, inner.afterBox, outerBox, options),
         options
     );
-    let cavityPoints = outerOpenPoints.length >= Math.max(14, innerSamplePoints.length * 0.08)
+    let cavityPoints = outerOpenPoints.length >= Math.max(18, innerSamplePoints.length * 0.22)
         ? outerOpenPoints
         : innerSamplePoints;
     if (!cavityPoints.length) cavityPoints = fallbackCavityPointsFromBox(inner.afterBox);
@@ -778,24 +829,27 @@ export async function buildContainerCavityCSG(root, options = {}) {
         evaluator.consolidateMaterials = false;
 
         result = evaluator.evaluate(outerBrush, innerBrush, SUBTRACTION);
-        result.geometry.computeVertexNormals();
-        result.geometry.computeBoundingBox();
-        result.geometry.computeBoundingSphere();
+        const rawResultGeometry = result.geometry;
+        result.geometry = cleanCSGGeometry(rawResultGeometry);
+        if (result.geometry !== rawResultGeometry) rawResultGeometry.dispose?.();
 
         const openShellPoints = selectDominantCavityPoints(
             sampleOpenCavityPointsFromShell(result.geometry, inner.afterBox, outerBox, options),
             options
         );
-        if (openShellPoints.length >= Math.max(14, innerSamplePoints.length * 0.08)) {
+        if (openShellPoints.length >= Math.max(18, innerSamplePoints.length * 0.22)) {
             cavityPoints = openShellPoints;
         }
         if (!cavityPoints.length) cavityPoints = fallbackCavityPointsFromBox(inner.afterBox);
 
         root.userData.cavityPoints = cavityPoints;
         root.userData.cavitySource = 'csg_scaled_model';
+        root.userData.cavityLiquidFloorY = liquidFloorY;
         root.userData.cavityCSG = {
             innerScale: inner.scale.toArray(),
             bottomThickness: inner.bottomThickness,
+            bottomSafetyLift: inner.safetyLift,
+            liquidFloorY,
             pointCount: cavityPoints.length,
             pointSource: cavityPoints[0]?.source || 'unknown',
             innerSamplePointCount: innerSamplePoints.length,
@@ -832,9 +886,12 @@ export async function buildContainerCavityCSG(root, options = {}) {
         restoreSourceMeshes(root);
         root.userData.cavityPoints = cavityPoints;
         root.userData.cavitySource = 'csg_scaled_model';
+        root.userData.cavityLiquidFloorY = liquidFloorY;
         root.userData.cavityCSG = {
             innerScale: inner.scale.toArray(),
             bottomThickness: inner.bottomThickness,
+            bottomSafetyLift: inner.safetyLift,
+            liquidFloorY,
             pointCount: cavityPoints.length,
             pointSource: cavityPoints[0]?.source || 'unknown',
             innerSamplePointCount: innerSamplePoints.length,

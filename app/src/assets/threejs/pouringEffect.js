@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
-import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
+import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 
 if (typeof window !== 'undefined' && window.DEBUG_LIQUID_FILL === undefined) {
     window.DEBUG_LIQUID_FILL = false;
@@ -129,6 +129,138 @@ function normalizedInBox(value, min, max, inset = 0.06) {
     if (!Number.isFinite(value) || !Number.isFinite(min) || !Number.isFinite(max) || max <= min) return 0.5;
     const t = THREE.MathUtils.clamp((value - min) / (max - min), 0, 1);
     return THREE.MathUtils.lerp(inset, 1 - inset, t);
+}
+
+function quantileValue(values, ratio) {
+    const finite = values.filter(value => Number.isFinite(value));
+    if (!finite.length) return null;
+    const sorted = finite.sort((a, b) => a - b);
+    const index = THREE.MathUtils.clamp(
+        Math.round((sorted.length - 1) * ratio),
+        0,
+        sorted.length - 1
+    );
+    return sorted[index];
+}
+
+function boxMinY(boxLike) {
+    const y = Number(boxLike?.min?.y);
+    return Number.isFinite(y) ? y : null;
+}
+
+function resolveLiquidFloorY(target, corePoints, cavityMinY, cavityHeight, isCSGCavity) {
+    const candidates = [];
+    const addCandidate = value => {
+        const number = Number(value);
+        if (Number.isFinite(number)) candidates.push(number);
+    };
+
+    addCandidate(cavityMinY);
+    if (isCSGCavity) {
+        addCandidate(target?.userData?.cavityLiquidFloorY);
+        addCandidate(target?.userData?.cavityCSG?.liquidFloorY);
+        addCandidate(boxMinY(target?.userData?.cavityBox));
+        addCandidate(boxMinY(target?.userData?.cavityCSG?.innerBox));
+    }
+
+    const bottomQuantile = quantileValue(
+        corePoints.map(point => Number(point?.lyBottom)),
+        isCSGCavity ? 0.18 : 0.10
+    );
+    addCandidate(bottomQuantile);
+
+    const rawFloor = candidates.length ? Math.max(...candidates) : cavityMinY;
+    const clearance = Math.max(
+        cavityHeight * (isCSGCavity ? 0.018 : 0.012),
+        isCSGCavity ? 0.004 : 0.002
+    );
+    return rawFloor + clearance;
+}
+
+function analyzeMouthConstraint(corePoints, pointsBox, cavityMinY, cavityMaxY, isCSGCavity) {
+    const cavityHeight = cavityMaxY - cavityMinY;
+    if (!isCSGCavity || !Number.isFinite(cavityHeight) || cavityHeight <= 0) {
+        return {
+            isNecked: false,
+            safeTopY: cavityMaxY,
+            topClearanceRatio: isCSGCavity ? 0.075 : 0.14,
+            topWave: isCSGCavity ? 0.008 : 0.012
+        };
+    }
+
+    const tops = corePoints.map(point => Number(point?.lyTop)).filter(Number.isFinite);
+    const highTop = quantileValue(tops, 0.86);
+    if (!Number.isFinite(highTop)) {
+        return { isNecked: false, safeTopY: cavityMaxY, topClearanceRatio: 0.075, topWave: 0.008 };
+    }
+
+    const topGate = Math.max(highTop, cavityMinY + cavityHeight * 0.72);
+    const topPoints = corePoints.filter(point => point.lyTop >= topGate);
+    if (topPoints.length < Math.max(6, corePoints.length * 0.035)) {
+        return { isNecked: false, safeTopY: cavityMaxY, topClearanceRatio: 0.075, topWave: 0.008 };
+    }
+
+    const mouthBox = new THREE.Box3();
+    topPoints.forEach(point => mouthBox.expandByPoint(new THREE.Vector3(point.lx, 0, point.lz)));
+    const mouthSize = mouthBox.getSize(new THREE.Vector3());
+    const bodySize = pointsBox.getSize(new THREE.Vector3());
+    const bodyArea = Math.max(bodySize.x * bodySize.z, 1e-8);
+    const mouthArea = Math.max(mouthSize.x * mouthSize.z, 0);
+    const widthRatio = Math.max(mouthSize.x, mouthSize.z) / Math.max(bodySize.x, bodySize.z, 1e-8);
+    const areaRatio = mouthArea / bodyArea;
+    const isNecked = areaRatio < 0.42 || widthRatio < 0.62;
+
+    return {
+        isNecked,
+        safeTopY: isNecked ? cavityMinY + cavityHeight * 0.72 : cavityMaxY,
+        topClearanceRatio: isNecked ? 0.18 : 0.075,
+        topWave: isNecked ? 0.0045 : 0.008
+    };
+}
+
+function liquidSurfaceWave(x, z, time, amplitude, phase = 0) {
+    if (!Number.isFinite(amplitude) || amplitude <= 0) return 0;
+    const primary = Math.sin(x * 0.78 + time * 1.65 + phase) * 0.58;
+    const cross = Math.cos(z * 0.66 - time * 1.25 + phase * 0.7) * 0.34;
+    const diagonal = Math.sin((x + z) * 0.34 + time * 0.95 + phase * 1.3) * 0.22;
+    return THREE.MathUtils.clamp(primary + cross + diagonal, -1, 1) * amplitude;
+}
+
+function clampLiquidGeometryToBounds(volume, floorY, ceilingY) {
+    const position = volume?.geometry?.getAttribute?.('position');
+    const groupY = Number(volume?.userData?.group?.position?.y);
+    const scaleY = Number(volume?.scale?.y);
+    const floor = Number(floorY);
+    const ceiling = Number(ceilingY);
+
+    if (!position || !Number.isFinite(groupY) || !Number.isFinite(scaleY) || Math.abs(scaleY) < 1e-6 || !Number.isFinite(floor)) {
+        return;
+    }
+
+    const localFloorY = THREE.MathUtils.clamp((floor - groupY) / scaleY, -0.5, 0.48);
+    const localCeilingY = Number.isFinite(ceiling)
+        ? THREE.MathUtils.clamp((ceiling - groupY) / scaleY, localFloorY + 0.002, 0.5)
+        : 0.5;
+    const array = position.array;
+    let changed = false;
+
+    for (let i = 1; i < array.length; i += 3) {
+        if (array[i] < localFloorY) {
+            array[i] = localFloorY;
+            changed = true;
+        } else if (array[i] > localCeilingY) {
+            array[i] = localCeilingY;
+            changed = true;
+        }
+    }
+
+    volume.userData.localFloorY = localFloorY;
+    volume.userData.localCeilingY = localCeilingY;
+    if (changed) {
+        position.needsUpdate = true;
+        volume.geometry.computeBoundingBox?.();
+        volume.geometry.computeBoundingSphere?.();
+    }
 }
 
 function chooseLiquidColumns(points, maxColumns = 520) {
@@ -597,12 +729,12 @@ export class PouringEffect {
             transmission: 0.8, // Giảm trong suốt để dung dịch có màu đậm đà, rõ nét hơn
             transparent: true,
             opacity: 0.9,
-            roughness: 0.2, // Tăng nhám nhẹ để bớt chói lóa lóng lánh
+            roughness: 0.16, // Tăng nhám nhẹ để bớt chói lóa lóng lánh
             metalness: 0.0,
             ior: 1.333, // nước thật
             thickness: 0.35,
-            clearcoat: 0.2, // Giảm bóng lóng lánh
-            clearcoatRoughness: 0.3, // Làm nhòe vệt bóng
+            clearcoat: 0.35, // Giảm bóng lóng lánh
+            clearcoatRoughness: 0.22, // Làm nhòe vệt bóng
             envMapIntensity: 1.0,
             depthWrite: false, // Cho phép nhìn thấy kết tủa/hạt rắn bên trong dung dịch trong suốt.
         });
@@ -897,11 +1029,13 @@ export class PouringEffect {
 
         volume.scale.set(anchor.scaleX, anchor.maxFillHeight, anchor.scaleZ);
         volume.userData.baseY = anchor.baseY;
+        volume.userData.liquidFloorY = anchor.liquidFloorY ?? anchor.baseY;
         volume.userData.maxFillHeight = anchor.maxFillHeight;
         volume.userData.scaleX = anchor.scaleX;
         volume.userData.scaleZ = anchor.scaleZ;
         volume.userData.containerCavity = {
             baseY: anchor.baseY,
+            floorY: anchor.liquidFloorY ?? anchor.baseY,
             maxFillHeight: anchor.maxFillHeight,
             minY: anchor.cavityMinY,
             maxY: anchor.cavityMaxY,
@@ -1004,15 +1138,24 @@ export class PouringEffect {
         const scaleZ = isCSGCavity
             ? Math.max(cavitySize.z * horizontalPadding, 1e-4)
             : scaleX;
+        const mouthConstraint = analyzeMouthConstraint(corePoints, pointsBox, cavityMinY, cavityMaxY, isCSGCavity);
         const baseClearance = Math.max(cavityHeight * 0.008, 0.0015);
-        const topClearance = Math.max(cavityHeight * (isCSGCavity ? 0.075 : 0.14), 0.006);
-        const baseY = cavityMinY + baseClearance;
-        const maxFillHeight = Math.max(cavityMaxY - topClearance - baseY, cavityHeight * 0.22, 1e-4);
+        const topClearance = Math.max(cavityHeight * mouthConstraint.topClearanceRatio, mouthConstraint.isNecked ? 0.018 : 0.006);
+        const requestedLiquidFloorY = resolveLiquidFloorY(target, corePoints, cavityMinY, cavityHeight, isCSGCavity);
+        const safeTopY = Math.max(cavityMinY + cavityHeight * 0.2, Math.min(cavityMaxY - topClearance, mouthConstraint.safeTopY));
+        const maxBaseY = safeTopY - 1e-4;
+        const liquidFloorY = Math.min(requestedLiquidFloorY, maxBaseY);
+        const baseY = Math.min(Math.max(cavityMinY + baseClearance, liquidFloorY), maxBaseY);
+        const maxFillHeight = Math.max(safeTopY - baseY, 1e-4);
+        const liquidFloorN = isCSGCavity ? 0.085 : 0.055;
+        target.userData.liquidFloorY = liquidFloorY;
+        target.userData.liquidSafeTopY = safeTopY;
 
         this._ensureLiquidAnchor(volume, {
             centerX,
             centerZ,
             baseY,
+            liquidFloorY,
             maxFillHeight,
             scaleX,
             scaleZ,
@@ -1079,7 +1222,12 @@ export class PouringEffect {
 
         const fillRatio = THREE.MathUtils.clamp(level, 0.025, 0.92);
         const currentFillHeight = maxFillHeight * fillRatio;
-        const surfaceY = baseY + currentFillHeight;
+        const surfaceY = Math.min(baseY + currentFillHeight, safeTopY);
+        const waveFade = THREE.MathUtils.smoothstep(fillRatio, 0.04, 0.2);
+        const pourWaveBoost = this.isPouring ? 1.18 : 0.78;
+        const surfaceWaveN = mouthConstraint.topWave * waveFade * pourWaveBoost;
+        const ceilingLift = Math.max(maxFillHeight * Math.max(surfaceWaveN * 1.45, 0.012), 0.0015);
+        const meshCeilingY = Math.min(surfaceY + ceilingLift, safeTopY);
 
         volume.userData.currentVolume = level;
         volume.userData.maxVolume = 1;
@@ -1100,25 +1248,35 @@ export class PouringEffect {
 
                 const nx = normalizedInBox(point.lx, pointsBox.min.x, pointsBox.max.x, 0.16);
                 const nz = normalizedInBox(point.lz, pointsBox.min.z, pointsBox.max.z, 0.16);
-                const bottomN = normalizedInBox(columnBottom, baseY, baseY + maxFillHeight, 0.035);
-                const topN = normalizedInBox(columnTop, baseY, baseY + maxFillHeight, 0.075);
+                const bottomN = Math.max(
+                    normalizedInBox(columnBottom, baseY, baseY + maxFillHeight, liquidFloorN),
+                    liquidFloorN
+                );
+                const topN = Math.max(
+                    normalizedInBox(columnTop, baseY, baseY + maxFillHeight, 0.075),
+                    bottomN + 0.012
+                );
                 const layers = THREE.MathUtils.clamp(Math.ceil((topN - bottomN) / 0.115) + 1, 2, 7);
 
                 for (let layer = 0; layer < layers; layer++) {
                     const t = layers === 1 ? 1 : layer / (layers - 1);
                     const wave = layer === layers - 1
-                        ? Math.sin((point.gridX ?? index) * 0.7 + this.time * 2.0) *
-                          Math.cos((point.gridZ ?? index) * 0.6 + this.time * 1.5) *
-                          0.004
+                        ? liquidSurfaceWave(
+                            point.gridX ?? point.lx ?? index,
+                            point.gridZ ?? point.lz ?? index,
+                            this.time,
+                            surfaceWaveN,
+                            index * 0.013
+                        )
                         : 0;
-                    const ny = THREE.MathUtils.clamp(THREE.MathUtils.lerp(bottomN, topN, t) + wave, 0.035, 0.92);
+                    const ny = THREE.MathUtils.clamp(THREE.MathUtils.lerp(bottomN, topN, t) + wave, liquidFloorN, 0.92);
                     volume.addBall(nx, ny, nz, strength, subtract);
                 }
             });
         } else {
             const gridX = 18;
             const gridZ = 18;
-            const topN = THREE.MathUtils.lerp(0.09, 0.9, fillRatio);
+            const topN = Math.max(THREE.MathUtils.lerp(liquidFloorN + 0.025, 0.9, fillRatio), liquidFloorN + 0.02);
             const layers = THREE.MathUtils.clamp(Math.ceil(fillRatio * 7), 2, 7);
 
             for (let ix = 0; ix < gridX; ix++) {
@@ -1129,14 +1287,12 @@ export class PouringEffect {
                     for (let layer = 0; layer < layers; layer++) {
                         const t = layers === 1 ? 1 : layer / (layers - 1);
                         const wave = layer === layers - 1
-                            ? Math.sin(ix * 0.7 + this.time * 2.0) *
-                              Math.cos(iz * 0.6 + this.time * 1.5) *
-                              0.006
+                            ? liquidSurfaceWave(ix, iz, this.time, surfaceWaveN, (ix + iz) * 0.037)
                             : 0;
 
                         volume.addBall(
                             nx,
-                            THREE.MathUtils.clamp(THREE.MathUtils.lerp(0.045, topN, t) + wave, 0.04, 0.92),
+                            THREE.MathUtils.clamp(THREE.MathUtils.lerp(liquidFloorN, topN, t) + wave, liquidFloorN, 0.92),
                             nz,
                             0.062,
                             8
@@ -1147,12 +1303,30 @@ export class PouringEffect {
         }
 
         // Ripple tại tâm mặt thoáng
-        const rippleNy = normalizedInBox(surfaceY, baseY, baseY + maxFillHeight, 0.075);
+        const rippleNy = Math.max(normalizedInBox(surfaceY, baseY, baseY + maxFillHeight, 0.075), liquidFloorN);
+        if (surfaceWaveN > 0.0005) {
+            const wobbleA = this.time * 1.15;
+            const wobbleB = this.time * 0.9 + 2.1;
+            volume.addBall(
+                THREE.MathUtils.clamp(0.5 + Math.sin(wobbleA) * 0.075, 0.22, 0.78),
+                THREE.MathUtils.clamp(rippleNy + surfaceWaveN * 0.35, liquidFloorN, 0.92),
+                THREE.MathUtils.clamp(0.5 + Math.cos(wobbleA * 0.8) * 0.055, 0.22, 0.78),
+                isCSGCavity ? 0.018 : 0.055,
+                isCSGCavity ? 7.7 : 8
+            );
+            volume.addBall(
+                THREE.MathUtils.clamp(0.5 + Math.sin(wobbleB) * 0.11, 0.2, 0.8),
+                THREE.MathUtils.clamp(rippleNy - surfaceWaveN * 0.2, liquidFloorN, 0.92),
+                THREE.MathUtils.clamp(0.5 + Math.cos(wobbleB * 0.7) * 0.08, 0.2, 0.8),
+                isCSGCavity ? 0.012 : 0.035,
+                isCSGCavity ? 7.8 : 8
+            );
+        }
         if (this.isPouring) {
             const ripple = Math.sin(this.time * 8.0) * 0.02;
             volume.addBall(
                 THREE.MathUtils.clamp(0.5 + ripple, 0.18, 0.82),
-                THREE.MathUtils.clamp(rippleNy, 0.08, 0.92),
+                THREE.MathUtils.clamp(rippleNy, liquidFloorN, 0.92),
                 0.5,
                 isCSGCavity ? 0.04 : 0.22,
                 isCSGCavity ? 7.5 : 8
@@ -1161,6 +1335,7 @@ export class PouringEffect {
 
         volume.update();
         if (volume.geometry) {
+            clampLiquidGeometryToBounds(volume, liquidFloorY, meshCeilingY);
             volume.geometry.computeVertexNormals();
             volume.geometry.computeBoundingBox();
             volume.geometry.computeBoundingSphere();

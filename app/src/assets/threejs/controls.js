@@ -1,7 +1,7 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260527-liquid-anchored-fill';
+import { setArmsVisibility } from './interaction.js?v=20260527-liquid-soft-waves';
 
 function isEditableTarget(event) {
     const target = event?.target;

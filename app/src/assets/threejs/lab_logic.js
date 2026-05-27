@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { autoScaleModel, animateScale } from './utils.js';
 import { applyAdvancedPBR } from './pbr.js';
 import { applyToolMetadataToObject } from './ToolClassifier.js';
-import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
+import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh

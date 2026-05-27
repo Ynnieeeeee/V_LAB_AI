@@ -5,7 +5,7 @@ import {
     shouldEmitSmokeOrGas,
     reactionGasDebug
 } from './reactionGasUtils.js';
-import { getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-anchored-fill';
+import { getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-soft-waves';
 
 const loader = new THREE.TextureLoader();
 

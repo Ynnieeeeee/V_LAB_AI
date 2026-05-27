@@ -1,8 +1,8 @@
 import * as three from 'three';
 import { triggerMascotSpeech } from './mascot.js';
-import { PouringEffect, getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-anchored-fill';
-import { detectReaction } from './reactionRules.js?v=20260527-liquid-anchored-fill';
-import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-anchored-fill';
+import { PouringEffect, getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-soft-waves';
+import { detectReaction } from './reactionRules.js?v=20260527-liquid-soft-waves';
+import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 import {
     getSelectedQuantity,
     recordPourAction,
