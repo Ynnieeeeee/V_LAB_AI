@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { registerDraggableObject } from './interaction.js?v=20260527-liquid-soft-waves';
+import { registerDraggableObject } from './interaction.js?v=20260609-network-topology';
 
 export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
     try {

@@ -195,6 +195,21 @@ export class ReactionManager {
         // Bọt khí nhẹ nằm gần mặt dung dịch, gas cloud bay lên.
         const gasIntensity = this.normalizeIntensity(fx.gas, 1);
         if (gasAllowed && gasIntensity > 0) {
+            const graphGasHandled = Boolean(
+                typeof window !== 'undefined' &&
+                window.assemblyGraphManager?.propagateGasProduct?.(container, {
+                    gas: true,
+                    gasName: options.gasName || fx.gasName || reaction.gasName || reaction.gas_name || 'gas',
+                    color: options.gasColor || fx.gasColor || reaction.gasColor || reaction.gas_color || '#ffffff',
+                    gasIntensity,
+                    smokeDensity: 0,
+                    flowRate: options.gasFlowRate || fx.gasFlowRate || reaction.gasFlowRate || reaction.gas_flow_rate || gasIntensity || 1
+                }, {
+                    scene: this.scene,
+                    position
+                })
+            );
+            if (!graphGasHandled) {
             result.gas = this.gasEmitter.bubbles(container, {
                 position,
                 amount: Math.floor(80 * Math.min(2, gasIntensity)),
@@ -202,6 +217,7 @@ export class ReactionManager {
             });
             // Giữ tương thích với reactionEffects.js sẵn có.
             spawnGasCloud?.(this.scene, position, { toxicity: gasIntensity });
+            }
             result.effects.push('gas');
         }
 
@@ -213,12 +229,28 @@ export class ReactionManager {
 
         const smokeIntensity = this.normalizeIntensity(fx.smoke || fx.vapor, 1);
         if (gasAllowed && hasExplicitSmoke(reaction) && smokeIntensity > 0) {
+            const graphSmokeHandled = Boolean(
+                typeof window !== 'undefined' &&
+                window.assemblyGraphManager?.propagateGasProduct?.(container, {
+                    gas: true,
+                    gasName: options.gasName || fx.gasName || reaction.gasName || reaction.gas_name || 'vapor',
+                    color: options.smokeColor || options.gasColor || '#d8d8d8',
+                    gasIntensity: 0,
+                    smokeDensity: smokeIntensity,
+                    flowRate: options.gasFlowRate || fx.gasFlowRate || reaction.gasFlowRate || reaction.gas_flow_rate || smokeIntensity || 1
+                }, {
+                    scene: this.scene,
+                    position
+                })
+            );
+            if (!graphSmokeHandled) {
             result.smoke = this.gasEmitter.smoke(container, {
                 position,
                 amount: Math.floor(70 * Math.min(2, smokeIntensity)),
                 color: options.smokeColor || '#d8d8d8'
             });
             spawnSmoke?.(this.scene, position, { density: smokeIntensity });
+            }
             result.effects.push('smoke');
         }
 

@@ -7,20 +7,22 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260527-liquid-soft-waves';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js?v=20260527-liquid-soft-waves';
+import { initControls } from './controls.js?v=20260609-network-topology';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js?v=20260609-network-topology';
 import { initChatEvents } from '../js/chatEvents.js?v=20260527-liquid-soft-waves';
-import { initLabLogic } from './lab_logic.js?v=20260527-liquid-soft-waves';
+import { initLabLogic } from './lab_logic.js?v=20260609-network-topology';
 import { initLights } from './lights.js';
 import { initEnvironment } from './environment.js';
 import { initMascot, updateMascot } from './mascot.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260527-liquid-soft-waves';
-import { pouringEffect, pouringState } from './interaction.js?v=20260527-liquid-soft-waves';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260609-network-topology';
+import { pouringEffect, pouringState } from './interaction.js?v=20260609-network-topology';
 import { createHeatingManager } from './HeatingManager.js';
-import { createLabAssemblyManager } from './LabAssemblyManager.js';
+import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
+import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
 
 const scene = new three.Scene();
 scene.background = new three.Color(0x0f172a);
+window.scene = scene;
 
 const renderer = new three.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -94,6 +96,8 @@ const heatingManager = createHeatingManager(scene, { getObjects: () => draggable
 window.heatingManager = heatingManager;
 const labAssemblyManager = createLabAssemblyManager(scene, { getObjects: () => draggableObjects });
 window.labAssemblyManager = labAssemblyManager;
+const assemblyGraphManager = createAssemblyGraphManager(scene, { getObjects: () => draggableObjects });
+window.assemblyGraphManager = assemblyGraphManager;
 
 const loader = new GLTFLoader();
 const modelPath = './assets/models/';
@@ -146,6 +150,8 @@ function animate() {
         if (controlsManager.fps.isLocked) updateArmsAnimation(performance.now() / 1000, isMoving);
         updateMascot();
         labAssemblyManager.syncObjects();
+        assemblyGraphManager.syncObjects();
+        assemblyGraphManager.update(delta);
         heatingManager.update(delta);
         if (window.checkPouringCollision) window.checkPouringCollision();
         if (pouringEffect) pouringEffect.update(pouringState.currentPourTargetPos);

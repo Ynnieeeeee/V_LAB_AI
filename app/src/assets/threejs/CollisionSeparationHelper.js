@@ -56,6 +56,10 @@ function isHeatingSourcePlacedUnderSupport(source, support) {
     return horizontalDistance <= allowedRadius && sourceIsNotAboveSupport && sourceIsNearSupportBase;
 }
 
+function referencesTool(reference, object) {
+    return reference === object || reference === object?.uuid;
+}
+
 export function shouldIgnoreOverlap(object, other) {
     if (!object?.userData || !other?.userData) return false;
 
@@ -86,8 +90,10 @@ export function shouldIgnoreOverlap(object, other) {
     if ((object.userData.assemblyConnections || []).some(conn => conn.fromTool === other || conn.toTool === other)) return true;
     if ((other.userData.assemblyConnections || []).some(conn => conn.fromTool === object || conn.toTool === object)) return true;
 
-    if (object.userData.parentTool === other) return true;
-    if (other.userData.parentTool === object) return true;
+    if (referencesTool(object.userData.parentTool, other)) return true;
+    if (referencesTool(other.userData.parentTool, object)) return true;
+    if (object.userData.parentToolObject === other) return true;
+    if (other.userData.parentToolObject === object) return true;
 
     return false;
 }

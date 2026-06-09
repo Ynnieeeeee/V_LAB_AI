@@ -4,6 +4,7 @@ import { autoScaleModel, animateScale } from './utils.js';
 import { applyAdvancedPBR } from './pbr.js';
 import { applyToolMetadataToObject } from './ToolClassifier.js';
 import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-soft-waves';
+import { ensureAutoSnapPoints } from './toolAnchors.js?v=20260609-network-topology';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh
@@ -369,6 +370,8 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         model.userData.customScale = targetScale.clone();
         model.userData.hasCustomScale = true;
         model.userData.offsetToFloor = offsetToFloor;
+        model.updateMatrixWorld(true);
+        ensureAutoSnapPoints(model, { force: true });
 
         if (model.userData.toolType === 'container') {
             await buildContainerCavityCSG(model, {

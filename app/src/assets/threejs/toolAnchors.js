@@ -114,6 +114,161 @@ export function getToolBoxInfo(object, options = {}) {
     };
 }
 
+function vectorFromSnapPoint(point) {
+    const value = point?.localPosition || point?.position;
+    if (!value) return null;
+    return new THREE.Vector3(
+        finiteNumber(value.x),
+        finiteNumber(value.y),
+        finiteNumber(value.z)
+    );
+}
+
+function makeAutoSnapPoint(tool, type, worldPosition, options = {}) {
+    const localPosition = tool.worldToLocal(worldPosition.clone());
+    return {
+        type,
+        name: options.name || type,
+        position: localPosition.clone(),
+        localPosition: localPosition.clone(),
+        positionSpace: 'local',
+        source: options.source || 'auto_bbox',
+        generated: true
+    };
+}
+
+function collectWorldVertices(object, maxVertices = 6000) {
+    const vertices = [];
+    object?.updateMatrixWorld?.(true);
+    object?.traverse?.(child => {
+        if (!child?.visible || !child.isMesh || shouldIgnoreForBounds(child)) return;
+        const attr = child.geometry?.attributes?.position;
+        if (!attr?.count) return;
+
+        const stride = Math.max(1, Math.ceil(attr.count / Math.max(1, Math.floor(maxVertices / 4))));
+        const vertex = new THREE.Vector3();
+        for (let i = 0; i < attr.count; i += stride) {
+            vertex.fromBufferAttribute(attr, i).applyMatrix4(child.matrixWorld);
+            if (Number.isFinite(vertex.x) && Number.isFinite(vertex.y) && Number.isFinite(vertex.z)) {
+                vertices.push(vertex.clone());
+            }
+        }
+    });
+    return vertices;
+}
+
+function detectNeckWorldPosition(tool, info) {
+    const height = info.size.y;
+    if (!Number.isFinite(height) || height < EPSILON) return info.center.clone();
+
+    const vertices = collectWorldVertices(tool);
+    if (vertices.length < 24) return info.center.clone();
+
+    const minY = info.box.min.y + height * 0.18;
+    const maxY = info.box.max.y - height * 0.12;
+    if (maxY <= minY) return info.center.clone();
+
+    const slices = 18;
+    const thickness = Math.max(height / slices, 0.01);
+    let best = null;
+
+    for (let i = 1; i < slices; i++) {
+        const y = minY + (maxY - minY) * (i / slices);
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        let count = 0;
+
+        for (const vertex of vertices) {
+            if (Math.abs(vertex.y - y) > thickness) continue;
+            minX = Math.min(minX, vertex.x);
+            maxX = Math.max(maxX, vertex.x);
+            minZ = Math.min(minZ, vertex.z);
+            maxZ = Math.max(maxZ, vertex.z);
+            count++;
+        }
+
+        if (count < 8) continue;
+        const diameter = Math.max(maxX - minX, maxZ - minZ);
+        if (!Number.isFinite(diameter) || diameter < EPSILON) continue;
+
+        const centerBias = Math.abs(y - info.center.y) / Math.max(height, EPSILON);
+        const score = diameter + centerBias * 0.025;
+        if (!best || score < best.score) {
+            best = {
+                score,
+                worldPosition: new THREE.Vector3(
+                    (minX + maxX) * 0.5,
+                    y,
+                    (minZ + maxZ) * 0.5
+                )
+            };
+        }
+    }
+
+    return best?.worldPosition || info.center.clone();
+}
+
+export function detectAutoSnapPoints(tool, options = {}) {
+    if (!tool?.isObject3D || !tool.userData) return [];
+    if (Array.isArray(tool.userData.snapPoints) && tool.userData.snapPoints.length && !options.force) {
+        return tool.userData.snapPoints;
+    }
+
+    tool.updateMatrixWorld?.(true);
+    const info = getToolBoxInfo(tool);
+    if (info.box.isEmpty()) {
+        const fallback = getObjectWorldPosition(tool);
+        tool.userData.snapPoints = [
+            makeAutoSnapPoint(tool, 'mouth', fallback, { name: 'mouth' }),
+            makeAutoSnapPoint(tool, 'neck', fallback, { name: 'neck' }),
+            makeAutoSnapPoint(tool, 'bottom', fallback, { name: 'bottom' })
+        ];
+        return tool.userData.snapPoints;
+    }
+
+    const mouth = new THREE.Vector3(info.center.x, info.box.max.y, info.center.z);
+    const neck = detectNeckWorldPosition(tool, info);
+    const bottom = new THREE.Vector3(info.center.x, info.box.min.y, info.center.z);
+
+    tool.userData.snapPoints = [
+        makeAutoSnapPoint(tool, 'mouth', mouth, { name: 'mouth' }),
+        makeAutoSnapPoint(tool, 'neck', neck, { name: 'neck', source: 'auto_geometry_slice' }),
+        makeAutoSnapPoint(tool, 'bottom', bottom, { name: 'bottom' })
+    ];
+    return tool.userData.snapPoints;
+}
+
+export function ensureAutoSnapPoints(tool, options = {}) {
+    return detectAutoSnapPoints(tool, options);
+}
+
+export function getSnapPointWorldPosition(tool, point) {
+    if (!tool?.isObject3D || !point) return null;
+    const explicitWorld = point.worldPosition;
+    if (point.positionSpace === 'world' && explicitWorld) {
+        return new THREE.Vector3(
+            finiteNumber(explicitWorld.x),
+            finiteNumber(explicitWorld.y),
+            finiteNumber(explicitWorld.z)
+        );
+    }
+
+    if (point.positionSpace === 'world' && point.position) {
+        return new THREE.Vector3(
+            finiteNumber(point.position.x),
+            finiteNumber(point.position.y),
+            finiteNumber(point.position.z)
+        );
+    }
+
+    const local = vectorFromSnapPoint(point);
+    if (!local) return null;
+    tool.updateMatrixWorld?.(true);
+    return tool.localToWorld(local.clone());
+}
+
 export function getObjectWorldPosition(object) {
     const position = new THREE.Vector3();
     object?.getWorldPosition?.(position);
@@ -414,10 +569,26 @@ function addMetadataAnchors(tool, anchorMap) {
     }
 }
 
+function addSnapPointAnchors(tool, anchorMap) {
+    const snapPoints = ensureAutoSnapPoints(tool);
+    snapPoints.forEach((point, index) => {
+        const worldPosition = getSnapPointWorldPosition(tool, point);
+        if (!worldPosition) return;
+        const type = point.type || point.name || 'snap';
+        const name = point.name || `snap_${type}_${index}`;
+        addAnchor(anchorMap, anchor(name, type, worldPosition, {
+            slotType: type,
+            group: 'snapPoints',
+            generated: point.generated !== false
+        }));
+    });
+}
+
 export function getToolAnchorPoints(tool, options = {}) {
     const anchorMap = new Map();
     if (!tool?.isObject3D) return [];
     addDefaultAnchors(tool, anchorMap);
+    if (options.includeSnapPoints === true) addSnapPointAnchors(tool, anchorMap);
     if (options.includeMetadata !== false) addMetadataAnchors(tool, anchorMap);
     return [...anchorMap.values()];
 }

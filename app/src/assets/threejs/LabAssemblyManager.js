@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import {
     applyPlacementDelta,
+    ensureAutoSnapPoints,
     getConnectionDistanceScore,
     getPlacementDeltaForAnchors,
+    getSnapPointWorldPosition,
     getToolAnchorPoints,
     getToolBoxInfo,
     getToolLabel,
@@ -10,8 +12,21 @@ import {
     isContainerTool,
     isHeatingSourceTool,
     isSupportStandTool,
-    keepObjectAboveTable
-} from './toolAnchors.js';
+    keepObjectAboveTable,
+    moveObjectByWorldDelta
+} from './toolAnchors.js?v=20260609-network-topology';
+import {
+    ensureGraphNode,
+    ensureGraphSnapPoints,
+    hasGraphPathToCapability,
+    registerGraphConnection,
+    unregisterGraphConnection,
+    unregisterGraphObject
+} from './AssemblyGraphManager.js?v=20260609-network-topology';
+
+export const SNAP_DISTANCE = 0.08;
+export const DETACH_DISTANCE = 0.15;
+export const SNAP_CAPTURE_DISTANCE = 0.42;
 
 export const PORT_COMPATIBILITY = {
     liquid_out: ['liquid_in', 'opening'],
@@ -32,7 +47,10 @@ export const PORT_COMPATIBILITY = {
     clamp_target: ['clamp_point', 'holder_slot'],
     heating_zone: ['heat_target', 'heat_slot'],
     heat_target: ['heating_zone', 'heat_slot'],
-    heat_slot: ['heating_zone', 'heat_target']
+    heat_slot: ['heating_zone', 'heat_target'],
+    mouth: ['mouth', 'opening', 'liquid_in', 'liquid_out', 'gas_in', 'gas_out', 'bottom', 'neck'],
+    neck: ['neck', 'center_slot', 'holder_slot', 'clamp_point', 'clamp_target', 'support_top', 'bottom', 'mouth'],
+    bottom: ['bottom', 'bottom_slot', 'support_target', 'support_top', 'container_slot', 'heating_zone', 'heat_target', 'mouth', 'neck']
 };
 
 const CONNECTION_TYPES = {
@@ -54,7 +72,10 @@ const CONNECTION_TYPES = {
     clamp_target: 'clamp',
     heating_zone: 'heat',
     heat_target: 'heat',
-    heat_slot: 'heat'
+    heat_slot: 'heat',
+    mouth: 'magnetic',
+    neck: 'magnetic',
+    bottom: 'magnetic'
 };
 
 const POINT_TYPE_ALIASES = {
@@ -74,8 +95,36 @@ const POINT_TYPE_ALIASES = {
     heat: ['heating_zone', 'heat_target', 'heat_slot'],
     heating_zone: ['heat', 'heat_slot'],
     heat_target: ['heat', 'heat_slot'],
-    heat_slot: ['heat', 'heating_zone', 'heat_target']
+    heat_slot: ['heat', 'heating_zone', 'heat_target'],
+    mouth: ['opening', 'liquid_in', 'liquid_out', 'gas_in', 'gas_out'],
+    neck: ['center_slot', 'holder_slot', 'clamp_point', 'clamp_target'],
+    bottom: ['bottom_slot', 'support_target', 'heat_target']
 };
+
+const MAGNETIC_POINT_COMPATIBILITY = {
+    mouth: ['mouth', 'bottom', 'neck'],
+    neck: ['neck', 'bottom', 'mouth'],
+    bottom: ['mouth', 'neck', 'bottom']
+};
+
+const MAGNETIC_ANCHOR_TYPES = new Set([
+    'opening',
+    'liquid_in',
+    'liquid_out',
+    'gas_in',
+    'gas_out',
+    'support_top',
+    'support_target',
+    'top_slot',
+    'bottom_slot',
+    'container_slot',
+    'holder_slot',
+    'clamp_point',
+    'clamp_target',
+    'heating_zone',
+    'heat_target',
+    'heat_slot'
+]);
 
 function normalizeArray(value) {
     if (Array.isArray(value)) return value;
@@ -128,6 +177,44 @@ function getObjectWorldPosition(object) {
     return position;
 }
 
+function getObjectWorldScale(object) {
+    const scale = new THREE.Vector3(1, 1, 1);
+    object?.updateMatrixWorld?.(true);
+    object?.getWorldScale?.(scale);
+    return scale;
+}
+
+function getLocalScaleForWorldScale(parent, worldScale) {
+    const parentScale = new THREE.Vector3(1, 1, 1);
+    parent?.updateMatrixWorld?.(true);
+    parent?.getWorldScale?.(parentScale);
+    return new THREE.Vector3(
+        worldScale.x / (Math.abs(parentScale.x) > 1e-6 ? parentScale.x : 1),
+        worldScale.y / (Math.abs(parentScale.y) > 1e-6 ? parentScale.y : 1),
+        worldScale.z / (Math.abs(parentScale.z) > 1e-6 ? parentScale.z : 1)
+    );
+}
+
+function applyWorldScale(object, worldScale) {
+    if (!object?.scale || !worldScale) return;
+    object.scale.copy(getLocalScaleForWorldScale(object.parent, worldScale));
+    if (object.userData) {
+        object.userData.customWorldScale = worldScale.clone();
+        object.userData.customScale = object.scale.clone();
+        object.userData.hasCustomScale = true;
+    }
+}
+
+function setObjectWorldQuaternion(object, worldQuaternion) {
+    if (!object?.quaternion || !worldQuaternion?.isQuaternion) return false;
+    const parentQuaternion = new THREE.Quaternion();
+    object.parent?.getWorldQuaternion?.(parentQuaternion);
+    const localQuaternion = parentQuaternion.invert().multiply(worldQuaternion);
+    object.quaternion.copy(localQuaternion);
+    object.updateMatrixWorld?.(true);
+    return true;
+}
+
 function setObjectWorldPosition(object, worldPosition) {
     const savedScale = object.userData?.customScale?.clone?.() || object.scale.clone();
     const local = worldPosition.clone();
@@ -141,6 +228,29 @@ function setObjectWorldPosition(object, worldPosition) {
 
 function expandedTypes(type) {
     return new Set([type, ...(POINT_TYPE_ALIASES[type] || [])].filter(Boolean));
+}
+
+function isAncestorOf(ancestor, object) {
+    let node = object?.parent || null;
+    while (node) {
+        if (node === ancestor) return true;
+        node = node.parent;
+    }
+    return false;
+}
+
+function magneticCompatible(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return Boolean(
+        MAGNETIC_POINT_COMPATIBILITY[a]?.includes(b) ||
+        MAGNETIC_POINT_COMPATIBILITY[b]?.includes(a) ||
+        compatible(a, b)
+    );
+}
+
+function horizontalFootprint(info) {
+    return Math.max(info?.size?.x || 0, info?.size?.z || 0);
 }
 
 function compatible(a, b) {
@@ -170,6 +280,12 @@ function connectionTypeFor(a, b) {
     if ([...typesA].some(type => ['heat', 'heating_zone', 'heat_target', 'heat_slot'].includes(type)) &&
         [...typesB].some(type => ['heat', 'heating_zone', 'heat_target', 'heat_slot'].includes(type))) return 'heat';
     return CONNECTION_TYPES[a] || CONNECTION_TYPES[b] || 'generic';
+}
+
+function graphMediumForConnectionType(connectionType) {
+    if (connectionType === 'gas') return 'gas';
+    if (connectionType === 'liquid') return 'liquid';
+    return 'mechanical';
 }
 
 function isActiveHeatingSource(tool) {
@@ -233,6 +349,9 @@ export class LabAssemblyManager {
         this.getObjects = options.getObjects || (() => []);
         this.connections = [];
         this.snapDistance = Number(options.snapDistance ?? 0.65);
+        this.magneticSnapDistance = Number(options.magneticSnapDistance ?? SNAP_DISTANCE);
+        this.magneticCaptureDistance = Number(options.magneticCaptureDistance ?? SNAP_CAPTURE_DISTANCE);
+        this.detachDistance = Number(options.detachDistance ?? DETACH_DISTANCE);
         this.tableY = Number.isFinite(options.tableY) ? options.tableY : getTableSurfaceY();
     }
 
@@ -255,6 +374,8 @@ export class LabAssemblyManager {
         tool.userData.assemblyRole ??= tool.userData.assembly_role ?? toolData.assemblyRole ?? toolData.assembly_role ?? 'none';
         tool.userData.assembly_role ??= tool.userData.assemblyRole;
         tool.userData.assemblyConnections ??= [];
+        ensureGraphNode(tool);
+        ensureGraphSnapPoints(tool);
     }
 
     syncObjects() {
@@ -265,11 +386,541 @@ export class LabAssemblyManager {
     unregisterObject(tool) {
         if (!tool) return;
         this.disconnectTool(tool);
+        unregisterGraphObject(tool);
         this.connections = this.connections.filter(conn => conn.fromTool !== tool && conn.toTool !== tool);
     }
 
     hasCapability(tool, capability) {
         return normalizeArray(tool?.userData?.capabilities).includes(capability);
+    }
+
+    findObjectByUuid(uuid) {
+        if (!uuid || !this.scene?.traverse) return null;
+        let found = null;
+        this.scene.traverse(object => {
+            if (!found && object.uuid === uuid) found = object;
+        });
+        return found;
+    }
+
+    getMagneticParentObject(tool) {
+        const data = tool?.userData || {};
+        return data.parentToolObject ||
+            data.magneticBinding?.parentObject ||
+            this.findObjectByUuid(data.parentTool) ||
+            null;
+    }
+
+    removeAttachedChildReference(parent, child) {
+        if (!parent?.userData || !child) return;
+        parent.userData.attachedChildren = (parent.userData.attachedChildren || [])
+            .filter(uuid => uuid !== child.uuid);
+        parent.userData.attachedChildObjects = (parent.userData.attachedChildObjects || [])
+            .filter(object => object !== child && object?.parent);
+    }
+
+    addAttachedChildReference(parent, child) {
+        if (!parent?.userData || !child) return;
+        parent.userData.attachedChildren ??= [];
+        parent.userData.attachedChildObjects ??= [];
+        if (!parent.userData.attachedChildren.includes(child.uuid)) {
+            parent.userData.attachedChildren.push(child.uuid);
+        }
+        if (!parent.userData.attachedChildObjects.includes(child)) {
+            parent.userData.attachedChildObjects.push(child);
+        }
+    }
+
+    clearMagneticBindingState(tool, options = {}) {
+        if (!tool?.userData) return;
+        const parent = this.getMagneticParentObject(tool);
+        const binding = tool.userData.magneticBinding || {};
+        if (parent && options.keepGraph !== true) {
+            unregisterGraphConnection(tool, parent, {
+                fromSnapPointId: binding.movingSnapName,
+                toSnapPointId: binding.targetSnapName
+            });
+        }
+        if (parent) this.removeAttachedChildReference(parent, tool);
+
+        tool.userData.isAttached = false;
+        tool.userData.parentTool = null;
+        tool.userData.parentToolObject = null;
+        tool.userData.magneticBinding = null;
+        if (!options.keepPending) tool.userData.pendingMagneticDetach = null;
+    }
+
+    getMagneticSnapPoints(tool) {
+        if (!tool?.isObject3D || !tool.userData) return [];
+        const autoPoints = ensureAutoSnapPoints(tool) || [];
+        const points = autoPoints.map((point, index) => {
+            const worldPosition = getSnapPointWorldPosition(tool, point);
+            if (!worldPosition) return null;
+            const type = point.type || point.name || 'snap';
+            return {
+                sourcePoint: point,
+                index,
+                name: point.name || `${type}_${index}`,
+                type,
+                worldPosition
+            };
+        }).filter(Boolean);
+
+        const existingNames = new Set(points.map(point => point.name));
+        getToolAnchorPoints(tool, { includeSnapPoints: false }).forEach((point, index) => {
+            if (!point?.worldPosition || !MAGNETIC_ANCHOR_TYPES.has(point.type)) return;
+            const name = point.name || `anchor_${point.type}_${index}`;
+            const uniqueName = existingNames.has(name) ? `anchor_${name}` : name;
+            existingNames.add(uniqueName);
+            points.push({
+                sourcePoint: {
+                    name: uniqueName,
+                    type: point.type,
+                    positionSpace: 'world',
+                    worldPosition: point.worldPosition.clone(),
+                    isAnchorPoint: true,
+                    anchorName: point.name
+                },
+                index: points.length,
+                name: uniqueName,
+                anchorName: point.name,
+                type: point.type,
+                worldPosition: point.worldPosition.clone(),
+                isAnchorPoint: true
+            });
+        });
+
+        return points;
+    }
+
+    findMagneticPointByName(tool, name, fallbackType = null) {
+        const points = this.getMagneticSnapPoints(tool);
+        return points.find(point => point.name === name) ||
+            points.find(point => point.anchorName && point.anchorName === name) ||
+            points.find(point => fallbackType && point.type === fallbackType) ||
+            points[0] ||
+            null;
+    }
+
+    canInsertContainerIntoContainer(movingTool, fixedTool) {
+        if (!isContainerTool(movingTool) || !isContainerTool(fixedTool)) return false;
+        if (isSupportStandTool(movingTool) || isSupportStandTool(fixedTool)) return false;
+        if (isHeatingSourceTool(movingTool) || isHeatingSourceTool(fixedTool)) return false;
+
+        const movingInfo = getToolBoxInfo(movingTool);
+        const fixedInfo = getToolBoxInfo(fixedTool);
+        const movingFootprint = horizontalFootprint(movingInfo);
+        const fixedFootprint = horizontalFootprint(fixedInfo);
+        if (!Number.isFinite(movingFootprint) || !Number.isFinite(fixedFootprint)) return false;
+        if (movingFootprint <= 0 || fixedFootprint <= 0) return false;
+
+        return movingFootprint < fixedFootprint * 0.72;
+    }
+
+    isContainerInsertionPair(movingTool, fixedTool, pointA, pointB) {
+        if (!this.canInsertContainerIntoContainer(movingTool, fixedTool)) return false;
+        const movingType = pointA?.type || '';
+        const fixedType = pointB?.type || '';
+        const fixedAcceptsInside = ['mouth', 'opening', 'liquid_in', 'top_slot'].includes(fixedType);
+        const movingCanEnter = ['mouth', 'neck', 'bottom', 'support_target', 'bottom_slot', 'opening'].includes(movingType);
+        return fixedAcceptsInside && movingCanEnter;
+    }
+
+    isAllowedMagneticMatch(movingTool, fixedTool, pointA, pointB, connectionType) {
+        if (!movingTool || !fixedTool || movingTool === fixedTool) return false;
+
+        if (isHeatingSourceTool(movingTool) || isHeatingSourceTool(fixedTool)) {
+            return false;
+        }
+
+        if (this.isContainerInsertionPair(movingTool, fixedTool, pointA, pointB)) {
+            return true;
+        }
+
+        if (isContainerTool(movingTool) && isContainerTool(fixedTool)) {
+            return false;
+        }
+
+        if (connectionType === 'support') {
+            return isSupportStandTool(fixedTool) && !isSupportStandTool(movingTool);
+        }
+
+        if (connectionType === 'clamp') {
+            return isSupportStandTool(fixedTool) || this.hasCapability(fixedTool, 'clamp');
+        }
+
+        if (connectionType === 'insert') {
+            if (isContainerTool(movingTool) && isContainerTool(fixedTool)) {
+                return this.canInsertContainerIntoContainer(movingTool, fixedTool);
+            }
+            return isContainerTool(fixedTool) || ['opening', 'liquid_in', 'mouth'].includes(pointB.type);
+        }
+
+        if (connectionType === 'gas') {
+            return true;
+        }
+
+        return true;
+    }
+
+    getMagneticDistanceScore(pointA, pointB, connectionType, directDistance, captureDistance) {
+        const dx = pointA.worldPosition.x - pointB.worldPosition.x;
+        const dz = pointA.worldPosition.z - pointB.worldPosition.z;
+        const horizontal = Math.sqrt(dx * dx + dz * dz);
+        const vertical = Math.abs(pointA.worldPosition.y - pointB.worldPosition.y);
+
+        if (directDistance <= this.magneticSnapDistance) {
+            return { valid: true, score: directDistance, horizontal, vertical, direct: true };
+        }
+
+        if (horizontal > captureDistance) {
+            return { valid: false, score: Infinity, horizontal, vertical, direct: false };
+        }
+
+        const priority = {
+            support: 0,
+            insert: 0.025,
+            clamp: 0.04,
+            gas: 0.055,
+            liquid: 0.07,
+            magnetic: 0.12,
+            generic: 0.16
+        }[connectionType] ?? 0.16;
+
+        return {
+            valid: true,
+            score: priority + horizontal + vertical * 0.03,
+            horizontal,
+            vertical,
+            direct: false
+        };
+    }
+
+    getContainerInsertTarget(container) {
+        container?.updateMatrixWorld?.(true);
+        const info = getToolBoxInfo(container);
+        const cavityPoints = (container?.userData?.cavityPoints || []).filter(point =>
+            Number.isFinite(point?.lx) &&
+            Number.isFinite(point?.lz) &&
+            Number.isFinite(point?.lyTop) &&
+            Number.isFinite(point?.lyBottom) &&
+            point.lyTop > point.lyBottom
+        );
+
+        if (cavityPoints.length) {
+            let minX = Infinity;
+            let maxX = -Infinity;
+            let minZ = Infinity;
+            let maxZ = -Infinity;
+            let minY = Infinity;
+            let maxY = -Infinity;
+            cavityPoints.forEach(point => {
+                minX = Math.min(minX, point.lx);
+                maxX = Math.max(maxX, point.lx);
+                minZ = Math.min(minZ, point.lz);
+                maxZ = Math.max(maxZ, point.lz);
+                minY = Math.min(minY, point.lyBottom);
+                maxY = Math.max(maxY, point.lyTop);
+            });
+
+            const centerLocal = new THREE.Vector3(
+                (minX + maxX) * 0.5,
+                (minY + maxY) * 0.5,
+                (minZ + maxZ) * 0.5
+            );
+            const bottomLocal = centerLocal.clone();
+            bottomLocal.y = minY;
+            const topLocal = centerLocal.clone();
+            topLocal.y = maxY;
+
+            const centerWorld = container.localToWorld(centerLocal.clone());
+            const bottomWorld = container.localToWorld(bottomLocal.clone());
+            const topWorld = container.localToWorld(topLocal.clone());
+            return {
+                center: centerWorld,
+                bottomY: Math.min(bottomWorld.y, topWorld.y),
+                topY: Math.max(bottomWorld.y, topWorld.y),
+                radius: Math.max(maxX - minX, maxZ - minZ) * 0.5
+            };
+        }
+
+        return {
+            center: info.topCenter.clone(),
+            bottomY: info.box.min.y + Math.max(0.035, info.size.y * 0.08),
+            topY: info.box.max.y,
+            radius: Math.max(info.size.x, info.size.z) * 0.36
+        };
+    }
+
+    applyContainerInsidePlacement(movingTool, fixedTool) {
+        if (!this.canInsertContainerIntoContainer(movingTool, fixedTool)) return false;
+
+        const movingInfo = getToolBoxInfo(movingTool);
+        const target = this.getContainerInsertTarget(fixedTool);
+        const clearance = Math.max(0.018, Math.min(0.06, movingInfo.size.y * 0.04));
+        const desiredBottomY = target.bottomY + clearance;
+
+        moveObjectByWorldDelta(movingTool, new THREE.Vector3(
+            target.center.x - movingInfo.center.x,
+            desiredBottomY - movingInfo.box.min.y,
+            target.center.z - movingInfo.center.z
+        ));
+        movingTool.updateMatrixWorld?.(true);
+        return true;
+    }
+
+    findNearestMagneticSnap(movingTool, objects = this.getObjects(), options = {}) {
+        if (!movingTool?.isObject3D) return null;
+        const maxDistance = Number(options.maxDistance ?? this.magneticSnapDistance ?? SNAP_DISTANCE);
+        const captureDistance = Number(options.captureDistance ?? this.magneticCaptureDistance ?? SNAP_CAPTURE_DISTANCE);
+        const movingPoints = this.getMagneticSnapPoints(movingTool);
+        if (!movingPoints.length) return null;
+
+        let best = null;
+        for (const candidate of objects || []) {
+            if (!candidate?.isObject3D || candidate === movingTool) continue;
+            if (candidate.visible === false || candidate.userData?.isDeleted === true) continue;
+            if (isAncestorOf(movingTool, candidate)) continue;
+
+            const candidatePoints = this.getMagneticSnapPoints(candidate);
+            for (const pointA of movingPoints) {
+                for (const pointB of candidatePoints) {
+                    if (!magneticCompatible(pointA.type, pointB.type)) continue;
+                    const isContainerInsertion = this.isContainerInsertionPair(movingTool, candidate, pointA, pointB);
+                    const connectionType = isContainerInsertion
+                        ? 'insert'
+                        : connectionTypeFor(pointA.type, pointB.type);
+                    if (!this.isAllowedMagneticMatch(movingTool, candidate, pointA, pointB, connectionType)) continue;
+                    const distance = pointA.worldPosition.distanceTo(pointB.worldPosition);
+                    const distanceScore = this.getMagneticDistanceScore(pointA, pointB, connectionType, distance, captureDistance);
+                    if (!distanceScore.valid && distance > maxDistance) continue;
+                    const score = distanceScore.score + (pointA.type === pointB.type ? 0.005 : 0);
+                    if (!best || score < best.score) {
+                        best = {
+                            movingTool,
+                            targetTool: candidate,
+                            pointA,
+                            pointB,
+                            distance,
+                            horizontalDistance: distanceScore.horizontal,
+                            verticalDistance: distanceScore.vertical,
+                            connectionType,
+                            score
+                        };
+                    }
+                }
+            }
+        }
+
+        return best;
+    }
+
+    applyMagneticSnapTransform(movingTool, targetTool, match) {
+        if (!movingTool?.isObject3D || !targetTool?.isObject3D || !match?.pointA || !match?.pointB) return false;
+        const savedWorldScale = getObjectWorldScale(movingTool);
+        const connectionType = match.connectionType || connectionTypeFor(match.pointA.type, match.pointB.type);
+
+        const targetQuaternion = new THREE.Quaternion();
+        targetTool.getWorldQuaternion(targetQuaternion);
+        setObjectWorldQuaternion(movingTool, targetQuaternion);
+
+        const movingPointInfo = this.findMagneticPointByName(movingTool, match.pointA.name, match.pointA.type) || match.pointA;
+        const targetPointInfo = this.findMagneticPointByName(targetTool, match.pointB.name, match.pointB.type) || match.pointB;
+        const movingPoint = movingPointInfo.worldPosition || getSnapPointWorldPosition(movingTool, movingPointInfo.sourcePoint);
+        const targetPoint = targetPointInfo.worldPosition || getSnapPointWorldPosition(targetTool, targetPointInfo.sourcePoint);
+        if (!movingPoint || !targetPoint) return false;
+
+        if (connectionType === 'insert' && this.canInsertContainerIntoContainer(movingTool, targetTool)) {
+            const placedInside = this.applyContainerInsidePlacement(movingTool, targetTool);
+            applyWorldScale(movingTool, savedWorldScale);
+            movingTool.updateMatrixWorld?.(true);
+            return placedInside;
+        }
+
+        const placement = getPlacementDeltaForAnchors(
+            movingTool,
+            { ...movingPointInfo, worldPosition: movingPoint },
+            targetTool,
+            { ...targetPointInfo, worldPosition: targetPoint },
+            connectionType,
+            { tableY: this.tableY }
+        );
+
+        if (placement.valid) {
+            applyPlacementDelta(movingTool, placement, {
+                tableY: this.tableY,
+                keepAboveTable: connectionType !== 'insert' && connectionType !== 'gas'
+            });
+        } else {
+            moveObjectByWorldDelta(movingTool, targetPoint.clone().sub(movingPoint));
+        }
+
+        applyWorldScale(movingTool, savedWorldScale);
+        movingTool.updateMatrixWorld?.(true);
+        return true;
+    }
+
+    snapAndBindMagnetic(movingTool, targetTool, match, options = {}) {
+        if (!movingTool?.isObject3D || !targetTool?.isObject3D || movingTool === targetTool || !match) return null;
+        if (isAncestorOf(movingTool, targetTool)) return null;
+
+        const savedWorldScale = getObjectWorldScale(movingTool);
+        this.clearMagneticBindingState(movingTool);
+
+        if (!this.applyMagneticSnapTransform(movingTool, targetTool, match)) return null;
+
+        targetTool.attach(movingTool);
+        applyWorldScale(movingTool, savedWorldScale);
+        movingTool.updateMatrixWorld?.(true);
+
+        movingTool.userData.isAttached = true;
+        movingTool.userData.parentTool = targetTool.uuid;
+        movingTool.userData.parentToolObject = targetTool;
+        movingTool.userData.magneticBinding = {
+            parentTool: targetTool.uuid,
+            parentObject: targetTool,
+            movingSnapName: match.pointA.name,
+            movingSnapType: match.pointA.type,
+            targetSnapName: match.pointB.name,
+            targetSnapType: match.pointB.type,
+            connectionType: match.connectionType || connectionTypeFor(match.pointA.type, match.pointB.type),
+            distance: match.distance,
+            attachedAt: Date.now()
+        };
+        movingTool.userData.pendingMagneticDetach = null;
+        this.addAttachedChildReference(targetTool, movingTool);
+        const graphConnection = registerGraphConnection(
+            movingTool,
+            match.pointA,
+            targetTool,
+            match.pointB,
+            {
+                connectionType: movingTool.userData.magneticBinding.connectionType,
+                medium: graphMediumForConnectionType(movingTool.userData.magneticBinding.connectionType)
+            }
+        );
+        if (graphConnection) {
+            movingTool.userData.magneticBinding.graphEdgeId = graphConnection.forward.id;
+            movingTool.userData.magneticBinding.graphMedium = graphConnection.medium;
+        }
+
+        if (options.log !== false) {
+            console.log('[MagneticSnap] attached:', toolName(movingTool), '->', toolName(targetTool), match.pointA.type, match.pointB.type);
+        }
+        return movingTool.userData.magneticBinding;
+    }
+
+    tryMagneticSnapAndBind(movingTool, objects = this.getObjects(), options = {}) {
+        const match = this.findNearestMagneticSnap(movingTool, objects, options);
+        if (!match) return null;
+        return this.snapAndBindMagnetic(movingTool, match.targetTool, match, options);
+    }
+
+    getPendingMagneticDetachDistance(tool) {
+        const pending = tool?.userData?.pendingMagneticDetach;
+        if (!pending?.parentObject) return Infinity;
+
+        const movingPoint = this.findMagneticPointByName(
+            tool,
+            pending.movingSnapName,
+            pending.movingSnapType
+        );
+        const targetPoint = this.findMagneticPointByName(
+            pending.parentObject,
+            pending.targetSnapName,
+            pending.targetSnapType
+        );
+
+        if (!movingPoint || !targetPoint) {
+            const movingWorld = getObjectWorldPosition(tool);
+            const parentWorld = getObjectWorldPosition(pending.parentObject);
+            return movingWorld.distanceTo(parentWorld);
+        }
+
+        return movingPoint.worldPosition.distanceTo(targetPoint.worldPosition);
+    }
+
+    beginMagneticDrag(tool) {
+        if (!tool?.userData?.isAttached) return null;
+        const parent = this.getMagneticParentObject(tool) || (tool.parent !== this.scene ? tool.parent : null);
+        if (!parent?.isObject3D || parent === tool || parent === this.scene) return null;
+
+        const binding = tool.userData.magneticBinding || {};
+        tool.userData.pendingMagneticDetach = {
+            parentTool: parent.uuid,
+            parentObject: parent,
+            movingSnapName: binding.movingSnapName || null,
+            movingSnapType: binding.movingSnapType || null,
+            targetSnapName: binding.targetSnapName || null,
+            targetSnapType: binding.targetSnapType || null,
+            connectionType: binding.connectionType || null,
+            startedAt: Date.now(),
+            detached: false
+        };
+        return tool.userData.pendingMagneticDetach;
+    }
+
+    updateMagneticDetachState(tool, options = {}) {
+        const pending = tool?.userData?.pendingMagneticDetach;
+        if (!pending || pending.detached) return false;
+        const maxDistance = Number(options.detachDistance ?? this.detachDistance ?? DETACH_DISTANCE);
+        const distance = this.getPendingMagneticDetachDistance(tool);
+        if (distance <= maxDistance) return false;
+
+        pending.detached = true;
+        this.clearMagneticBindingState(tool);
+        console.log('[MagneticSnap] detached:', toolName(tool), 'distance:', Number(distance.toFixed(3)));
+        return true;
+    }
+
+    finalizeMagneticDrag(tool, options = {}) {
+        const pending = tool?.userData?.pendingMagneticDetach;
+        if (!pending) return false;
+
+        const maxDistance = Number(options.detachDistance ?? this.detachDistance ?? DETACH_DISTANCE);
+        const distance = this.getPendingMagneticDetachDistance(tool);
+        if (pending.detached || distance > maxDistance) {
+            this.clearMagneticBindingState(tool);
+            return false;
+        }
+
+        const parent = pending.parentObject || this.findObjectByUuid(pending.parentTool);
+        if (!parent?.isObject3D) {
+            this.clearMagneticBindingState(tool);
+            return false;
+        }
+
+        const pointA = this.findMagneticPointByName(tool, pending.movingSnapName, pending.movingSnapType);
+        const pointB = this.findMagneticPointByName(parent, pending.targetSnapName, pending.targetSnapType);
+        if (pointA && pointB) {
+            return Boolean(this.snapAndBindMagnetic(tool, parent, {
+                movingTool: tool,
+                targetTool: parent,
+                pointA,
+                pointB,
+                distance,
+                connectionType: pending.connectionType || connectionTypeFor(pointA.type, pointB.type),
+                score: distance
+            }, { log: false }));
+        }
+
+        parent.attach(tool);
+        tool.userData.isAttached = true;
+        tool.userData.parentTool = parent.uuid;
+        tool.userData.parentToolObject = parent;
+        tool.userData.pendingMagneticDetach = null;
+        this.addAttachedChildReference(parent, tool);
+        return true;
+    }
+
+    detachMagneticBinding(tool, options = {}) {
+        if (!tool?.userData) return false;
+        const wasAttached = tool.userData.isAttached === true || Boolean(tool.userData.parentTool);
+        if (options.preserveWorld !== false && this.scene?.attach && tool.parent && tool.parent !== this.scene) {
+            this.scene.attach(tool);
+        }
+        this.clearMagneticBindingState(tool);
+        return wasAttached;
     }
 
     isAllowedMatch(movingTool, fixedTool, pointA, pointB, connectionType) {
@@ -390,19 +1041,33 @@ export class LabAssemblyManager {
         fromTool.userData.assemblyConnections.push(connection);
         toTool.userData.assemblyConnections.push(connection);
         this.applyConnectionState(connection);
+        const graphConnection = registerGraphConnection(fromTool, fromPort, toTool, toPort, {
+            connectionType: connection.connectionType,
+            medium: graphMediumForConnectionType(connection.connectionType)
+        });
+        if (graphConnection) connection.graphEdgeId = graphConnection.forward.id;
         console.log('[LabAssembly] connected:', toolName(fromTool), fromPort.name, '->', toolName(toTool), toPort.name, connection.connectionType);
         return connection;
     }
 
     disconnectTools(toolA, toolB, portA = null, portB = null) {
+        const removedConnections = [];
         this.connections = this.connections.filter(conn => {
             const samePair = (conn.fromTool === toolA && conn.toTool === toolB) || (conn.fromTool === toolB && conn.toTool === toolA);
             const samePorts = !portA || !portB || (
                 [conn.fromPort, conn.toPort].includes(portA) &&
                 [conn.fromPort, conn.toPort].includes(portB)
             );
-            return !(samePair && samePorts);
+            if (samePair && samePorts) {
+                removedConnections.push(conn);
+                return false;
+            }
+            return true;
         });
+        removedConnections.forEach(conn => unregisterGraphConnection(conn.fromTool, conn.toTool, {
+            fromSnapPointId: conn.fromPort,
+            toSnapPointId: conn.toPort
+        }));
         [toolA, toolB].filter(Boolean).forEach(tool => {
             tool.userData.assemblyConnections = (tool.userData.assemblyConnections || []).filter(conn => this.connections.includes(conn));
         });
@@ -411,10 +1076,13 @@ export class LabAssemblyManager {
     disconnectTool(tool) {
         if (!tool) return;
         const connectedTools = new Set();
-        this.connections
-            .filter(conn => conn.fromTool === tool || conn.toTool === tool)
-            .forEach(conn => connectedTools.add(conn.fromTool === tool ? conn.toTool : conn.fromTool));
+        const removedConnections = this.connections.filter(conn => conn.fromTool === tool || conn.toTool === tool);
+        removedConnections.forEach(conn => connectedTools.add(conn.fromTool === tool ? conn.toTool : conn.fromTool));
         this.connections = this.connections.filter(conn => conn.fromTool !== tool && conn.toTool !== tool);
+        removedConnections.forEach(conn => unregisterGraphConnection(conn.fromTool, conn.toTool, {
+            fromSnapPointId: conn.fromPort,
+            toSnapPointId: conn.toPort
+        }));
         tool.userData.assemblyConnections = [];
         connectedTools.forEach(other => {
             if (other?.userData) {
@@ -654,7 +1322,9 @@ export class LabAssemblyManager {
     }
 
     hasGasCollectionPath(container) {
-        return this.hasPath(container, 'collect_gas', 'gas');
+        return this.hasPath(container, 'collect_gas', 'gas') ||
+            hasGraphPathToCapability(container, 'collect_gas', 'gas') ||
+            hasGraphPathToCapability(container, 'contain_gas', 'gas');
     }
 
     hasSupportPath(container) {

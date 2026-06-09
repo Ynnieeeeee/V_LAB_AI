@@ -40,12 +40,14 @@ import {
 import {
     applySupportSlotOffset,
     resolveObjectOverlap
-} from './CollisionSeparationHelper.js';
+} from './CollisionSeparationHelper.js?v=20260609-network-topology';
+import { SNAP_DISTANCE } from './LabAssemblyManager.js?v=20260609-network-topology';
 import {
+    ensureAutoSnapPoints,
     getTableSurfaceY,
     keepObjectAboveTable,
     moveObjectByWorldDelta
-} from './toolAnchors.js';
+} from './toolAnchors.js?v=20260609-network-topology';
 const THREE = three;
 const DEFAULT_REACTION_HEAT_TEMPERATURE = 45;
 
@@ -579,6 +581,7 @@ function removeToolFromCurrentLab(object, scene) {
     try { releaseContainerFromSupportStand(object); } catch (_) {}
     try { releaseContainerFromHeatingSource(object); } catch (_) {}
     try { releaseHeatingSourceFromSupportStand(object); } catch (_) {}
+    try { window.labAssemblyManager?.detachMagneticBinding?.(object); } catch (_) {}
 
     const draggableIndex = draggableObjects.indexOf(object);
     if (draggableIndex !== -1) draggableObjects.splice(draggableIndex, 1);
@@ -721,6 +724,28 @@ function snapToHeatingSourceIfNear(object) {
     return false;
 }
 
+function snapToMagneticSnapPointIfNear(object) {
+    const binding = window.labAssemblyManager?.tryMagneticSnapAndBind?.(object, draggableObjects, {
+        maxDistance: SNAP_DISTANCE
+    });
+    if (!binding) return false;
+    updateOffsetToFloor(object);
+    if (pouringEffect) pouringEffect.invalidateCavity(object);
+    return true;
+}
+
+function completeAssemblyDrop(object) {
+    if (!object?.isObject3D) return false;
+    const legacySnapped = snapToHeatingSourceIfNear(object);
+    if (legacySnapped) {
+        window.labAssemblyManager?.detachMagneticBinding?.(object, { preserveWorld: false });
+        return true;
+    }
+
+    if (snapToMagneticSnapPointIfNear(object)) return true;
+    return Boolean(window.labAssemblyManager?.finalizeMagneticDrag?.(object));
+}
+
 function releaseHeatingSnapIfNeeded(object) {
     if (!object?.userData) return;
     window.labAssemblyManager?.disconnectTool?.(object);
@@ -739,6 +764,13 @@ function toolDisplayName(object) {
 
 function toggleManualAssembly(object) {
     if (!object?.isObject3D) return false;
+
+    if (object.userData?.isAttached || object.userData?.parentTool) {
+        window.labAssemblyManager?.detachMagneticBinding?.(object);
+        updateOffsetToFloor(object);
+        triggerMascotSpeech?.(`ÄÃ£ thÃ¡o ${toolDisplayName(object)} khá»i liÃªn káº¿t.`);
+        return true;
+    }
 
     if (object.userData?.isAssemblySnapped || object.userData?.assemblyConnections?.length) {
         releaseHeatingSnapIfNeeded(object);
@@ -925,6 +957,8 @@ export function registerDraggableObject(obj) {
     }
 
     // --- BƯỚC 1: TÍNH TOÁN TỰ ĐỘNG VỊ TRÍ MIỆNG LỌ ---
+    ensureAutoSnapPoints(obj);
+
     if (obj.userData.id_chemical && !obj.userData.pourAnchor) {
         // Tính bounding box chỉ dựa trên Mesh (bỏ qua label sprite phía trên)
         const meshBox = new three.Box3();
@@ -1236,7 +1270,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             currentHeld.position.y += bottomOffset;
             updateOffsetToFloor(currentHeld);
 
-            snapToHeatingSourceIfNear(currentHeld);
+            completeAssemblyDrop(currentHeld);
             resolvePlacementOverlapAfterLegacyLogic(currentHeld);
             restoreCustomScale(currentHeld, savedScale);
             currentHeld.updateMatrixWorld(true);
@@ -1270,6 +1304,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 // Kiểm tra xem vật này có đang bị tay kia cầm không
                 if (root === heldObjectRight || root === heldObjectLeft) return;
 
+                window.labAssemblyManager?.detachMagneticBinding?.(root);
                 releaseHeatingSnapIfNeeded(root);
 
                 // Lưu rotation thực tế trước khi gắn vào tay. Rotation tay/camera chỉ dùng để hiển thị lúc đang cầm,
@@ -1746,11 +1781,26 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             spawnFireParticles(scene, position, { intensity: fire });
         }
 
-        if (gasAllowed && hasExplicitSmoke(config) && smoke > 0) {
+        const graphGasHandled = gasAllowed &&
+            container?.isObject3D &&
+            ((hasExplicitSmoke(config) && smoke > 0) || gas > 0) &&
+            Boolean(window.assemblyGraphManager?.propagateGasProduct?.(container, {
+                gas: true,
+                gasName: config.gasName || raw.gasName || raw.gas_name || visual.gasName || visual.gas_name || 'gas',
+                color: config.gasColor || raw.gasColor || raw.gas_color || visual.gasColor || visual.gas_color || '#ffffff',
+                gasIntensity: gas,
+                smokeDensity: hasExplicitSmoke(config) ? smoke : 0,
+                flowRate: config.gasFlowRate || raw.gasFlowRate || raw.gas_flow_rate || visual.gasFlowRate || visual.gas_flow_rate || Math.max(0.5, gas || smoke || 1)
+            }, {
+                scene,
+                position
+            }));
+
+        if (!graphGasHandled && gasAllowed && hasExplicitSmoke(config) && smoke > 0) {
             spawnSmoke(scene, position, { density: smoke });
         }
 
-        if (gasAllowed && gas > 0) {
+        if (!graphGasHandled && gasAllowed && gas > 0) {
             spawnGasCloud(scene, position, { toxicity: gas });
         }
 
@@ -1769,8 +1819,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             ...reactionGasDebug(config),
             effectActuallyTriggered: [
                 fire > 0 ? 'fire' : null,
-                gasAllowed && hasExplicitSmoke(config) && smoke > 0 ? 'smoke' : null,
-                gasAllowed && gas > 0 ? 'gas' : null,
+                graphGasHandled && hasExplicitSmoke(config) && smoke > 0 ? 'graph_smoke' : null,
+                graphGasHandled && gas > 0 ? 'graph_gas' : null,
+                !graphGasHandled && gasAllowed && hasExplicitSmoke(config) && smoke > 0 ? 'smoke' : null,
+                !graphGasHandled && gasAllowed && gas > 0 ? 'gas' : null,
                 explosion > 0 ? 'explosion' : null,
                 heat > 0 ? 'heat' : null,
                 gasAllowed && foam ? 'foam' : null
@@ -2643,6 +2695,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             // Tránh context menu/rotation còn trỏ tới vật cũ như nguồn nhiệt.
             selectedObjectForMenu = draggedObject;
 
+            window.labAssemblyManager?.beginMagneticDrag?.(draggedObject);
             releaseHeatingSnapIfNeeded(draggedObject);
             const savedScale = getSavedScale(draggedObject);
             attachKeepWorldTransform(scene, draggedObject);
@@ -2700,6 +2753,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         // Luôn đảm bảo cao độ chuẩn xác
         draggedObject.position.y = targetY + (draggedObject.userData.offsetToFloor || 0);
+        window.labAssemblyManager?.updateMagneticDetachState?.(draggedObject);
 
         if (isAutoAssemblySnapEnabled()) {
             window.labAssemblyManager?.applySoftSnapPreview?.(draggedObject, draggableObjects, {
@@ -2711,7 +2765,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     window.addEventListener('pointerup', () => {
         if (draggedObject) {
-            snapToHeatingSourceIfNear(draggedObject);
+            completeAssemblyDrop(draggedObject);
             resolvePlacementOverlapAfterLegacyLogic(draggedObject);
             orbit.enabled = true;
             draggedObject = null;
