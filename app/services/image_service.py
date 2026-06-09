@@ -266,6 +266,104 @@ NAME_OVERRIDES = (
         "positive": ("laboratory", "glassware", "graduated", "product"),
         "strict_single_visual": True,
     }),
+    (("round bottom flask", "round-bottom flask", "binh cau"), {
+        "canonical": "laboratory round bottom flask",
+        "must_any": ("round bottom flask", "round-bottom flask"),
+        "positive": ("laboratory", "glassware", "flask", "product"),
+        "strict_single_visual": True,
+    }),
+    (("volumetric flask", "binh dinh muc"), {
+        "canonical": "laboratory volumetric flask",
+        "must_any": ("volumetric flask",),
+        "positive": ("laboratory", "glassware", "flask", "product"),
+        "strict_single_visual": True,
+    }),
+    (("graduated cylinder", "measuring cylinder", "ong dong", "ong do", "ong chia vach"), {
+        "canonical": "laboratory graduated cylinder",
+        "must_any": ("graduated cylinder", "measuring cylinder"),
+        "positive": ("laboratory", "graduated", "cylinder", "product"),
+        "strict_single_visual": True,
+    }),
+    (("pipette", "pipet", "ong hut"), {
+        "canonical": "laboratory pipette",
+        "must_any": ("pipette", "volumetric pipette", "graduated pipette"),
+        "positive": ("laboratory", "glassware", "pipette", "product"),
+        "strict_single_visual": True,
+    }),
+    (("burette", "buret"), {
+        "canonical": "laboratory burette",
+        "must_any": ("burette", "buret"),
+        "positive": ("laboratory", "glassware", "burette", "stopcock", "product"),
+        "strict_single_visual": True,
+    }),
+    (("test tube clamp", "utility clamp", "kep ong nghiem", "kep"), {
+        "canonical": "laboratory test tube clamp",
+        "must_any": ("test tube clamp", "utility clamp", "laboratory clamp"),
+        "positive": ("laboratory", "clamp", "holder", "product"),
+        "strict_single_visual": False,
+    }),
+    (("rubber stopper", "stopper", "bung", "nut cao su", "nut binh"), {
+        "canonical": "laboratory rubber stopper",
+        "must_any": ("rubber stopper", "stopper"),
+        "positive": ("laboratory", "rubber", "stopper", "product"),
+        "strict_single_visual": True,
+    }),
+    (("petri dish", "dia petri"), {
+        "canonical": "laboratory petri dish",
+        "must_any": ("petri dish",),
+        "positive": ("laboratory", "biology", "dish", "product"),
+        "strict_single_visual": True,
+    }),
+    (("microscope", "kinh hien vi"), {
+        "canonical": "laboratory microscope",
+        "must_any": ("microscope",),
+        "positive": ("laboratory", "microscope", "product"),
+        "strict_single_visual": True,
+    }),
+    (("thermometer", "nhiet ke"), {
+        "canonical": "laboratory thermometer",
+        "must_any": ("thermometer",),
+        "positive": ("laboratory", "thermometer", "product"),
+        "strict_single_visual": True,
+    }),
+    (("balance", "scale", "can dien tu", "can ky thuat"), {
+        "canonical": "laboratory balance scale",
+        "must_any": ("laboratory balance", "balance scale", "digital scale"),
+        "positive": ("laboratory", "balance", "scale", "product"),
+        "strict_single_visual": True,
+    }),
+    (("power transformer", "transformer", "bien ap", "bien ap nguon"), {
+        "canonical": "laboratory power transformer physics apparatus",
+        "must_any": ("power transformer", "transformer"),
+        "positive": ("physics", "laboratory", "transformer", "power supply", "apparatus", "product"),
+        "strict_single_visual": True,
+        "allow_product_labels": True,
+        "allow_non_white_background": True,
+    }),
+    (("power supply", "dc power supply", "nguon dien", "bo nguon"), {
+        "canonical": "laboratory DC power supply physics apparatus",
+        "must_any": ("power supply", "dc power supply", "laboratory power supply"),
+        "positive": ("physics", "laboratory", "power supply", "apparatus", "product"),
+        "strict_single_visual": True,
+        "allow_product_labels": True,
+        "allow_non_white_background": True,
+    }),
+    (("voltmeter", "von ke"), {
+        "canonical": "laboratory voltmeter physics apparatus",
+        "must_any": ("voltmeter",),
+        "positive": ("physics", "laboratory", "meter", "apparatus", "product"),
+        "strict_single_visual": True,
+        "allow_product_labels": True,
+        "allow_non_white_background": True,
+    }),
+    (("ammeter", "ampe ke"), {
+        "canonical": "laboratory ammeter physics apparatus",
+        "must_any": ("ammeter",),
+        "positive": ("physics", "laboratory", "meter", "apparatus", "product"),
+        "strict_single_visual": True,
+        "allow_product_labels": True,
+        "allow_non_white_background": True,
+    }),
     (("spirit lamp", "alcohol lamp", "den con"), TOOL_PROFILES["heating_source"]),
     (("tripod", "support stand", "ring stand", "gia do", "kieng"), TOOL_PROFILES["support_stand"]),
 )
@@ -330,6 +428,16 @@ def _build_queries(tool_name_en: str, tool_name_vi: str = "", tool_type: str = "
     subject = _subject_context(subject_code)
     subject_query = subject["query"]
     base = normalize_text(canonical).replace(" ", " ")
+    background_phrase = (
+        "real product photo full object visible centered single apparatus"
+        if profile.get("allow_non_white_background")
+        else "real product photo plain white background"
+    )
+    first_background_phrase = (
+        "single product photo full object visible centered isolated"
+        if profile.get("allow_non_white_background")
+        else "product photo plain white background"
+    )
     exclude_multi = (
         '-"set of" -"pack of" -"row of" -"group of" -"many" -"multiple" '
         '-duplicates -duplicate -bundle -assorted -collection -kit -lot -bulk '
@@ -357,9 +465,9 @@ def _build_queries(tool_name_en: str, tool_name_vi: str = "", tool_type: str = "
     exclude_plural_tools = " ".join(f"-{term}" for term in plural_terms)
     exclude_dirty_background = '-watermark -logo -"text overlay" -banner -poster -diagram -illustration'
     return [
-        f'"{canonical}" {subject_query} exactly one single object one laboratory tool only centered isolated full object visible product photo plain white background no duplicates no set no collection no row no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
-        f'{base} {subject_query} only one single laboratory tool isolated centered one piece real product photo plain white background no extra tools no multiple objects {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
-        f'{base} {subject_query} individual apparatus exactly one object only one tool clean white background orthographic product photo no collection no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'"{canonical}" {subject_query} exactly one single object one laboratory tool only centered isolated full object visible {first_background_phrase} no duplicates no set no collection no row no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'{base} {subject_query} only one single laboratory tool isolated centered one piece {background_phrase} no extra tools no multiple objects {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'{base} {subject_query} individual apparatus exactly one object only one tool orthographic {background_phrase} no collection no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
     ]
 
 
@@ -797,13 +905,25 @@ def _validate_single_object_image(url: str, profile: dict) -> dict:
     lower_x_group_count = len(lower_x_groups)
     largest = max(components, key=lambda item: item["area"])
     min_x, min_y, max_x, max_y = largest["bbox"]
+    allow_non_white_background = bool(profile.get("allow_non_white_background"))
+    allow_product_labels = bool(profile.get("allow_product_labels"))
     background_check = _validate_plain_background(image, mask, largest["bbox"])
-    if not background_check["ok"]:
+    if not background_check["ok"] and not allow_non_white_background:
         return _validation_result(False, -65, reasons + background_check["reasons"], estimated_object_count)
+    if not background_check["ok"]:
+        background_check = {
+            "ok": True,
+            "reasons": background_check["reasons"] + ["relaxed_non_white_background"],
+        }
 
     noise_check = _detect_external_logo_or_text(mask, width, height, largest["bbox"])
-    if not noise_check["ok"]:
+    if not noise_check["ok"] and not allow_product_labels:
         return _validation_result(False, -60, reasons + background_check["reasons"] + noise_check["reasons"], estimated_object_count)
+    if not noise_check["ok"]:
+        noise_check = {
+            "ok": True,
+            "reasons": noise_check["reasons"] + ["relaxed_product_labels"],
+        }
 
     touches_edges = (
         min_x <= 2 or

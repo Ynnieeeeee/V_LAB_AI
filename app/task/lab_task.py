@@ -2,23 +2,24 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
+from pathlib import Path
 
-import trimesh
 from sqlmodel import Session
 
 from app.models.tools import Tools
 from app.services.image_service import (
     SINGLE_IMAGE_FAILURE_MESSAGE,
-    clean_tool_image_for_3d,
     compute_image_hash,
     search_tool_image,
     validate_single_object_image,
 )
-from app.services.mesh_service import MeshService
+from app.services.mesh_service import ENABLE_HEAVY_MODEL_VALIDATION, MODEL_URL_PREFIX, MeshService
 from app.utils.tool_classifier import ensure_tools_metadata_columns
 
 
 PROCESSING_TOOL_IDS = set()
+APP_DIR = Path(__file__).resolve().parents[1]
+STATIC_MODEL_DIR = APP_DIR / "static" / "models"
 
 
 def _normalize_tool_id(tool_id):
@@ -32,9 +33,20 @@ def get_processing_tool_ids():
     return set(PROCESSING_TOOL_IDS)
 
 
+def _local_static_model_path_from_url(model_url: str = ""):
+    if not model_url or not str(model_url).startswith(MODEL_URL_PREFIX):
+        return None
+    filename = os.path.basename(str(model_url).split("?")[0].split("/")[-1])
+    if not filename:
+        return None
+    return STATIC_MODEL_DIR / filename
+
+
 def align_model_to_floor(local_path):
     """Only translate the model to touch the floor; keep AI-generated orientation intact."""
     try:
+        import trimesh
+
         loaded = trimesh.load(local_path, force="scene")
         bounds = getattr(loaded, "bounds", None)
         if bounds is None:
@@ -49,36 +61,6 @@ def align_model_to_floor(local_path):
         print(f"Loi khi can chinh mo hinh: {exc}")
 
 
-def apply_local_fallback_model(session, tool, service_3d, reason):
-    fallback_url = service_3d.get_local_fallback_model_url(
-        name_vi=tool.name_tool_vi,
-        name_en=tool.name_tool_en,
-        tool_type=tool.tool_type,
-    )
-    if not fallback_url:
-        print(f"[3DPipeline] Khong co fallback model cho {tool.name_tool_en}: {reason}")
-        return False
-    tool.model_3d_url = fallback_url
-    tool.model_generation_status = "fallback"
-    tool.model_image_hash = tool.image_hash
-    tool.force_regenerate_model = False
-    session.add(tool)
-    session.commit()
-    print(f"[3DPipeline] Dung fallback model cho {tool.name_tool_en}: {fallback_url} | reason={reason}")
-    return True
-
-
-NON_FALLBACK_FAILURES = {
-    "missing_public_base_url_for_cleaned_image",
-    "non_public_base_url_for_cleaned_image",
-    "missing_image_url",
-}
-
-
-def should_apply_local_fallback(reason):
-    return reason not in NON_FALLBACK_FAILURES
-
-
 def mark_model_generation_failed(session, tool, reason):
     if reason in {"missing_public_base_url_for_cleaned_image", "non_public_base_url_for_cleaned_image"}:
         tool.model_generation_status = "failed_public_image_url"
@@ -88,9 +70,49 @@ def mark_model_generation_failed(session, tool, reason):
         tool.model_job_id = None
     else:
         tool.model_generation_status = "failed"
+        tool.force_regenerate_model = False
+        tool.model_job_id = None
     tool.updated_at = datetime.utcnow()
     session.add(tool)
     session.commit()
+
+
+def _is_public_image_url(image_url: str = "") -> bool:
+    return bool(image_url and image_url.startswith(("http://", "https://")))
+
+
+def _save_completed_model_url(session, tool_id, model_url: str, image_hash: str | None = None):
+    if not model_url or not str(model_url).startswith(MODEL_URL_PREFIX):
+        print("[3DPipeline] Refuse to save non-local model_3d_url")
+        return None
+    local_path = _local_static_model_path_from_url(model_url)
+    if not local_path or not local_path.exists():
+        print("[3DPipeline] Refuse to save model_3d_url because local file is missing")
+        return None
+    tool = session.get(Tools, tool_id)
+    if not tool:
+        return None
+    tool.model_3d_url = model_url
+    tool.model_image_hash = image_hash or tool.image_hash
+    tool.model_generation_status = "completed"
+    tool.force_regenerate_model = False
+    tool.updated_at = datetime.utcnow()
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+    if tool.model_3d_url != model_url:
+        print("[3DPipeline] DB verify failed after saving model_3d_url")
+        return None
+    print(f"[3DPipeline] Saved model_3d_url to DB: {tool.name_tool_en} -> {model_url}")
+    return tool
+
+
+def _model_url_log_state(model_url: str = "") -> str:
+    if not model_url:
+        return "empty"
+    if str(model_url).startswith(MODEL_URL_PREFIX):
+        return "local"
+    return "non_local"
 
 
 def _model_matches_current_image(tool):
@@ -137,8 +159,6 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
     service_3d = MeshService()
     from app.services.vision_service import VisionService
     vision_service = VisionService()
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
-
     for t_id in queued_ids:
         key = str(t_id)
         try:
@@ -149,14 +169,29 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                 if not tool:
                     print(f"[3DPipeline] Khong tim thay tool: {key}")
                     continue
+
+                if tool.image_2d_url and not _is_public_image_url(tool.image_2d_url):
+                    print(
+                        "[Image2Model] Existing image is local/private; replacing with a direct internet URL:",
+                        tool.image_2d_url,
+                    )
+                    tool.image_2d_url = None
+                    tool.image_hash = None
+                    _reset_model_for_new_image(tool, None, "replace_local_image_with_public_url")
+                    session.add(tool)
+                    session.commit()
+
                 if _model_matches_current_image(tool):
                     print("[Image2Model] FORCE regenerate:", False)
                     print("[Image2Model] image_url used:", tool.image_2d_url)
                     print("[Image2Model] image_hash:", tool.image_hash)
                     print("[Image2Model] old model_image_hash:", tool.model_image_hash)
-                    print("[Image2Model] old model_3d_url:", tool.model_3d_url)
+                    print("[Image2Model] old model_3d_url:", _model_url_log_state(tool.model_3d_url))
                     print("[Image2Model] skip reason:", _model_reuse_reason(tool))
-                    print(f"[3DPipeline] Tool da co model dung hash, bo qua: {tool.name_tool_en} -> {tool.model_3d_url}")
+                    print(
+                        f"[3DPipeline] Tool da co model dung hash, bo qua: "
+                        f"{tool.name_tool_en} ({_model_url_log_state(tool.model_3d_url)})"
+                    )
                     continue
 
                 if tool.image_2d_url and not tool.image_hash:
@@ -169,7 +204,7 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                     print("[Image2Model] image_url used:", tool.image_2d_url)
                     print("[Image2Model] image_hash:", tool.image_hash)
                     print("[Image2Model] old model_image_hash:", tool.model_image_hash)
-                    print("[Image2Model] old model_3d_url:", tool.model_3d_url)
+                    print("[Image2Model] old model_3d_url:", _model_url_log_state(tool.model_3d_url))
                     _reset_model_for_new_image(tool, tool.image_hash, "cached_model_hash_mismatch")
                     session.add(tool)
                     session.commit()
@@ -207,38 +242,10 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                         session.commit()
                     else:
                         print(f"{SINGLE_IMAGE_FAILURE_MESSAGE} ({tool.name_tool_en})")
-                        apply_local_fallback_model(session, tool, service_3d, "missing_image")
+                        mark_model_generation_failed(session, tool, "missing_image")
                         continue
 
-                original_public_url = tool.image_2d_url if (tool.image_2d_url and tool.image_2d_url.startswith(("http://", "https://"))) else None
-                if tool.image_2d_url and tool.image_2d_url.startswith("/static/"):
-                    public_base_url = os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_PUBLIC_URL") or PUBLIC_BASE_URL
-                    if not public_base_url or service_3d._is_non_public_base_url(public_base_url):
-                        print(f"[3DPipeline] Local image found but PUBLIC_BASE_URL is missing/private. Searching for public image URL to use as fallback...")
-                        public_search_url = search_tool_image(
-                            tool.name_tool_en,
-                            tool.name_tool_vi,
-                            tool.tool_type,
-                            tool.subject_type,
-                        )
-                        if public_search_url:
-                            print(f"[3DPipeline] Found public search URL: {public_search_url}")
-                            original_public_url = public_search_url
-
-                cleaned_image_url = clean_tool_image_for_3d(
-                    tool.image_2d_url,
-                    tool.name_tool_en,
-                    tool.id_tool,
-                    tool.tool_type,
-                )
-                if cleaned_image_url and cleaned_image_url != tool.image_2d_url:
-                    previous_image_url = tool.image_2d_url
-                    tool.image_2d_url = cleaned_image_url
-                    cleaned_hash = compute_image_hash(cleaned_image_url)
-                    _reset_model_for_new_image(tool, cleaned_hash, f"image_changed:{previous_image_url}->{cleaned_image_url}")
-                    session.add(tool)
-                    session.commit()
-                elif tool.image_2d_url:
+                if tool.image_2d_url:
                     current_hash = compute_image_hash(tool.image_2d_url)
                     if current_hash and current_hash != tool.image_hash:
                         _reset_model_for_new_image(tool, current_hash, "image_hash_changed")
@@ -250,9 +257,9 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                     print("[Image2Model] image_url used:", tool.image_2d_url)
                     print("[Image2Model] image_hash:", tool.image_hash)
                     print("[Image2Model] old model_image_hash:", tool.model_image_hash)
-                    print("[Image2Model] old model_3d_url:", tool.model_3d_url)
+                    print("[Image2Model] old model_3d_url:", _model_url_log_state(tool.model_3d_url))
                     print("[Image2Model] skip reason:", _model_reuse_reason(tool))
-                    print(f"[3DPipeline] Reuse model after hash check: {tool.model_3d_url}")
+                    print(f"[3DPipeline] Reuse model after hash check: {_model_url_log_state(tool.model_3d_url)}")
                     continue
 
                 print(f"Dang phan tich chat lieu: {tool.name_tool_en}")
@@ -280,7 +287,7 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                     print("[Image2Model] image_url used:", tool.image_2d_url)
                     print("[Image2Model] image_hash:", tool.image_hash)
                     print("[Image2Model] old model_image_hash:", tool.model_image_hash)
-                    print("[Image2Model] old model_3d_url:", tool.model_3d_url)
+                    print("[Image2Model] old model_3d_url:", _model_url_log_state(tool.model_3d_url))
                     print("[Image2Model] preparing 3D API request...")
                     task_id = service_3d.create_3d_task(
                         tool.image_2d_url,
@@ -288,7 +295,6 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                         tool.name_tool_vi,
                         tool.tool_type,
                         model_attempt,
-                        fallback_public_url=original_public_url,
                     )
                     if not task_id:
                         print(f"[3DPipeline] Khong tao duoc Tripo task cho: {tool.name_tool_en}")
@@ -305,9 +311,9 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                     for _ in range(60):
                         await asyncio.sleep(5)
                         res = service_3d.check_task_status(task_id)
-                        print(f"[3DPipeline] Trang thai {tool.name_tool_en}: {res}")
 
                         if isinstance(res, str) and res.startswith("http"):
+                            print(f"[3DPipeline] Trang thai {tool.name_tool_en}: model_url_ready")
                             local_url = service_3d.download_and_get_local_url(
                                 res,
                                 tool.name_tool_en,
@@ -319,34 +325,38 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                                 break
 
                             full_path = service_3d.local_model_path_from_url(local_url)
+                            if not full_path or not os.path.exists(full_path):
+                                last_failure = "download_missing_local_file"
+                                print("[3DPipeline] Download returned local URL but file is missing; model_3d_url will not be saved")
+                                break
+
                             validation = None
-                            if full_path and os.path.exists(full_path):
+                            if ENABLE_HEAVY_MODEL_VALIDATION:
                                 validation = service_3d.validate_and_repair_single_object_model(
                                     full_path,
                                     tool.name_tool_en,
                                     tool.tool_type,
                                 )
+                            else:
+                                print("[ModelValidation] skipped heavy mesh validation")
                             if validation and not validation.get("accepted"):
                                 last_failure = validation.get("reason", "duplicated_model")
-                                print(f"[ModelValidation] rejected duplicated model: {last_failure}")
+                                print(f"[ModelValidation] rejected local model copy: {last_failure}; model_3d_url will not be saved")
                                 break
 
-                            if full_path and os.path.exists(full_path):
+                            if ENABLE_HEAVY_MODEL_VALIDATION:
                                 align_model_to_floor(full_path)
 
-                            tool = session.get(Tools, t_id)
-                            tool.model_3d_url = local_url
-                            tool.model_image_hash = tool.image_hash
-                            tool.model_generation_status = "completed"
-                            tool.force_regenerate_model = False
-                            tool.updated_at = datetime.utcnow()
-                            session.add(tool)
-                            session.commit()
+                            tool = _save_completed_model_url(session, t_id, local_url, tool.image_hash)
+                            if not tool:
+                                last_failure = "non_local_model_url"
+                                break
                             print(f"[ModelValidation] final accepted: {local_url}")
                             print(f"Hoan tat dung cu: {tool.name_tool_en}")
                             completed = True
                             break
 
+                        print(f"[3DPipeline] Trang thai {tool.name_tool_en}: {res}")
                         if "ERROR" in str(res):
                             print(f"Loi Tripo cho {tool.name_tool_en}: {res}")
                             last_failure = str(res)
@@ -359,13 +369,7 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                     tool = session.get(Tools, t_id)
                     if tool and not tool.model_3d_url:
                         mark_model_generation_failed(session, tool, last_failure)
-                        if should_apply_local_fallback(last_failure):
-                            apply_local_fallback_model(session, tool, service_3d, last_failure)
-                        else:
-                            print(
-                                "[3DPipeline] Skip fallback model because the cleaned image was not sent "
-                                f"to the 3D API: {last_failure}"
-                            )
+                        print(f"[3DPipeline] No local model saved for {tool.name_tool_en}: {last_failure}")
         except Exception as exc:
             print(f"[3DPipeline] Loi pipeline cho tool {key}: {exc}")
         finally:

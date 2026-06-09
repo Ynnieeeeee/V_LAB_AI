@@ -4,6 +4,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+
 from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
@@ -21,6 +22,10 @@ from app.utils.tool_classifier import ensure_tools_metadata_columns
 router = APIRouter(prefix="/api/lab", tags=["Laboratory"])
 lab_service = LabServices()
 LAST_PIPELINE_REQUEUE_AT = {}
+
+
+def _is_fallback_model(tool: Tools) -> bool:
+    return tool.model_generation_status == "fallback"
 
 
 @router.post("/generate")
@@ -111,23 +116,40 @@ def _queue_pending_3d_tools(id_conv, backgroundtask: BackgroundTasks, session: S
         Tools.id_conv == id_conv,
         Tools.is_deleted == False,
         or_(
-            Tools.model_3d_url == None,
+            and_(
+                Tools.model_3d_url == None,
+                Tools.model_generation_status != "failed",
+            ),
             Tools.force_regenerate_model == True,
-            and_(Tools.image_hash != None, Tools.model_image_hash != Tools.image_hash),
+            Tools.model_generation_status == "fallback",
         ),
     )
     pending_tools = session.exec(pending_statement).all()
     processing_ids = get_processing_tool_ids()
     now = time.time()
     requeue_ids = []
+    changed = False
 
     for tool in pending_tools:
+        if _is_fallback_model(tool):
+            print(f"[LabStatus] Reset fallback model for strict single-image pipeline: {tool.name_tool_en} ({tool.id_tool})")
+            tool.model_3d_url = None
+            tool.model_image_hash = None
+            tool.model_generation_status = "pending"
+            tool.force_regenerate_model = True
+            tool.updated_at = datetime.utcnow()
+            session.add(tool)
+            changed = True
+
         key = str(tool.id_tool)
         last_attempt = LAST_PIPELINE_REQUEUE_AT.get(key, 0)
         if key in processing_ids or now - last_attempt < 60:
             continue
         LAST_PIPELINE_REQUEUE_AT[key] = now
         requeue_ids.append(tool.id_tool)
+
+    if changed:
+        session.commit()
 
     if requeue_ids:
         print(f"[LabStatus] Requeue pending 3D tools: {[str(tool_id) for tool_id in requeue_ids]}")
@@ -154,10 +176,6 @@ async def get_tool_status(
         Tools.is_deleted == False,
         Tools.model_3d_url != None,
         Tools.force_regenerate_model == False,
-        or_(
-            and_(Tools.image_hash != None, Tools.model_image_hash == Tools.image_hash),
-            and_(Tools.image_hash == None, Tools.model_image_hash == None),
-        ),
     )
     result = session.exec(statement).all()
     print(f"[LabStatus] ready tools for {id_conv}: {len(result)}")
@@ -167,9 +185,7 @@ async def get_tool_status(
 def _should_regenerate_model(tool: Tools) -> bool:
     if not tool.model_3d_url or tool.force_regenerate_model:
         return True
-    if tool.image_hash and tool.model_image_hash == tool.image_hash:
-        return False
-    return not (tool.image_hash is None and tool.model_image_hash is None)
+    return False
 
 
 @router.get("/tools/{id_tool}/model-debug")
