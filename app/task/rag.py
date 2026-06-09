@@ -19,6 +19,8 @@ from app.config import DATABASE_URL, HF_TOKEN
 logger = logging.getLogger(__name__)
 
 NO_EXPERIMENT_DATA_MESSAGE = "Không tìm thấy dữ liệu thí nghiệm phù hợp."
+NO_DATA_MESSAGE = "Không có dữ liệu."
+STRUCTURED_NO_EXPERIMENT_DATA_MESSAGE = "Không tìm thấy dữ liệu thí nghiệm phù hợp."
 MIN_VECTOR_SCORE = 0.08
 MIN_LEXICAL_OVERLAP = 0.05
 MIN_SPECIFIC_OVERLAP = 0.34
@@ -530,12 +532,93 @@ def retrieved_context(query: str, subject: str):
 prompt = """
 Bạn là Trợ lý Phòng thí nghiệm Ảo.
 
-QUY TẮC BẮT BUỘC:
+Trước khi trả lời, phải dùng tool retrieved_context để lấy context theo USER_QUERY và môn học. Chỉ được sử dụng nội dung tool trả về làm context.
+
+QUY TẮC BẮT BUỘC VỀ NỘI DUNG:
+
 1. Chỉ trả lời dựa trên context retrieve được.
-2. Không tự tạo hóa chất, khối lượng, thể tích, nhiệt độ, xúc tác, hiện tượng hoặc bước thực hiện.
-3. Nếu context thiếu dữ liệu, ghi "Không có dữ liệu." cho phần thiếu.
-4. Nếu không tìm thấy context phù hợp, trả đúng câu: "Không tìm thấy dữ liệu thí nghiệm phù hợp."
+
+2. Không tự tạo:
+* hóa chất
+* khối lượng
+* thể tích
+* nhiệt độ
+* xúc tác
+* hiện tượng
+* bước thực hiện
+* hướng dẫn lắp ráp
+
+3. Nếu context thiếu dữ liệu thì ghi:
+"Không có dữ liệu."
+cho phần tương ứng.
+
+4. Nếu không tìm thấy context phù hợp thì trả về đúng JSON:
+{
+  "bot_response": "Không tìm thấy dữ liệu thí nghiệm phù hợp.",
+  "has_assembly": false,
+  "assembly_guide": []
+}
+
 5. Không dùng trí nhớ hội thoại để dựng thí nghiệm mới.
+
+6. Không suy luận thêm ngoài context.
+
+7. Nếu context không đề cập đến lắp ráp dụng cụ thì tuyệt đối không tạo ra bước lắp ráp.
+
+QUY TẮC ĐỊNH DẠNG JSON:
+
+Luôn luôn trả về RAW JSON.
+KHÔNG bọc trong markdown.
+KHÔNG thêm giải thích.
+KHÔNG thêm tiêu đề.
+Chỉ trả về JSON hợp lệ.
+
+Cấu trúc:
+{
+  "bot_response": "Nội dung trả lời dựa hoàn toàn vào context",
+  "has_assembly": false,
+  "assembly_guide": []
+}
+
+KHI CONTEXT CÓ HƯỚNG DẪN LẮP RÁP:
+
+Nếu context có mô tả rõ ràng cách bố trí hoặc lắp ráp dụng cụ thì trích xuất thành:
+{
+  "bot_response": "...",
+  "has_assembly": true,
+  "assembly_guide": [
+    {
+      "step": 1,
+      "action_text": "Đặt bình tam giác lên kiềng đun",
+      "source_tool": "binh_tam_giac",
+      "target_tool": "kieng_dun",
+      "snap_id": "bottom_joint"
+    }
+  ]
+}
+
+QUY TẮC CHO assembly_guide:
+
+Chỉ được thêm phần tử vào assembly_guide khi context thực sự chứa thông tin đó.
+Không được đoán.
+Không được bổ sung kiến thức hóa học.
+Không được suy luận dựa trên tên thí nghiệm.
+Nếu context không nêu rõ source_tool, target_tool hoặc snap point thì điền "Không có dữ liệu".
+
+TRƯỜNG HỢP KHÔNG CÓ HƯỚNG DẪN LẮP RÁP:
+
+Nếu context chỉ chứa lý thuyết, phương trình hóa học hoặc mô tả hiện tượng thì trả:
+{
+  "bot_response": "...",
+  "has_assembly": false,
+  "assembly_guide": []
+}
+
+ƯU TIÊN:
+1. Không bịa dữ liệu.
+2. Không suy luận.
+3. Chỉ trích xuất.
+4. JSON hợp lệ parse được bằng json.loads().
 """
 agent = create_agent(model, [retrieved_context], system_prompt=prompt)
 
@@ -788,6 +871,66 @@ def _chemical_in_context(name: str, context: str) -> bool:
     return any(_text_in_context(alias, context) for alias in record.get("aliases", []))
 
 
+def _is_no_data_value(value) -> bool:
+    return _normalize_text(value) in {
+        "",
+        "khong co du lieu",
+        "khong co du lieu.",
+        "none",
+        "null",
+        "n/a",
+    }
+
+
+def _structured_rag_response(bot_response: str, assembly_guide: list[dict] | None = None) -> dict:
+    guide = assembly_guide or []
+    return {
+        "bot_response": bot_response or NO_DATA_MESSAGE,
+        "has_assembly": bool(guide),
+        "assembly_guide": guide,
+    }
+
+
+def _not_found_structured_response() -> dict:
+    return _structured_rag_response(STRUCTURED_NO_EXPERIMENT_DATA_MESSAGE, [])
+
+
+def _coerce_assembly_guide(raw_guide, selected_context: str) -> list[dict]:
+    if not isinstance(raw_guide, list):
+        return []
+
+    guide = []
+    for index, raw_item in enumerate(raw_guide, start=1):
+        if not isinstance(raw_item, dict):
+            continue
+
+        action_text = str(raw_item.get("action_text") or "").strip()
+        if _is_no_data_value(action_text) or not _text_in_context(action_text, selected_context):
+            continue
+
+        def grounded_or_no_data(field_name: str) -> str:
+            value = str(raw_item.get(field_name) or "").strip()
+            if _is_no_data_value(value):
+                return NO_DATA_MESSAGE
+            return value if _text_in_context(value, selected_context) else NO_DATA_MESSAGE
+
+        try:
+            step = int(raw_item.get("step") or index)
+        except (TypeError, ValueError):
+            step = index
+
+        guide.append({
+            "step": step,
+            "action_text": action_text,
+            "source_tool": grounded_or_no_data("source_tool"),
+            "target_tool": grounded_or_no_data("target_tool"),
+            "snap_id": grounded_or_no_data("snap_id"),
+        })
+
+    guide.sort(key=lambda item: item.get("step") or 0)
+    return guide
+
+
 def _normalize_unit(unit: str | None) -> str | None:
     unit_key = _normalize_text(unit)
     if unit_key in {"ml", "mililit"}:
@@ -818,8 +961,8 @@ def _strict_extraction_prompt(question: str, selected_context: str) -> str:
 Bạn là bộ trích xuất dữ liệu thí nghiệm.
 
 Chỉ được dùng CONTEXT bên dưới. Không dùng kiến thức ngoài context. Không tự thêm hóa chất, lượng, nhiệt độ, xúc tác, hiện tượng hoặc bước thực hiện.
-Nếu context không mô tả một thí nghiệm phù hợp với USER_QUERY, trả JSON: {{"found": false, "reason": "Không tìm thấy dữ liệu thí nghiệm phù hợp."}}
 Nếu một trường không xuất hiện trong context, điền null hoặc [].
+Nếu context không mô tả một thí nghiệm phù hợp với USER_QUERY, trả JSON: {{"found": false, "reason": "Không tìm thấy dữ liệu thí nghiệm phù hợp.", "has_assembly": false, "assembly_guide": []}}
 Không bọc markdown. Chỉ trả JSON hợp lệ theo schema:
 {{
   "found": true,
@@ -834,8 +977,19 @@ Không bọc markdown. Chỉ trả JSON hợp lệ theo schema:
     {{"step_order": 1, "chemical_name_vi": "...", "amount": 0, "unit": "ml|g|mg|giọt", "action_type": "pour|add|heat", "action_description": "...", "heating_required": false, "target_temperature": null}}
   ],
   "conditions": {{"heating_required": false, "target_temperature": null, "catalyst": null, "text": null}},
+  "has_assembly": false,
+  "assembly_guide": [
+    {{"step": 1, "action_text": "...", "source_tool": "...", "target_tool": "...", "snap_id": "..."}}
+  ],
   "phenomenon": "..."
 }}
+
+QUY TẮC assembly_guide:
+- Chỉ thêm phần tử khi CONTEXT thực sự có hướng dẫn bố trí hoặc lắp ráp dụng cụ.
+- Không suy luận cách lắp ráp từ tên thí nghiệm, hóa chất hoặc kiến thức nền.
+- Nếu CONTEXT không nói về lắp ráp dụng cụ, trả "has_assembly": false và "assembly_guide": [].
+- Nếu action_text không xuất hiện trong CONTEXT, không thêm bước đó.
+- Nếu source_tool, target_tool hoặc snap_id không xuất hiện rõ trong CONTEXT, điền "Không có dữ liệu".
 
 USER_QUERY:
 {question}
@@ -914,6 +1068,10 @@ def _validate_extracted_payload(payload: dict | None, selected_context: str) -> 
     if target_temperature is not None and not _number_in_context(target_temperature, selected_context):
         issues.append(f"temperature_not_in_context:{target_temperature}")
 
+    assembly_guide = _coerce_assembly_guide(payload.get("assembly_guide"), selected_context)
+    payload["assembly_guide"] = assembly_guide
+    payload["has_assembly"] = bool(assembly_guide)
+
     result = {"ok": not issues, "issues": issues}
     logger.info("RAG extracted_payload_validation=%s", result)
     return result
@@ -965,6 +1123,7 @@ def _build_plan_from_payload(payload: dict, docs: list[KnowledgeDocument]) -> di
     heating_required = bool(conditions.get("heating_required")) or any(step["action_type"] == "heat" for step in steps)
     target_temperature = _coerce_float(conditions.get("target_temperature"))
     source_documents = [_doc_brief(doc) for doc in docs]
+    assembly_guide = payload.get("assembly_guide") or []
     experiment_name = payload.get("experiment_name") or "Không có dữ liệu."
     experiment_id = payload.get("experiment_id") or _compact_key(experiment_name)
     reaction_id = payload.get("reaction_id") or None
@@ -976,6 +1135,8 @@ def _build_plan_from_payload(payload: dict, docs: list[KnowledgeDocument]) -> di
         "steps": steps,
         "required_chemicals": chemicals,
         "required_tools": payload.get("tools") or [],
+        "has_assembly": bool(assembly_guide),
+        "assembly_guide": assembly_guide,
         "required_conditions": {
             "temperature_min": target_temperature,
             "temperature_max": None,
@@ -1915,12 +2076,71 @@ def _extract_answer_text(raw_answer: str) -> str:
         parsed = json.loads(text_value)
         if isinstance(parsed, dict) and parsed.get("answer_text"):
             return clean_repeating_text(str(parsed["answer_text"]))
+        if isinstance(parsed, dict) and parsed.get("bot_response"):
+            return clean_repeating_text(str(parsed["bot_response"]))
     except Exception:
         pass
     return text_value
 
 
+def _extract_structured_rag_response(raw_answer: str) -> dict:
+    parsed = _extract_json_object(raw_answer)
+    if not isinstance(parsed, dict):
+        return _structured_rag_response(_extract_answer_text(raw_answer), [])
+
+    bot_response = clean_repeating_text(str(
+        parsed.get("bot_response") or
+        parsed.get("answer_text") or
+        parsed.get("answer") or
+        NO_DATA_MESSAGE
+    ))
+    assembly_guide = parsed.get("assembly_guide") if isinstance(parsed.get("assembly_guide"), list) else []
+    return _structured_rag_response(bot_response, assembly_guide if parsed.get("has_assembly") else [])
+
+
+def _message_content(message) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
+
+
+def _message_name(message) -> str:
+    if isinstance(message, dict):
+        return str(message.get("name") or "")
+    return str(getattr(message, "name", "") or "")
+
+
+def _message_type(message) -> str:
+    if isinstance(message, dict):
+        return str(message.get("type") or "")
+    return str(getattr(message, "type", "") or "")
+
+
+def _extract_tool_context_from_agent_response(response) -> str:
+    messages = response.get("messages", []) if isinstance(response, dict) else []
+    parts = []
+    for message in messages:
+        name = _message_name(message)
+        msg_type = _message_type(message)
+        if name == "retrieved_context" or msg_type == "tool":
+            content = _message_content(message).strip()
+            if content:
+                parts.append(content)
+    return "\n---\n".join(parts)
+
+
+def _ground_structured_assembly_response(structured: dict, selected_context: str) -> dict:
+    guide = _coerce_assembly_guide(structured.get("assembly_guide"), selected_context)
+    structured["assembly_guide"] = guide
+    structured["has_assembly"] = bool(guide)
+    return structured
+
+
 def ask_questions(question: str, selected_subject: str, history: list = None):
+    return ask_structured_questions(question, selected_subject, history=history).get("bot_response") or NO_DATA_MESSAGE
+
+
+def ask_structured_questions(question: str, selected_subject: str, history: list = None):
     input_messages = []
     if history:
         for msg in history:
@@ -1944,12 +2164,16 @@ def ask_questions(question: str, selected_subject: str, history: list = None):
             {"messages": input_messages},
         )
         if response is None:
+            return _structured_rag_response("Xin lỗi, Mascot mất quá lâu để phản hồi. Bạn thử hỏi lại hoặc diễn đạt ngắn hơn nhé!", [])
             return "Xin lỗi, Mascot mất quá lâu để phản hồi. Bạn thử hỏi lại hoặc diễn đạt ngắn hơn nhé!"
         raw_answer = response["messages"][-1].content
         logger.info("RAG raw_llm_response=%s", raw_answer)
-        return _extract_answer_text(raw_answer)
+        structured = _extract_structured_rag_response(raw_answer)
+        tool_context = _extract_tool_context_from_agent_response(response)
+        return _ground_structured_assembly_response(structured, tool_context)
     except Exception as exc:
         logger.exception("Error in ask_questions: %s", exc)
+        return _structured_rag_response("Xin lỗi, mình gặp chút trục trặc khi xử lý câu hỏi. Bạn thử lại nhé!", [])
         return "Xin lỗi, mình gặp chút trục trặc khi xử lý câu hỏi. Bạn thử lại nhé!"
 
 
@@ -1982,14 +2206,18 @@ def ask_questions_with_plan(question: str, selected_subject: str, history: list 
                 return {
                     "answer_text": fallback_answer,
                     "experiment_plan": fallback_plan,
+                    "has_assembly": False,
+                    "assembly_guide": [],
                     "retrieved_documents": [_doc_brief(doc) for doc in docs] + fallback_plan.get("source_documents", []),
                     "consistency_validation": validations,
                     "is_experiment_query": True,
                 }
 
             result = {
-                "answer_text": NO_EXPERIMENT_DATA_MESSAGE,
+                "answer_text": STRUCTURED_NO_EXPERIMENT_DATA_MESSAGE,
                 "experiment_plan": None,
+                "has_assembly": False,
+                "assembly_guide": [],
                 "retrieved_documents": [_doc_brief(doc) for doc in docs],
                 "consistency_validation": {
                     "extraction": extraction_validation,
@@ -2014,15 +2242,19 @@ def ask_questions_with_plan(question: str, selected_subject: str, history: list 
         return {
             "answer_text": answer_text,
             "experiment_plan": plan,
+            "has_assembly": bool(plan.get("assembly_guide")),
+            "assembly_guide": plan.get("assembly_guide") or [],
             "retrieved_documents": [_doc_brief(doc) for doc in docs],
             "consistency_validation": validations,
             "is_experiment_query": True,
         }
 
-    answer = ask_questions(question, selected_subject=selected_subject, history=history)
+    structured_answer = ask_structured_questions(question, selected_subject=selected_subject, history=history)
     return {
-        "answer_text": answer,
+        "answer_text": structured_answer.get("bot_response") or NO_DATA_MESSAGE,
         "experiment_plan": None,
+        "has_assembly": bool(structured_answer.get("assembly_guide")),
+        "assembly_guide": structured_answer.get("assembly_guide") or [],
         "retrieved_documents": [_doc_brief(doc) for doc in docs],
         "consistency_validation": {},
         "is_experiment_query": False,

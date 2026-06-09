@@ -163,6 +163,17 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             mascot_speech="Amoniac trung hòa axit nitric tạo amoni nitrat.",
         )
 
+    if _has(pair, "AgNO3", "Bạc Nitrat") and _has(pair, "NH3", "Amoniac"):
+        return _base_result(
+            precipitate=True,
+            precipitateColor="#2b2118",
+            color="#8a7564",
+            result_chemical_type="precipitate_suspension",
+            equation="2AgNO₃ + 2NH₃ + H₂O → Ag₂O↓ + 2NH₄NO₃",
+            products=["Ag₂O", "NH₄NO₃"],
+            mascot_speech="Bạc nitrat gặp amoniac tạo kết tủa bạc(I) oxit Ag₂O màu nâu đen và amoni nitrat.",
+        )
+
     # BaCl2 phát hiện ion sulfate, không chỉ với H2SO4 mà cả sulfate sau trung hòa.
     if _has(pair, "BaCl2", "Bari Clorua") and _has(pair, "Na2SO4", "Natri Sunfat", "sulfate", "sunfat"):
         return _base_result(

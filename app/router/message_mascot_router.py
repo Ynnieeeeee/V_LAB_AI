@@ -318,6 +318,8 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
             
         rag_result = ask_questions_with_plan(req.question, selected_subject=current_subject, history=history)
         answer = rag_result["answer_text"]
+        has_assembly = bool(rag_result.get("has_assembly"))
+        assembly_guide = rag_result.get("assembly_guide") or []
         experiment_plan = rag_result["experiment_plan"]
         consistency_validation = dict(rag_result.get("consistency_validation") or {})
         logger.info(
@@ -350,6 +352,9 @@ def message_mascot_send(req: ChatRequest, user: Profiles = Depends(get_current_u
 
         return {
             "id_conversation": str(id_conversation),
+            "bot_response": answer,
+            "has_assembly": has_assembly,
+            "assembly_guide": assembly_guide,
             "answer": answer,
             "answer_text": answer,
             "experiment_plan": experiment_plan,

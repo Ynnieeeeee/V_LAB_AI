@@ -1,5 +1,7 @@
 .hidden { display: none; }
 #context-menu button { font-size: 14px; font-family: sans-serif; }
+#removeChemicalBtn { background-color: #ef4444; color: #fff; }
+#removeChemicalBtn:hover { background-color: #dc2626; }
 
 #menuSidebar {
     position: fixed !important;

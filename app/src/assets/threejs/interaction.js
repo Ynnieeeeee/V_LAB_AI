@@ -87,6 +87,103 @@ function isChemicalBottleObject(obj) {
     return Boolean(obj?.userData && (obj.userData.id_chemical || obj.userData.chemicalId) && !obj.userData.toolData);
 }
 
+function isDescendantOf(object, ancestor) {
+    let node = object;
+    while (node) {
+        if (node === ancestor) return true;
+        node = node.parent;
+    }
+    return false;
+}
+
+function getObjectWorldPositionClone(object) {
+    const position = new three.Vector3();
+    object?.updateMatrixWorld?.(true);
+    object?.getWorldPosition?.(position);
+    return position;
+}
+
+function getChemicalCabinetHome(object) {
+    if (!isChemicalBottleObject(object)) return null;
+    const data = object.userData || {};
+    if (!data.cabinetParent?.isObject3D || !data.cabinetLocalPosition?.isVector3) return null;
+
+    data.cabinetParent.updateMatrixWorld(true);
+    const worldPosition = data.cabinetParent.localToWorld(data.cabinetLocalPosition.clone());
+
+    return {
+        parent: data.cabinetParent,
+        localPosition: data.cabinetLocalPosition.clone(),
+        localQuaternion: data.cabinetLocalQuaternion?.isQuaternion ? data.cabinetLocalQuaternion.clone() : null,
+        localScale: data.cabinetLocalScale?.isVector3 ? data.cabinetLocalScale.clone() : null,
+        worldPosition,
+        worldQuaternion: data.cabinetWorldQuaternion?.isQuaternion ? data.cabinetWorldQuaternion.clone() : null,
+        worldScale: data.cabinetWorldScale?.isVector3 ? data.cabinetWorldScale.clone() : null
+    };
+}
+
+function markChemicalBottleOutOfCabinet(object) {
+    if (isChemicalBottleObject(object) && object.userData) {
+        object.userData.isInCabinet = false;
+    }
+}
+
+function shouldReturnChemicalBottleToCabinet(object, intersections = [], options = {}) {
+    const home = getChemicalCabinetHome(object);
+    if (!home) return false;
+
+    const hitCabinet = intersections.some(hit =>
+        hit?.object &&
+        !isDescendantOf(hit.object, object) &&
+        isDescendantOf(hit.object, home.parent)
+    );
+    if (hitCabinet) return true;
+    if (options.allowNearHome !== true) return false;
+
+    const current = getObjectWorldPositionClone(object);
+    const dx = current.x - home.worldPosition.x;
+    const dz = current.z - home.worldPosition.z;
+    const horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+    const verticalDistance = Math.abs(current.y - home.worldPosition.y);
+    const maxHomeDistance = options.maxHomeDistance ?? 1.4;
+    const maxVerticalDistance = options.maxVerticalDistance ?? 3.0;
+
+    return horizontalDistance <= maxHomeDistance && verticalDistance <= maxVerticalDistance;
+}
+
+function returnChemicalBottleToCabinetHome(object) {
+    const home = getChemicalCabinetHome(object);
+    if (!home) return false;
+
+    home.parent.add(object);
+    object.position.copy(home.localPosition);
+    if (home.localQuaternion) {
+        object.quaternion.copy(home.localQuaternion);
+        object.rotation.setFromQuaternion(object.quaternion, object.rotation.order || 'YXZ');
+    }
+    if (home.localScale) object.scale.copy(home.localScale);
+
+    object.userData.isInCabinet = true;
+    object.userData.keepManualRotation = false;
+    object.userData.wasManuallyRotated = false;
+    if (home.localScale) object.userData.customScale = home.localScale.clone();
+    object.userData.hasCustomScale = true;
+
+    object.updateMatrixWorld(true);
+    const worldQuaternion = new three.Quaternion();
+    const worldScale = new three.Vector3();
+    object.getWorldQuaternion(worldQuaternion);
+    object.getWorldScale(worldScale);
+    object.userData.chemicalBottleUprightWorldQuaternion = worldQuaternion.clone();
+    object.userData.originalWorldQuaternion = worldQuaternion.clone();
+    object.userData.originalQuaternion = worldQuaternion.clone();
+    object.userData.customWorldScale = worldScale.clone();
+    object.userData.originalWorldScale = worldScale.clone();
+    updateOffsetToFloor(object);
+    if (pouringEffect) pouringEffect.invalidateCavity(object);
+    return true;
+}
+
 function getWorldQuaternionClone(object) {
     const quaternion = new three.Quaternion();
     object?.getWorldQuaternion?.(quaternion);
@@ -359,6 +456,213 @@ function clearDissolvablePowder(container) {
     removeLocalEffectGroup(container, 'powderDepositLayer');
 }
 
+const TOOL_CHEMICAL_OBJECT_KEYS = [
+    'liquidVolume',
+    'liquidMesh',
+    'liquidObject',
+    'liquid',
+    'volumeGroup',
+    'liquidGroup',
+    'fillMesh',
+    'marchingCubesVolume',
+    'powderDeposit',
+    'powderDepositLayer',
+    'precipitateLayer',
+    'silverMirrorLayer',
+    'phaseSeparationLayer'
+];
+
+const TOOL_CHEMICAL_OBJECT_NAMES = new Set([
+    'liquid_group',
+    'fluid_volume',
+    'powderdeposit',
+    'powderdepositlayer',
+    'solid_powder_inside_container',
+    'precipitatelayer',
+    'precipitate_inside_container',
+    'silvermirrorlayer',
+    'silver_mirror_inner_wall',
+    'phaseseparationlayer'
+]);
+
+function isToolChemicalVisual(object, tool = null) {
+    if (!object || object === tool) return false;
+    const data = object.userData || {};
+    const name = String(object.name || '').toLowerCase();
+    return Boolean(
+        data.isLiquid === true ||
+        data.isChemicalVolume === true ||
+        data.isInternalChemicalVisual === true ||
+        data.isPowder === true ||
+        TOOL_CHEMICAL_OBJECT_NAMES.has(name)
+    );
+}
+
+function toolHasChemical(tool) {
+    if (!tool?.userData || isChemicalBottleObject(tool)) return false;
+
+    const data = tool.userData;
+    if (
+        data.currentChemical ||
+        data.containedChemical ||
+        data.current_chemical_id ||
+        data.current_chemical_type ||
+        data.current_chemical_name ||
+        data.chemicalName ||
+        data.chemicalType ||
+        data.liquidVolume ||
+        data.liquidMesh ||
+        data.liquidObject ||
+        data.liquid ||
+        data.volumeGroup ||
+        data.liquidGroup ||
+        data.fillMesh ||
+        data.marchingCubesVolume ||
+        data.hasLiquid === true ||
+        data.hasSolidDeposit === true ||
+        data.hasPrecipitate === true ||
+        data.hasSilverMirror === true
+    ) {
+        return true;
+    }
+
+    const volumeValues = [
+        data.liquidVolume,
+        data.liquidLevel,
+        data.targetLiquidLevel,
+        data.currentLiquidVolume,
+        data.currentVolume,
+        data.fillLevel,
+        data.experimentState?.totalVolume
+    ];
+    if (volumeValues.some(value => Number(value) > 0)) return true;
+
+    if (Array.isArray(data.chemicals) && data.chemicals.length > 0) return true;
+    if (Array.isArray(data.contents) && data.contents.length > 0) return true;
+    if (Array.isArray(data.products) && data.products.length > 0) return true;
+    if (Array.isArray(data.reactionProducts) && data.reactionProducts.length > 0) return true;
+    if (data.composition && Object.keys(data.composition).length > 0) return true;
+    if (Array.isArray(data.experimentState?.contents) && data.experimentState.contents.length > 0) return true;
+
+    let found = false;
+    tool.traverse(child => {
+        if (isToolChemicalVisual(child, tool)) found = true;
+    });
+
+    return found;
+}
+
+function collectToolChemicalObjects(tool) {
+    const objects = new Set();
+    const addObject = (object) => {
+        if (object?.isObject3D && object !== tool) objects.add(object);
+    };
+
+    const volume = pouringEffect?.volumes?.get?.(tool);
+    addObject(volume);
+    addObject(volume?.userData?.group);
+
+    TOOL_CHEMICAL_OBJECT_KEYS.forEach(key => addObject(tool?.userData?.[key]));
+    TOOL_CHEMICAL_OBJECT_NAMES.forEach(name => addObject(tool?.getObjectByName?.(name)));
+
+    tool?.traverse?.(child => {
+        if (isToolChemicalVisual(child, tool)) addObject(child);
+    });
+
+    return Array.from(objects).filter(object =>
+        !Array.from(objects).some(other => other !== object && isDescendantOf(object, other))
+    );
+}
+
+function removeObject3DFromScene(object, fallbackScene = null) {
+    if (!object) return;
+    object.traverse?.(child => {
+        child.geometry?.dispose?.();
+        if (Array.isArray(child.material)) child.material.forEach(material => material?.dispose?.());
+        else child.material?.dispose?.();
+    });
+
+    if (object.parent) object.parent.remove(object);
+    else fallbackScene?.remove?.(object);
+}
+
+function resetToolChemicalState(tool) {
+    if (!tool?.userData) return;
+    const data = tool.userData;
+
+    [
+        'currentChemical',
+        'containedChemical',
+        'current_chemical_id',
+        'current_chemical_type',
+        'current_chemical_name',
+        'chemicalType',
+        'chemicalName',
+        'current_physical_state',
+        'physical_state',
+        'liquidColor',
+        'pendingReaction',
+        'pendingReason',
+        'pendingSourceSnapshot',
+        'pendingReactionStartedAt',
+        'indicator',
+        'complexIon',
+        'precipitateColor',
+        'precipitateSpecies',
+        'upperLayerColor',
+        'lowerLayerColor'
+    ].forEach(key => {
+        data[key] = null;
+    });
+
+    TOOL_CHEMICAL_OBJECT_KEYS.forEach(key => {
+        data[key] = null;
+    });
+
+    data.hasLiquid = false;
+    data.hasSolidDeposit = false;
+    data.hasPrecipitate = false;
+    data.hasSilverMirror = false;
+    data.hasGasEffect = false;
+    data.hasSmokeEffect = false;
+    data.twoLayerLiquid = false;
+    data.phaseSeparated = false;
+    data.isReacting = false;
+
+    data.liquidLevel = 0;
+    data.targetLiquidLevel = 0;
+    data.liquidVolume = null;
+    data.currentLiquidVolume = 0;
+    data.maxLiquidVolume = 0;
+    data.currentVolume = 0;
+    data.fillLevel = 0;
+
+    data.chemicals = [];
+    data.contents = [];
+    data.products = [];
+    data.reactionProducts = [];
+    data.composition = {};
+
+    if (data.experimentState) {
+        data.experimentState.contents = [];
+        data.experimentState.totalVolume = 0;
+        data.experimentState.reactionHistory = [];
+    }
+}
+
+function removeChemicalFromTool(tool, scene = null) {
+    if (!tool) return false;
+
+    const objectsToRemove = collectToolChemicalObjects(tool);
+    pouringEffect?.clearSmokeEffectForTarget?.(tool);
+    pouringEffect?.volumes?.delete?.(tool);
+
+    objectsToRemove.forEach(object => removeObject3DFromScene(object, scene));
+    resetToolChemicalState(tool);
+    pouringEffect?.invalidateCavity?.(tool);
+    return objectsToRemove.length > 0;
+}
+
 function formatReactionMascotText(reaction) {
     const raw = reaction?.raw || {};
     const speech = reaction?.mascotText || raw?.mascot_speech || raw?.mascotText || 'Phản ứng hóa học đã xảy ra.';
@@ -375,6 +679,20 @@ function resolveDraggableRoot(hitObject) {
         if (node.userData?.ignoreInteraction || node.userData?.isInternalChemicalVisual) return null;
         node = node.parent;
     }
+    return null;
+}
+
+function findRootTool(object) {
+    let current = object;
+
+    while (current) {
+        if (draggableObjects.includes(current)) return current;
+        if (current.userData?.root && draggableObjects.includes(current.userData.root)) return current.userData.root;
+        if (current.userData?.container && draggableObjects.includes(current.userData.container)) return current.userData.container;
+        if (current.userData?.toolData || current.userData?.isTool) return current;
+        current = current.parent;
+    }
+
     return null;
 }
 
@@ -1215,6 +1533,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             const wasManuallyRotated = currentHeld.userData.wasManuallyRotated === true;
 
             attachKeepWorldTransform(scene, currentHeld);
+            markChemicalBottleOutOfCabinet(currentHeld);
 
             // Nếu người dùng KHÔNG chủ động xoay dụng cụ trong lúc cầm, trả về rotation trước khi cầm.
             // Không gọi invalidateCavity ở đây vì chỉ đổi parent/rotation; liquid volume vẫn bám theo dụng cụ.
@@ -1237,6 +1556,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             currentHeld.visible = originalVisible;
             cameraGroup.visible = originalCameraVisible;
 
+            const returnedToCabinet = shouldReturnChemicalBottleToCabinet(currentHeld, sceneIntersects) &&
+                returnChemicalBottleToCabinetHome(currentHeld);
+
+            if (!returnedToCabinet) {
             if (sceneIntersects.length > 0) {
                 // Ưu tiên tìm mặt bàn hoặc sàn nhà
                 let bestHit = sceneIntersects[0];
@@ -1274,6 +1597,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             resolvePlacementOverlapAfterLegacyLogic(currentHeld);
             restoreCustomScale(currentHeld, savedScale);
             currentHeld.updateMatrixWorld(true);
+            } else {
+                currentHeld.updateMatrixWorld(true);
+            }
 
             console.log('[FPS Drop] object:', currentHeld.name || currentHeld.userData?.name_tool_vi || currentHeld.userData?.toolData?.name_tool_vi || currentHeld.uuid);
             console.log('[FPS Drop] rotationBeforeHold:', currentHeld.userData.rotationBeforeHold);
@@ -1332,6 +1658,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
                     const savedScale = getSavedScale(root);
                     attachKeepWorldTransform(slot, root);
+                    markChemicalBottleOutOfCabinet(root);
                     if (pouringEffect) pouringEffect.invalidateCavity(root);
                     root.position.set(0, 0.1, 0);
                     root.rotation.order = 'YXZ';
@@ -1838,6 +2165,98 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             .replace(/đ/g, 'd')
             .replace(/\s+/g, ' ')
             .trim();
+    }
+
+    function chemistryLabels(object) {
+        const u = object?.userData || {};
+        return [
+            u.current_chemical_name,
+            u.chemicalName,
+            u.name_vi,
+            u.formula,
+            u.current_chemical_type,
+            u.chemicalType,
+            u.chemical_type,
+            ...(u.contents || []),
+            ...(u.products || []),
+            ...(u.reactionProducts || []),
+            ...Object.keys(u.composition || {})
+        ].filter(Boolean).map(normalizeForCompare);
+    }
+
+    function hasChemistryLabel(object, needles) {
+        const labels = chemistryLabels(object);
+        const normalizedNeedles = needles.map(normalizeForCompare);
+        return labels.some(label =>
+            normalizedNeedles.some(needle => label === needle || label.includes(needle))
+        );
+    }
+
+    function isPhenolphthaleinCarrier(object) {
+        return hasChemistryLabel(object, [
+            'phenolphthalein',
+            'phenolphtalein',
+            'indicator_phenol'
+        ]);
+    }
+
+    function isBasicCarrier(object) {
+        return hasChemistryLabel(object, [
+            'naoh',
+            'natri hydroxit',
+            'sodium hydroxide',
+            'amoniac',
+            'ammonia',
+            'nh3',
+            'strong_base',
+            'weak_base'
+        ]);
+    }
+
+    function getPhenolphthaleinBaseReaction(source, target) {
+        const matchesIndicatorPair =
+            (isPhenolphthaleinCarrier(source) && isBasicCarrier(target)) ||
+            (isBasicCarrier(source) && isPhenolphthaleinCarrier(target));
+        if (!matchesIndicatorPair) return null;
+
+        return {
+            has_reaction: true,
+            id: 'phenolphthalein_base_pink',
+            color: '#FF1493',
+            gas: 0,
+            smoke: 0,
+            fire: 0,
+            explosion: 0,
+            heat: 0,
+            foam: false,
+            precipitate: false,
+            result_chemical_type: 'indicator_solution',
+            result_chemical_id: 'phenolphthalein_basic_form',
+            equation: 'Phenolphthalein + base -> pink form',
+            products: ['Phenolphthalein dạng bazơ'],
+            effects: [{ type: 'colorChange', color: '#FF1493' }],
+            producesState: { indicator: 'pink' },
+            mascotText: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.',
+            raw: {
+                id: 'phenolphthalein_base_pink',
+                has_reaction: true,
+                color: '#FF1493',
+                result_chemical_type: 'indicator_solution',
+                equation: 'Phenolphthalein + base -> pink form',
+                products: ['Phenolphthalein dạng bazơ'],
+                effects: [{ type: 'colorChange', color: '#FF1493' }],
+                producesState: { indicator: 'pink' },
+                mascotText: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.'
+            }
+        };
+    }
+
+    function isPhenolphthaleinBaseReaction(reaction) {
+        return reaction?.id === 'phenolphthalein_base_pink' || reaction?.raw?.id === 'phenolphthalein_base_pink';
+    }
+
+    function isSilverOxidePrecipitationReaction(reaction) {
+        return reaction?.id === 'ag_no3_nh3_ag2o' || reaction?.raw?.id === 'ag_no3_nh3_ag2o';
     }
 
     function reactionTemperatureTarget(reaction) {
@@ -2369,7 +2788,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             console.log("REACTION CHECK:", { type1, type2, sourceId, targetId });
 
-            if (hasActiveExperimentPlan()) {
+            const indicatorReaction = getPhenolphthaleinBaseReaction(source, target);
+
+            if (hasActiveExperimentPlan() && !indicatorReaction) {
                 const validation = validateExperimentBeforeReaction({ source, target, skipTemperature: true });
                 if (!validation.ok) {
                     addSourceContentToContainer(target, source, {
@@ -2384,7 +2805,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 }
             }
 
-            const reaction = await detectReaction(source, target);
+            const reaction = indicatorReaction || await detectReaction(source, target);
 
             console.log("REACTION RESULT:", reaction);
 
@@ -2441,7 +2862,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 return;
             }
 
-            if (hasActiveExperimentPlan()) {
+            if (hasActiveExperimentPlan() && !isPhenolphthaleinBaseReaction(reaction)) {
                 const conditionValidation = validateExperimentBeforeReaction({ source, target });
                 if (!conditionValidation.ok) {
                     addSourceContentToContainer(target, source, {
@@ -2640,10 +3061,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 }
 
                 // Mascot chỉ hiển thị kết quả phản ứng: mascot_speech + equation.
-                if (hasActiveExperimentPlan()) {
+                if (hasActiveExperimentPlan() && !isPhenolphthaleinBaseReaction(reaction)) {
                     triggerMascotSpeech(window.currentExperimentPlan?.success_message || formatReactionMascotText(reaction));
                 } else {
                     triggerMascotSpeech(formatReactionMascotText(reaction));
+                }
+
+                if (isSilverOxidePrecipitationReaction(reaction)) {
+                    stopPouringForAutoStop(source);
                 }
             } else {
                 // Trộn vật lý thông thường, không phản ứng.
@@ -2699,6 +3124,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             releaseHeatingSnapIfNeeded(draggedObject);
             const savedScale = getSavedScale(draggedObject);
             attachKeepWorldTransform(scene, draggedObject);
+            markChemicalBottleOutOfCabinet(draggedObject);
             if (pouringEffect) pouringEffect.invalidateCavity(draggedObject);
 
             // Khôi phục scale và hướng xoay chuẩn (World)
@@ -2763,10 +3189,23 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         }
     });
 
-    window.addEventListener('pointerup', () => {
+    window.addEventListener('pointerup', (e) => {
         if (draggedObject) {
-            completeAssemblyDrop(draggedObject);
-            resolvePlacementOverlapAfterLegacyLogic(draggedObject);
+            updateRaycaster(e);
+
+            const originalVisible = draggedObject.visible;
+            draggedObject.visible = false;
+            const dropIntersects = raycaster.intersectObjects(scene.children, true);
+            draggedObject.visible = originalVisible;
+
+            const returnedToCabinet = shouldReturnChemicalBottleToCabinet(draggedObject, dropIntersects, {
+                allowNearHome: true
+            }) && returnChemicalBottleToCabinetHome(draggedObject);
+
+            if (!returnedToCabinet) {
+                completeAssemblyDrop(draggedObject);
+                resolvePlacementOverlapAfterLegacyLogic(draggedObject);
+            }
             orbit.enabled = true;
             draggedObject = null;
         }
@@ -2777,6 +3216,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     const zoomOutBtn = document.getElementById('zoom-out-btn');
     const deleteToolBtn = document.getElementById('delete-tool-btn');
     const toggleHeatBtn = document.getElementById('toggle-heat-btn');
+    const removeChemicalBtn = document.getElementById('removeChemicalBtn');
 
     if (zoomInBtn) {
         zoomInBtn.onclick = () => {
@@ -2814,6 +3254,19 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         };
     }
 
+    if (removeChemicalBtn) {
+        removeChemicalBtn.onclick = () => {
+            const tool = selectedObjectForMenu;
+            contextmenu.classList.add('hidden');
+
+            if (!tool || !toolHasChemical(tool)) return;
+
+            removeChemicalFromTool(tool, scene);
+            removeChemicalBtn.classList.add('hidden');
+            triggerMascotSpeech?.('Đã xóa chất hóa học bên trong dụng cụ.');
+        };
+    }
+
     if (deleteToolBtn) {
         deleteToolBtn.onclick = async () => {
             const objectToDelete = selectedObjectForMenu;
@@ -2848,6 +3301,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     window.addEventListener('click', (e) => {
         if (!e.target.closest('#context-menu')) {
             contextmenu.classList.add('hidden');
+            removeChemicalBtn?.classList.add('hidden');
         }
     });
 
@@ -2859,16 +3313,22 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const intersects = raycaster.intersectObjects(candidates, true);
 
         if (intersects.length > 0) {
-            selectedObjectForMenu = resolveDraggableRoot(intersects[0].object);
-            if (!selectedObjectForMenu) return;
+            selectedObjectForMenu = findRootTool(intersects[0].object) || resolveDraggableRoot(intersects[0].object);
+            if (!selectedObjectForMenu) {
+                contextmenu.classList.add('hidden');
+                removeChemicalBtn?.classList.add('hidden');
+                return;
+            }
             if (toggleHeatBtn) {
                 toggleHeatBtn.classList.toggle('hidden', !canToggleHeatingSource(selectedObjectForMenu));
             }
+            removeChemicalBtn?.classList.toggle('hidden', !toolHasChemical(selectedObjectForMenu));
             contextmenu.style.top = `${e.clientY}px`;
             contextmenu.style.left = `${e.clientX}px`;
             contextmenu.classList.remove('hidden');
         } else {
             contextmenu.classList.add('hidden');
+            removeChemicalBtn?.classList.add('hidden');
         }
     });
 }

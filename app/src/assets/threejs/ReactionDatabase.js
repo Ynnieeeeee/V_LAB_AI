@@ -293,21 +293,25 @@ export const LOCAL_REACTION_RULES = [
         })
     },
     {
-        id: 'ag_no3_nh3_agoh',
+        id: 'ag_no3_nh3_ag2o',
+        name: 'Phản ứng Bạc Nitrat và Amoniac',
+        aliases: ['AgNO3 NH3', 'bạc nitrat amoniac', 'bạc nitrat ammonia', 'bạc oxit nâu đen'],
+        keywords: ['AgNO3', 'NH3', 'Ag2O', 'NH4NO3', 'kết tủa nâu đen'],
+        phenomenon: 'Xuất hiện kết tủa nâu đen Ag2O',
         priority: 90,
         reactants: ['Bạc Nitrat', 'Amoniac'],
         conditions: { notExisting: ['[Ag(NH3)2]OH'] },
-        products: ['AgOH', 'Amoni Nitrat'],
-        effects: [effect('precipitate', { color: '#7a6a58', amount: 680 })],
-        producesState: { precipitateSpecies: 'AgOH' },
+        products: ['Ag2O', 'Amoni Nitrat'],
+        effects: [effect('precipitate', { color: '#2b2118', amount: 720 })],
+        producesState: { precipitateSpecies: 'Ag2O' },
         result: result({
-            color: '#d8d8d8',
+            color: '#8a7564',
             precipitate: true,
-            precipitateColor: '#7a6a58',
-            result_chemical_id: 'agoh_precipitate_suspension',
+            precipitateColor: '#2b2118',
+            result_chemical_id: 'ag2o_precipitate_suspension',
             result_chemical_type: 'precipitate_suspension',
-            equation: 'AgNO3 + NH3 + H2O -> AgOH + NH4NO3',
-            mascotText: 'Tạo kết tủa xám nâu AgOH.'
+            equation: '2AgNO3 + 2NH3 + H2O -> Ag2O + 2NH4NO3',
+            mascotText: 'Tạo kết tủa nâu đen Ag2O.'
         })
     },
     {

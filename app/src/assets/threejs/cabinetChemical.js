@@ -191,6 +191,26 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
 
             // Thêm vào tủ
             bookcaseModel.add(bottle);
+            bottle.updateMatrixWorld(true);
+
+            const cabinetWorldPosition = new THREE.Vector3();
+            const cabinetWorldQuaternion = new THREE.Quaternion();
+            const cabinetWorldScale = new THREE.Vector3();
+            bottle.getWorldPosition(cabinetWorldPosition);
+            bottle.getWorldQuaternion(cabinetWorldQuaternion);
+            bottle.getWorldScale(cabinetWorldScale);
+
+            bottle.userData.cabinetParent = bookcaseModel;
+            bottle.userData.cabinetShelfNumber = shelf;
+            bottle.userData.cabinetSlotIndex = shelfCount[shelf];
+            bottle.userData.cabinetLocalPosition = bottle.position.clone();
+            bottle.userData.cabinetLocalQuaternion = bottle.quaternion.clone();
+            bottle.userData.cabinetLocalScale = bottle.scale.clone();
+            bottle.userData.cabinetWorldPosition = cabinetWorldPosition.clone();
+            bottle.userData.cabinetWorldQuaternion = cabinetWorldQuaternion.clone();
+            bottle.userData.cabinetWorldScale = cabinetWorldScale.clone();
+            bottle.userData.isInCabinet = true;
+
             shelfCount[shelf]++;
             registerDraggableObject(bottle);
         });
