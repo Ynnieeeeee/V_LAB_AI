@@ -37,7 +37,8 @@ MAX_IMAGE_SEARCH_ATTEMPTS = 3
 SINGLE_IMAGE_FAILURE_MESSAGE = "Không thể tạo ảnh chỉ có một dụng cụ duy nhất. Vui lòng thử lại với tên dụng cụ cụ thể hơn."
 NEGATIVE_IMAGE_PROMPT = (
     "multiple objects, duplicates, collection, set, row, group, many tools, "
-    "repeated objects, extra laboratory equipment, cluttered background"
+    "repeated objects, extra laboratory equipment, cropped object, text-only image, "
+    "book cover, document scan"
 )
 
 GLASS_LIKE_TOOL_HINTS = (
@@ -116,6 +117,19 @@ BLOCKED_OR_WEAK_DOMAINS = (
     "gettyimages",
 )
 
+DOCUMENT_IMAGE_DOMAINS = (
+    "calameo",
+    "calameoassets",
+    "issuu",
+    "scribd",
+    "slideshare",
+    "pdfcoffee",
+    "pdfdrive",
+    "academia",
+    "coursehero",
+    "studocu",
+)
+
 NEGATIVE_TERMS = (
     "vector",
     "icon",
@@ -140,6 +154,17 @@ NEGATIVE_TERMS = (
     "labeled",
     "labelled",
     "text overlay",
+    "book cover",
+    "ebook",
+    "textbook",
+    "pdf",
+    "manual",
+    "document",
+    "publication",
+    "read online",
+    "cropped",
+    "partial view",
+    "close up",
 )
 
 SINGLE_OBJECT_POSITIVE_TERMS = (
@@ -174,8 +199,8 @@ BASE_POSITIVE_TERMS = (
     "glassware",
     "product",
     "photo",
-    "white background",
-    "isolated",
+    "full object",
+    "uncropped",
 )
 
 TOOL_PROFILES = {
@@ -394,6 +419,32 @@ def _result_text(result: dict) -> str:
     )))
 
 
+def _candidate_document_noise(result: dict) -> tuple[bool, list[str]]:
+    url = result.get("original") or result.get("thumbnail") or result.get("link", "")
+    text_value = _result_text(result)
+    domain = _domain_from_url(url)
+    domain_hits = [term for term in DOCUMENT_IMAGE_DOMAINS if term in domain or term in text_value]
+    text_hits = [
+        term for term in (
+            "book cover",
+            "ebook",
+            "textbook",
+            "pdf",
+            "manual",
+            "document",
+            "publication",
+            "read online",
+        )
+        if term in text_value
+    ]
+    reasons = []
+    if domain_hits:
+        reasons.append(f"document_domain={domain_hits[:3]}")
+    if text_hits:
+        reasons.append(f"document_text={text_hits[:4]}")
+    return bool(domain_hits or text_hits), reasons
+
+
 def _profile_for(tool_name_en: str = "", tool_name_vi: str = "", tool_type: str = "") -> dict:
     text_value = normalize_text(f"{tool_name_vi} {tool_name_en} {tool_type}")
     for keywords, profile in NAME_OVERRIDES:
@@ -416,9 +467,9 @@ def _subject_context(subject_code: str = "general") -> dict:
 def _single_object_prompt(canonical: str) -> str:
     return (
         f"Create a clean product-style image of exactly ONE {canonical}. "
-        "The image must contain only one single object, centered, isolated, full object visible. "
+        "The image must contain only one single object with the full object visible and uncropped. "
         "No duplicates, no set, no collection, no row of objects, no repeated copies, no extra tools. "
-        "Plain white or transparent background, high clarity, orthographic view."
+        "Simple or natural background is allowed. Front view or a slight angled view is allowed."
     )
 
 
@@ -428,16 +479,8 @@ def _build_queries(tool_name_en: str, tool_name_vi: str = "", tool_type: str = "
     subject = _subject_context(subject_code)
     subject_query = subject["query"]
     base = normalize_text(canonical).replace(" ", " ")
-    background_phrase = (
-        "real product photo full object visible centered single apparatus"
-        if profile.get("allow_non_white_background")
-        else "real product photo plain white background"
-    )
-    first_background_phrase = (
-        "single product photo full object visible centered isolated"
-        if profile.get("allow_non_white_background")
-        else "product photo plain white background"
-    )
+    background_phrase = "real product photo full object visible uncropped clear angle"
+    first_background_phrase = "single product photo full object visible uncropped simple background"
     exclude_multi = (
         '-"set of" -"pack of" -"row of" -"group of" -"many" -"multiple" '
         '-duplicates -duplicate -bundle -assorted -collection -kit -lot -bulk '
@@ -463,11 +506,15 @@ def _build_queries(tool_name_en: str, tool_name_vi: str = "", tool_type: str = "
         if term.strip('"').rstrip("s") not in current_text
     ]
     exclude_plural_tools = " ".join(f"-{term}" for term in plural_terms)
-    exclude_dirty_background = '-watermark -logo -"text overlay" -banner -poster -diagram -illustration'
+    exclude_dirty_background = (
+        '-watermark -logo -"text overlay" -banner -poster -diagram -illustration '
+        '-"book cover" -ebook -textbook -pdf -manual -document -publication '
+        '-calameo -issuu -scribd -slideshare -cropped -"partial view" -"close up"'
+    )
     return [
-        f'"{canonical}" {subject_query} exactly one single object one laboratory tool only centered isolated full object visible {first_background_phrase} no duplicates no set no collection no row no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
-        f'{base} {subject_query} only one single laboratory tool isolated centered one piece {background_phrase} no extra tools no multiple objects {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
-        f'{base} {subject_query} individual apparatus exactly one object only one tool orthographic {background_phrase} no collection no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'"{canonical}" {subject_query} exactly one single object one laboratory tool full object visible uncropped {first_background_phrase} no duplicates no set no collection no row no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'{base} {subject_query} only one single laboratory tool one piece {background_phrase} front view or slight angle no extra tools no multiple objects {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'{base} {subject_query} individual apparatus exactly one object only one tool clear product photo full body visible not cropped no collection no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
     ]
 
 
@@ -482,6 +529,11 @@ def _score_image_result(result: dict, profile: dict, subject_code: str = "genera
     if url:
         score += 5
         reasons.append("has_url")
+
+    document_noise, document_reasons = _candidate_document_noise(result)
+    if document_noise:
+        score -= 95
+        reasons.extend(document_reasons)
 
     must_any = tuple(normalize_text(term) for term in profile.get("must_any", ()) if term)
     if must_any:
@@ -782,6 +834,46 @@ def _detect_external_logo_or_text(mask, width, height, main_bbox):
     return {"ok": True, "reasons": reasons + ["no_external_logo_text"]}
 
 
+def _detect_text_only_or_cover_image(mask, width, height, components, total_foreground):
+    points = [
+        (x, y)
+        for y, row in enumerate(mask)
+        for x, value in enumerate(row)
+        if value
+    ]
+    if not points:
+        return {"ok": False, "reasons": ["reject_text_only_no_foreground"]}
+
+    min_x = min(point[0] for point in points)
+    max_x = max(point[0] for point in points)
+    min_y = min(point[1] for point in points)
+    max_y = max(point[1] for point in points)
+    union_width_ratio = (max_x - min_x + 1) / max(width, 1)
+    union_height_ratio = (max_y - min_y + 1) / max(height, 1)
+    foreground_ratio = total_foreground / max(width * height, 1)
+    small_components = _all_components(mask, width, height, min_area=max(4, int(width * height * 0.00003)))
+    largest_ratio = 0
+    if components and total_foreground:
+        largest_ratio = max(component["area"] for component in components) / max(total_foreground, 1)
+
+    reasons = [
+        f"fg_ratio={foreground_ratio:.3f}",
+        f"union_bbox=({union_width_ratio:.2f},{union_height_ratio:.2f})",
+        f"small_components={len(small_components)}",
+        f"largest_fg_ratio={largest_ratio:.2f}",
+    ]
+    if (
+        foreground_ratio < 0.065
+        and union_width_ratio < 0.62
+        and union_height_ratio < 0.45
+        and len(small_components) >= 3
+    ):
+        return {"ok": False, "reasons": reasons + ["reject_text_only_or_book_cover"]}
+    if foreground_ratio < 0.035 and union_width_ratio < 0.75 and union_height_ratio < 0.65:
+        return {"ok": False, "reasons": reasons + ["reject_sparse_text_only_image"]}
+    return {"ok": True, "reasons": reasons + ["not_text_only"]}
+
+
 def _count_x_foreground_groups(mask, width, height, y_start_ratio=0.0, y_end_ratio=1.0, threshold_ratio=0.08):
     y_start = max(0, min(height - 1, int(height * y_start_ratio)))
     y_end = max(y_start + 1, min(height, int(height * y_end_ratio)))
@@ -899,21 +991,22 @@ def _validate_single_object_image(url: str, profile: dict) -> dict:
     if not components:
         return _validation_result(False, -35, reasons + ["no_foreground_component"], 0)
 
+    text_only_check = _detect_text_only_or_cover_image(mask, width, height, components, total_foreground)
+    if not text_only_check["ok"]:
+        return _validation_result(False, -90, reasons + text_only_check["reasons"], estimated_object_count)
+
     strict_single = profile.get("strict_single_visual", True)
     component_count = len(components)
     x_group_count = len(x_groups)
     lower_x_group_count = len(lower_x_groups)
     largest = max(components, key=lambda item: item["area"])
     min_x, min_y, max_x, max_y = largest["bbox"]
-    allow_non_white_background = bool(profile.get("allow_non_white_background"))
     allow_product_labels = bool(profile.get("allow_product_labels"))
     background_check = _validate_plain_background(image, mask, largest["bbox"])
-    if not background_check["ok"] and not allow_non_white_background:
-        return _validation_result(False, -65, reasons + background_check["reasons"], estimated_object_count)
     if not background_check["ok"]:
         background_check = {
             "ok": True,
-            "reasons": background_check["reasons"] + ["relaxed_non_white_background"],
+            "reasons": background_check["reasons"] + ["relaxed_background_allowed"],
         }
 
     noise_check = _detect_external_logo_or_text(mask, width, height, largest["bbox"])
@@ -958,12 +1051,12 @@ def _validate_single_object_image(url: str, profile: dict) -> dict:
         return _validation_result(False, -35, reasons + ["reject_cropped_object"], estimated_object_count)
 
     if strict_single and (center_offset_x > 0.28 or center_offset_y > 0.28):
-        return _validation_result(False, -30, reasons + ["reject_not_centered"], estimated_object_count)
+        reasons.append("off_center_allowed")
 
     return _validation_result(
         True,
         18 if strict_single else 8,
-        reasons + background_check["reasons"] + noise_check["reasons"] + ["single_object_image_ok"],
+        reasons + text_only_check["reasons"] + background_check["reasons"] + noise_check["reasons"] + ["single_object_image_ok"],
         max(1, estimated_object_count),
     )
 
@@ -1296,6 +1389,10 @@ def search_tool_image(tool_name_en: str, tool_name_vi: str = "", tool_type: str 
             if not url or url in seen_urls:
                 continue
             seen_urls.add(url)
+            document_noise, document_reasons = _candidate_document_noise(result)
+            if document_noise:
+                print(f"[ImageSearch] skip document-like image reasons={document_reasons} url={url}")
+                continue
             score, reasons = _score_image_result(result, profile, subject_code)
             candidates.append({
                 "url": url,
