@@ -35,7 +35,7 @@ IMAGE_FETCH_TIMEOUT = 8
 CLEANED_IMAGE_DIR = os.path.join("app", "static", "cleaned_tool_images")
 CLEANED_IMAGE_URL_PREFIX = "/static/cleaned_tool_images"
 CLEANED_IMAGE_CANVAS_SIZE = 768
-MAX_IMAGE_SEARCH_ATTEMPTS = 5
+MAX_IMAGE_SEARCH_ATTEMPTS = 6
 SINGLE_IMAGE_FAILURE_MESSAGE = "Không thể tạo ảnh chỉ có một dụng cụ duy nhất. Vui lòng thử lại với tên dụng cụ cụ thể hơn."
 NEGATIVE_IMAGE_PROMPT = (
     "multiple objects, duplicates, collection, set, row, group, many tools, "
@@ -101,6 +101,15 @@ PREFERRED_DOMAINS = (
     "sigmaaldrich",
     "fishersci",
     "grainger",
+    "keysight",
+    "agilent",
+    "tektronix",
+    "fluke",
+    "pasco",
+    "vernier",
+    "leybold",
+    "phywe",
+    "bkprecision",
 )
 
 BLOCKED_OR_WEAK_DOMAINS = (
@@ -228,6 +237,49 @@ SINGLE_OBJECT_POSITIVE_TERMS = (
     "each",
     "isolated product",
     "product photo",
+)
+
+TITLE_STOPWORDS = (
+    "the",
+    "and",
+    "or",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "lab",
+    "laboratory",
+    "equipment",
+    "apparatus",
+    "instrument",
+    "science",
+    "scientific",
+    "product",
+    "photo",
+    "image",
+    "official",
+    "system",
+    "device",
+)
+
+PRODUCT_BRAND_TERMS = (
+    "keysight",
+    "agilent",
+    "tektronix",
+    "fluke",
+    "pasco",
+    "vernier",
+    "eisco",
+    "phywe",
+    "leybold",
+    "bk precision",
+    "bkprecision",
+    "gw instek",
+    "rigol",
+    "siglent",
+    "thermo fisher",
+    "fisher",
 )
 
 MULTI_OBJECT_NEGATIVE_PATTERNS = (
@@ -440,6 +492,14 @@ NAME_OVERRIDES = (
         "allow_product_labels": True,
         "allow_non_white_background": True,
     }),
+    (("data acquisition", "daq", "data logger", "bo thu thap du lieu", "thiet bi thu thap du lieu"), {
+        "canonical": "data acquisition system laboratory DAQ",
+        "must_any": ("data acquisition system", "data acquisition", "daq", "data logger"),
+        "positive": ("physics", "laboratory", "data acquisition", "daq", "measurement", "logger", "product"),
+        "strict_single_visual": True,
+        "allow_product_labels": True,
+        "allow_non_white_background": True,
+    }),
     (("spirit lamp", "alcohol lamp", "den con"), TOOL_PROFILES["heating_source"]),
     (("tripod", "support stand", "ring stand", "gia do", "kieng"), TOOL_PROFILES["support_stand"]),
 )
@@ -468,6 +528,75 @@ def _result_text(result: dict) -> str:
         "original",
         "thumbnail",
     )))
+
+
+def _result_title_text(result: dict) -> str:
+    return normalize_text(" ".join(str(result.get(key, "")) for key in (
+        "title",
+        "source",
+    )))
+
+
+def _meaningful_title_terms(value: str = "") -> set[str]:
+    tokens = re.findall(r"[a-z0-9]+", normalize_text(value))
+    return {
+        token for token in tokens
+        if len(token) >= 3 and token not in TITLE_STOPWORDS and not token.isdigit()
+    }
+
+
+def _extract_model_tokens(value: str = "") -> set[str]:
+    text_value = normalize_text(value).replace("-", "")
+    tokens = set()
+    for token in re.findall(r"\b[a-z0-9]{3,18}\b", text_value):
+        if any(ch.isdigit() for ch in token) and any(ch.isalpha() for ch in token):
+            tokens.add(token)
+    return tokens
+
+
+def _score_title_relevance(result: dict, profile: dict) -> tuple[int, list[str]]:
+    title_text = _result_title_text(result)
+    if not title_text:
+        return 0, []
+
+    search_text = normalize_text(profile.get("search_text") or profile.get("canonical") or "")
+    must_any = tuple(normalize_text(term) for term in profile.get("must_any", ()) if term)
+    title_score = 0
+    reasons = []
+
+    phrase_hits = [term for term in must_any if len(term) >= 4 and term in title_text]
+    if phrase_hits:
+        title_score += 20 + min(24, len(phrase_hits) * 8)
+        reasons.append(f"title_phrase={phrase_hits[:4]}")
+
+    title_terms = _meaningful_title_terms(title_text)
+    search_terms = _meaningful_title_terms(search_text)
+    overlap = sorted(title_terms & search_terms)
+    if overlap:
+        overlap_ratio = len(overlap) / max(len(search_terms), 1)
+        title_score += min(26, len(overlap) * 5)
+        if overlap_ratio >= 0.50:
+            title_score += 12
+        reasons.append(f"title_terms={overlap[:6]}")
+
+    title_models = _extract_model_tokens(title_text)
+    search_models = _extract_model_tokens(search_text)
+    model_hits = sorted(title_models & search_models)
+    if model_hits:
+        title_score += 38
+        reasons.append(f"title_model={model_hits[:4]}")
+    elif title_models and overlap:
+        title_score += 8
+        reasons.append(f"title_has_model={sorted(title_models)[:4]}")
+
+    brand_hits = [brand for brand in PRODUCT_BRAND_TERMS if brand in title_text]
+    if brand_hits and (phrase_hits or overlap or model_hits):
+        title_score += 10
+        reasons.append(f"title_brand={brand_hits[:3]}")
+
+    if title_score:
+        reasons.append(f"title_score={title_score}")
+    return title_score, reasons
 
 
 def _candidate_document_noise(result: dict) -> tuple[bool, list[str]]:
@@ -502,23 +631,54 @@ def _candidate_document_noise(result: dict) -> tuple[bool, list[str]]:
     return bool(domain_hits or text_hits or figure_hits), reasons
 
 
+def _profile_with_search_text(profile: dict, tool_name_en: str = "", tool_name_vi: str = "", tool_type: str = "") -> dict:
+    enriched = dict(profile or {})
+    enriched["search_text"] = " ".join(str(value or "") for value in (
+        tool_name_en,
+        tool_name_vi,
+        tool_type,
+        enriched.get("canonical", ""),
+        " ".join(enriched.get("must_any", ()) or ()),
+    ))
+    return enriched
+
+
 def _profile_for(tool_name_en: str = "", tool_name_vi: str = "", tool_type: str = "") -> dict:
     text_value = normalize_text(f"{tool_name_vi} {tool_name_en} {tool_type}")
     for keywords, profile in NAME_OVERRIDES:
         if any(keyword in text_value for keyword in keywords):
-            return profile
+            return _profile_with_search_text(profile, tool_name_en, tool_name_vi, tool_type)
     profile = TOOL_PROFILES.get(str(tool_type or "").lower(), {})
     if profile:
-        return profile
-    return {
+        return _profile_with_search_text(profile, tool_name_en, tool_name_vi, tool_type)
+    return _profile_with_search_text({
         "canonical": tool_name_en,
         "must_any": tuple(part for part in normalize_text(tool_name_en).split(" ") if len(part) > 2),
         "positive": BASE_POSITIVE_TERMS,
-    }
+    }, tool_name_en, tool_name_vi, tool_type)
 
 
 def _subject_context(subject_code: str = "general") -> dict:
     return SUBJECT_CONTEXTS.get(str(subject_code or "general").lower(), SUBJECT_CONTEXTS["general"])
+
+
+def _brand_query_fragment(canonical: str = "", tool_type: str = "", subject_code: str = "") -> str:
+    text_value = normalize_text(f"{canonical} {tool_type} {subject_code}")
+    instrument_terms = (
+        "acquisition",
+        "daq",
+        "logger",
+        "meter",
+        "voltmeter",
+        "ammeter",
+        "oscilloscope",
+        "power supply",
+        "transformer",
+        "sensor",
+    )
+    if str(subject_code or "").lower() == "physics" or any(term in text_value for term in instrument_terms):
+        return "(Keysight OR Agilent OR Tektronix OR Fluke OR PASCO OR Vernier OR PHYWE)"
+    return ""
 
 
 def _single_object_prompt(canonical: str) -> str:
@@ -536,6 +696,7 @@ def _build_queries(tool_name_en: str, tool_name_vi: str = "", tool_type: str = "
     subject = _subject_context(subject_code)
     subject_query = subject["query"]
     base = normalize_text(canonical).replace(" ", " ")
+    brand_query = _brand_query_fragment(canonical, tool_type, subject_code)
     background_phrase = "real product photo full object visible uncropped clear angle"
     first_background_phrase = "single product photo full object visible uncropped simple background"
     exclude_multi = (
@@ -570,13 +731,22 @@ def _build_queries(tool_name_en: str, tool_name_vi: str = "", tool_type: str = "
         '-springer -springernature -mdpi -sciencedirect -researchgate -calameo -issuu -scribd '
         '-slideshare -cropped -"partial view" -"close up"'
     )
-    return [
+    queries = [
         f'"{canonical}" {subject_query} exactly one single object one laboratory tool full object visible uncropped {first_background_phrase} no duplicates no set no collection no row no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
         f'{base} {subject_query} only one single laboratory tool one piece {background_phrase} front view or slight angle no extra tools no multiple objects {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
         f'{base} {subject_query} individual apparatus exactly one object only one tool clear product photo full body visible not cropped no collection no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
         f'"{canonical}" laboratory equipment catalog product photo single item full object uncropped {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
         f'{base} science lab apparatus product image one item full object visible buy catalog photo {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
     ]
+    if brand_query:
+        queries.append(
+            f'{base} {brand_query} official manufacturer product title model photo full object uncropped {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}'
+        )
+    else:
+        queries.append(
+            f'{base} official manufacturer product title model photo full object uncropped {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}'
+        )
+    return queries
 
 
 def _score_image_result(result: dict, profile: dict, subject_code: str = "general") -> tuple[int, list[str]]:
@@ -595,6 +765,11 @@ def _score_image_result(result: dict, profile: dict, subject_code: str = "genera
     if document_noise:
         score -= 95
         reasons.extend(document_reasons)
+
+    title_score, title_reasons = _score_title_relevance(result, profile)
+    if title_score:
+        score += title_score
+        reasons.extend(title_reasons)
 
     must_any = tuple(normalize_text(term) for term in profile.get("must_any", ()) if term)
     if must_any:
@@ -698,7 +873,7 @@ def _metadata_fallback_candidate(candidates: list[dict]):
         )):
             continue
         strong_match = (
-            _has_reason_prefix(reasons, ("must=", "positive=", "subject=", "single="))
+            _has_reason_prefix(reasons, ("title_", "must=", "positive=", "subject=", "single="))
             or "preferred_domain" in reasons
         )
         if strong_match:
