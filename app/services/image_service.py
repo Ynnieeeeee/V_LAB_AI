@@ -26,6 +26,8 @@ except Exception:
 
 
 IMAGE_SCORE_THRESHOLD = 28
+IMAGE_VISUAL_SCORE_THRESHOLD = 8
+IMAGE_METADATA_FALLBACK_THRESHOLD = 42
 MAX_IMAGE_RESULTS = 20
 MAX_VALIDATED_CANDIDATES = 14
 REQUIRE_SINGLE_OBJECT_IMAGE_VALIDATION = True
@@ -33,7 +35,7 @@ IMAGE_FETCH_TIMEOUT = 8
 CLEANED_IMAGE_DIR = os.path.join("app", "static", "cleaned_tool_images")
 CLEANED_IMAGE_URL_PREFIX = "/static/cleaned_tool_images"
 CLEANED_IMAGE_CANVAS_SIZE = 768
-MAX_IMAGE_SEARCH_ATTEMPTS = 3
+MAX_IMAGE_SEARCH_ATTEMPTS = 5
 SINGLE_IMAGE_FAILURE_MESSAGE = "Không thể tạo ảnh chỉ có một dụng cụ duy nhất. Vui lòng thử lại với tên dụng cụ cụ thể hơn."
 NEGATIVE_IMAGE_PROMPT = (
     "multiple objects, duplicates, collection, set, row, group, many tools, "
@@ -128,6 +130,47 @@ DOCUMENT_IMAGE_DOMAINS = (
     "academia",
     "coursehero",
     "studocu",
+    "springer",
+    "springernature",
+    "nature.com",
+    "sciencedirect",
+    "elsevier",
+    "mdpi",
+    "frontiersin",
+    "wiley",
+    "tandfonline",
+    "researchgate",
+    "arxiv",
+    "pubmed",
+    "ncbi",
+    "plos",
+    "biorxiv",
+    "medrxiv",
+    "ieee",
+    "acm.org",
+)
+
+NON_TOOL_FIGURE_TERMS = (
+    "graphical abstract",
+    "schematic diagram",
+    "conceptual diagram",
+    "workflow",
+    "flowchart",
+    "research article",
+    "review article",
+    "journal article",
+    "mediaobjects",
+    "springer-static",
+    "html.png",
+    "figure",
+    "fig.",
+    "infographic",
+    "diagram",
+    "illustration",
+    "drawing",
+    "cartoon",
+    "vector",
+    "clipart",
 )
 
 NEGATIVE_TERMS = (
@@ -165,6 +208,14 @@ NEGATIVE_TERMS = (
     "cropped",
     "partial view",
     "close up",
+    "schematic",
+    "graphical abstract",
+    "workflow",
+    "flowchart",
+    "figure",
+    "research article",
+    "review article",
+    "journal",
 )
 
 SINGLE_OBJECT_POSITIVE_TERMS = (
@@ -434,15 +485,21 @@ def _candidate_document_noise(result: dict) -> tuple[bool, list[str]]:
             "document",
             "publication",
             "read online",
+            "article",
+            "journal",
+            "study",
         )
         if term in text_value
     ]
+    figure_hits = [term for term in NON_TOOL_FIGURE_TERMS if term in text_value]
     reasons = []
     if domain_hits:
         reasons.append(f"document_domain={domain_hits[:3]}")
     if text_hits:
         reasons.append(f"document_text={text_hits[:4]}")
-    return bool(domain_hits or text_hits), reasons
+    if figure_hits:
+        reasons.append(f"figure_text={figure_hits[:4]}")
+    return bool(domain_hits or text_hits or figure_hits), reasons
 
 
 def _profile_for(tool_name_en: str = "", tool_name_vi: str = "", tool_type: str = "") -> dict:
@@ -509,12 +566,16 @@ def _build_queries(tool_name_en: str, tool_name_vi: str = "", tool_type: str = "
     exclude_dirty_background = (
         '-watermark -logo -"text overlay" -banner -poster -diagram -illustration '
         '-"book cover" -ebook -textbook -pdf -manual -document -publication '
-        '-calameo -issuu -scribd -slideshare -cropped -"partial view" -"close up"'
+        '-figure -schematic -workflow -flowchart -"graphical abstract" -"research article" '
+        '-springer -springernature -mdpi -sciencedirect -researchgate -calameo -issuu -scribd '
+        '-slideshare -cropped -"partial view" -"close up"'
     )
     return [
         f'"{canonical}" {subject_query} exactly one single object one laboratory tool full object visible uncropped {first_background_phrase} no duplicates no set no collection no row no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
         f'{base} {subject_query} only one single laboratory tool one piece {background_phrase} front view or slight angle no extra tools no multiple objects {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
         f'{base} {subject_query} individual apparatus exactly one object only one tool clear product photo full body visible not cropped no collection no repeated copies {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'"{canonical}" laboratory equipment catalog product photo single item full object uncropped {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
+        f'{base} science lab apparatus product image one item full object visible buy catalog photo {exclude_multi} {exclude_plural_tools} {exclude_dirty_background}',
     ]
 
 
@@ -604,6 +665,45 @@ def _score_image_result(result: dict, profile: dict, subject_code: str = "genera
         reasons.append("image_ext")
 
     return score, reasons
+
+
+def _has_reason_prefix(reasons: list[str], prefixes: tuple[str, ...]) -> bool:
+    return any(str(reason).startswith(prefixes) for reason in reasons)
+
+
+def _metadata_fallback_candidate(candidates: list[dict]):
+    for candidate in sorted(
+        candidates,
+        key=lambda item: item.get("metadata_score", item.get("score", 0)),
+        reverse=True,
+    ):
+        metadata_score = candidate.get("metadata_score", candidate.get("score", 0))
+        reasons = candidate.get("reasons", [])
+        if metadata_score < IMAGE_METADATA_FALLBACK_THRESHOLD:
+            continue
+        if candidate.get("image_validation_ok") is False and not _has_reason_prefix(
+            reasons,
+            ("image_validation_failed=", "image_validation_unavailable"),
+        ):
+            continue
+        if "missing_must" in reasons:
+            continue
+        if _has_reason_prefix(reasons, (
+            "document_",
+            "figure_",
+            "negative=",
+            "multi_object=",
+            "wrong_subject=",
+            "weak_domain=",
+        )):
+            continue
+        strong_match = (
+            _has_reason_prefix(reasons, ("must=", "positive=", "subject=", "single="))
+            or "preferred_domain" in reasons
+        )
+        if strong_match:
+            return candidate
+    return None
 
 
 def _safe_int(value, default=0) -> int:
@@ -874,6 +974,38 @@ def _detect_text_only_or_cover_image(mask, width, height, components, total_fore
     return {"ok": True, "reasons": reasons + ["not_text_only"]}
 
 
+def _detect_diagram_or_infographic_image(mask, width, height, components, total_foreground):
+    if not components or not total_foreground:
+        return {"ok": False, "reasons": ["reject_diagram_no_tool_component"]}
+
+    small_components = _all_components(mask, width, height, min_area=max(6, int(width * height * 0.00005)))
+    medium_components = [
+        component for component in small_components
+        if component["area"] >= max(24, int(total_foreground * 0.01))
+    ]
+    largest_ratio = max(component["area"] for component in components) / max(total_foreground, 1)
+    fine_x_groups = _count_x_foreground_groups(mask, width, height, 0.0, 1.0, 0.045)
+    foreground_ratio = total_foreground / max(width * height, 1)
+    reasons = [
+        f"diagram_components={len(components)}",
+        f"diagram_small_components={len(small_components)}",
+        f"diagram_medium_components={len(medium_components)}",
+        f"diagram_x_groups={len(fine_x_groups)}",
+        f"diagram_largest_fg_ratio={largest_ratio:.2f}",
+        f"diagram_fg_ratio={foreground_ratio:.2f}",
+    ]
+
+    if len(components) >= 8:
+        return {"ok": False, "reasons": reasons + ["reject_many_visual_regions"]}
+    if len(components) >= 5 and largest_ratio < 0.55:
+        return {"ok": False, "reasons": reasons + ["reject_multi_panel_or_diagram"]}
+    if len(small_components) >= 34 and len(medium_components) >= 10 and largest_ratio < 0.62:
+        return {"ok": False, "reasons": reasons + ["reject_infographic_many_parts"]}
+    if len(fine_x_groups) >= 8 and largest_ratio < 0.62:
+        return {"ok": False, "reasons": reasons + ["reject_diagram_layout"]}
+    return {"ok": True, "reasons": reasons + ["not_diagram"]}
+
+
 def _count_x_foreground_groups(mask, width, height, y_start_ratio=0.0, y_end_ratio=1.0, threshold_ratio=0.08):
     y_start = max(0, min(height - 1, int(height * y_start_ratio)))
     y_end = max(y_start + 1, min(height, int(height * y_end_ratio)))
@@ -995,6 +1127,10 @@ def _validate_single_object_image(url: str, profile: dict) -> dict:
     if not text_only_check["ok"]:
         return _validation_result(False, -90, reasons + text_only_check["reasons"], estimated_object_count)
 
+    diagram_check = _detect_diagram_or_infographic_image(mask, width, height, components, total_foreground)
+    if not diagram_check["ok"]:
+        return _validation_result(False, -90, reasons + text_only_check["reasons"] + diagram_check["reasons"], estimated_object_count)
+
     strict_single = profile.get("strict_single_visual", True)
     component_count = len(components)
     x_group_count = len(x_groups)
@@ -1056,7 +1192,7 @@ def _validate_single_object_image(url: str, profile: dict) -> dict:
     return _validation_result(
         True,
         18 if strict_single else 8,
-        reasons + text_only_check["reasons"] + background_check["reasons"] + noise_check["reasons"] + ["single_object_image_ok"],
+        reasons + text_only_check["reasons"] + diagram_check["reasons"] + background_check["reasons"] + noise_check["reasons"] + ["single_object_image_ok"],
         max(1, estimated_object_count),
     )
 
@@ -1397,26 +1533,43 @@ def search_tool_image(tool_name_en: str, tool_name_vi: str = "", tool_type: str 
             candidates.append({
                 "url": url,
                 "score": score,
+                "metadata_score": score,
                 "title": result.get("title", ""),
                 "source": result.get("source", ""),
                 "reasons": reasons,
             })
 
         candidates.sort(key=lambda item: item["score"], reverse=True)
-        candidates = _apply_image_validation(candidates, profile)
-        candidates.sort(key=lambda item: item["score"], reverse=True)
-        for index, item in enumerate(candidates[:5], start=1):
+        metadata_candidates = list(candidates)
+        validated_candidates = _apply_image_validation(candidates, profile)
+        validated_candidates.sort(key=lambda item: item["score"], reverse=True)
+        for index, item in enumerate(validated_candidates[:5], start=1):
             print(
                 f"[ImageSearch] candidate#{index} score={item['score']} "
                 f"source={item['source']} title={item['title']} reasons={item['reasons']} url={item['url']}"
             )
 
-        if candidates and candidates[0]["score"] >= IMAGE_SCORE_THRESHOLD:
-            print(f"[ImageSearch] selected score={candidates[0]['score']} url={candidates[0]['url']}")
-            print(f"[ToolImage] accepted image: {candidates[0]['url']}")
-            return candidates[0]["url"]
+        if validated_candidates:
+            best = validated_candidates[0]
+            if (
+                best["score"] >= IMAGE_SCORE_THRESHOLD or
+                (best.get("image_validation_ok") and best["score"] >= IMAGE_VISUAL_SCORE_THRESHOLD)
+            ):
+                print(f"[ImageSearch] selected score={best['score']} url={best['url']}")
+                print(f"[ToolImage] accepted image: {best['url']}")
+                return best["url"]
 
-        validation_log = candidates[0] if candidates else {"reason": "no_valid_single_object_candidate"}
+        metadata_fallback = _metadata_fallback_candidate(metadata_candidates)
+        if metadata_fallback:
+            print(
+                f"[ImageSearch] selected metadata_fallback score={metadata_fallback['metadata_score']} "
+                f"source={metadata_fallback['source']} title={metadata_fallback['title']} "
+                f"reasons={metadata_fallback['reasons']} url={metadata_fallback['url']}"
+            )
+            print(f"[ToolImage] accepted image: {metadata_fallback['url']}")
+            return metadata_fallback["url"]
+
+        validation_log = validated_candidates[0] if validated_candidates else {"reason": "no_valid_single_object_candidate"}
         print(f"[ToolImage] validation: {validation_log}")
         print(f"[ImageValidation] rejected: no single-object image accepted on attempt {attempt}")
 
