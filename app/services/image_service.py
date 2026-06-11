@@ -28,6 +28,7 @@ except Exception:
 IMAGE_SCORE_THRESHOLD = 28
 IMAGE_VISUAL_SCORE_THRESHOLD = 8
 IMAGE_METADATA_FALLBACK_THRESHOLD = 42
+TITLE_QUERY_SCORE_THRESHOLD = 24
 MAX_IMAGE_RESULTS = 20
 MAX_VALIDATED_CANDIDATES = 14
 REQUIRE_SINGLE_OBJECT_IMAGE_VALIDATION = True
@@ -35,7 +36,7 @@ IMAGE_FETCH_TIMEOUT = 8
 CLEANED_IMAGE_DIR = os.path.join("app", "static", "cleaned_tool_images")
 CLEANED_IMAGE_URL_PREFIX = "/static/cleaned_tool_images"
 CLEANED_IMAGE_CANVAS_SIZE = 768
-MAX_IMAGE_SEARCH_ATTEMPTS = 6
+MAX_IMAGE_SEARCH_ATTEMPTS = 8
 SINGLE_IMAGE_FAILURE_MESSAGE = "Không thể tạo ảnh chỉ có một dụng cụ duy nhất. Vui lòng thử lại với tên dụng cụ cụ thể hơn."
 NEGATIVE_IMAGE_PROMPT = (
     "multiple objects, duplicates, collection, set, row, group, many tools, "
@@ -282,6 +283,32 @@ PRODUCT_BRAND_TERMS = (
     "fisher",
 )
 
+TITLE_QUERY_STOPWORDS = TITLE_STOPWORDS + (
+    "www",
+    "com",
+    "net",
+    "org",
+    "html",
+    "jpg",
+    "jpeg",
+    "png",
+    "webp",
+    "amazon",
+    "ebay",
+    "aliexpress",
+    "walmart",
+    "etsy",
+    "shop",
+    "store",
+    "buy",
+    "sale",
+    "price",
+    "fity",
+    "club",
+    "page",
+    "view",
+)
+
 MULTI_OBJECT_NEGATIVE_PATTERNS = (
     r"\bset\s+of\b",
     r"\bpack\s+of\b",
@@ -500,6 +527,14 @@ NAME_OVERRIDES = (
         "allow_product_labels": True,
         "allow_non_white_background": True,
     }),
+    (("frequency generator", "function generator", "signal generator", "may phat tan so", "may phat ham", "may phat tin hieu"), {
+        "canonical": "laboratory frequency function signal generator",
+        "must_any": ("frequency generator", "function generator", "signal generator"),
+        "positive": ("physics", "laboratory", "frequency", "signal", "function generator", "measurement", "product"),
+        "strict_single_visual": True,
+        "allow_product_labels": True,
+        "allow_non_white_background": True,
+    }),
     (("spirit lamp", "alcohol lamp", "den con"), TOOL_PROFILES["heating_source"]),
     (("tripod", "support stand", "ring stand", "gia do", "kieng"), TOOL_PROFILES["support_stand"]),
 )
@@ -597,6 +632,55 @@ def _score_title_relevance(result: dict, profile: dict) -> tuple[int, list[str]]
     if title_score:
         reasons.append(f"title_score={title_score}")
     return title_score, reasons
+
+
+def _title_based_query_from_result(result: dict, profile: dict, subject_code: str = "general") -> str:
+    title_score, _ = _score_title_relevance(result, profile)
+    if title_score < TITLE_QUERY_SCORE_THRESHOLD:
+        return ""
+    if _candidate_document_noise(result)[0]:
+        return ""
+
+    raw_title = str(result.get("title") or "")
+    if not raw_title.strip():
+        return ""
+
+    search_terms = _meaningful_title_terms(profile.get("search_text") or profile.get("canonical") or "")
+    title_models = _extract_model_tokens(raw_title)
+    source_terms = _meaningful_title_terms(str(result.get("source") or ""))
+    selected = []
+    seen = set()
+    for token in re.findall(r"[a-z0-9]+", normalize_text(raw_title)):
+        is_brand = token in PRODUCT_BRAND_TERMS
+        if token in seen:
+            continue
+        if token in TITLE_QUERY_STOPWORDS:
+            continue
+        if token in source_terms and token not in search_terms and token not in title_models and not is_brand:
+            continue
+        keep = (
+            token in search_terms or
+            token in title_models or
+            is_brand or
+            len(token) >= 5
+        )
+        if not keep:
+            continue
+        selected.append(token)
+        seen.add(token)
+        if len(selected) >= 10:
+            break
+
+    if len(selected) < 2 and not title_models:
+        return ""
+
+    title_phrase = " ".join(selected)
+    subject_query = _subject_context(subject_code)["query"]
+    return (
+        f'"{title_phrase}" {subject_query} product photo single item full object visible '
+        'uncropped real equipment -diagram -illustration -figure -schematic '
+        '-watermark -"text overlay" -"set of" -"pack of" -collection -cropped'
+    )
 
 
 def _candidate_document_noise(result: dict) -> tuple[bool, list[str]]:
@@ -1685,8 +1769,16 @@ def search_tool_image(tool_name_en: str, tool_name_vi: str = "", tool_type: str 
     print(f"[ToolImage] prompt: {_single_object_prompt(canonical)}")
     print(f"[ToolImage] negative prompt: {NEGATIVE_IMAGE_PROMPT}")
 
-    for attempt, query in enumerate(_build_queries(tool_name_en, tool_name_vi, tool_type, subject_code)[:MAX_IMAGE_SEARCH_ATTEMPTS], start=1):
+    queries = _build_queries(tool_name_en, tool_name_vi, tool_type, subject_code)
+    seen_queries = set(queries)
+    attempt = 0
+    best_metadata_fallback = None
+    while attempt < len(queries) and attempt < MAX_IMAGE_SEARCH_ATTEMPTS:
+        query = queries[attempt]
+        attempt += 1
         candidates = []
+        queued_title_query_this_attempt = False
+        title_query_insert_offset = 0
         print(f"[ToolImage] attempt: {attempt}")
         print(f"[ImageSearch] query: {query}")
         try:
@@ -1705,14 +1797,22 @@ def search_tool_image(tool_name_en: str, tool_name_vi: str = "", tool_type: str 
                 print(f"[ImageSearch] skip document-like image reasons={document_reasons} url={url}")
                 continue
             score, reasons = _score_image_result(result, profile, subject_code)
-            candidates.append({
+            title_query = _title_based_query_from_result(result, profile, subject_code)
+            if title_query and title_query not in seen_queries and len(queries) < MAX_IMAGE_SEARCH_ATTEMPTS:
+                seen_queries.add(title_query)
+                queries.insert(attempt + title_query_insert_offset, title_query)
+                title_query_insert_offset += 1
+                queued_title_query_this_attempt = True
+                print(f"[ImageSearch] queued title query: {title_query}")
+            candidate = {
                 "url": url,
                 "score": score,
                 "metadata_score": score,
                 "title": result.get("title", ""),
                 "source": result.get("source", ""),
                 "reasons": reasons,
-            })
+            }
+            candidates.append(candidate)
 
         candidates.sort(key=lambda item: item["score"], reverse=True)
         metadata_candidates = list(candidates)
@@ -1736,6 +1836,15 @@ def search_tool_image(tool_name_en: str, tool_name_vi: str = "", tool_type: str 
 
         metadata_fallback = _metadata_fallback_candidate(metadata_candidates)
         if metadata_fallback:
+            if (
+                best_metadata_fallback is None or
+                metadata_fallback.get("metadata_score", metadata_fallback.get("score", 0)) >
+                best_metadata_fallback.get("metadata_score", best_metadata_fallback.get("score", 0))
+            ):
+                best_metadata_fallback = metadata_fallback
+            if queued_title_query_this_attempt and attempt < len(queries) and attempt < MAX_IMAGE_SEARCH_ATTEMPTS:
+                print("[ImageSearch] defer metadata fallback because a title-based query was queued")
+                continue
             print(
                 f"[ImageSearch] selected metadata_fallback score={metadata_fallback['metadata_score']} "
                 f"source={metadata_fallback['source']} title={metadata_fallback['title']} "
@@ -1747,6 +1856,15 @@ def search_tool_image(tool_name_en: str, tool_name_vi: str = "", tool_type: str 
         validation_log = validated_candidates[0] if validated_candidates else {"reason": "no_valid_single_object_candidate"}
         print(f"[ToolImage] validation: {validation_log}")
         print(f"[ImageValidation] rejected: no single-object image accepted on attempt {attempt}")
+
+    if best_metadata_fallback:
+        print(
+            f"[ImageSearch] selected best_metadata_fallback score={best_metadata_fallback['metadata_score']} "
+            f"source={best_metadata_fallback['source']} title={best_metadata_fallback['title']} "
+            f"reasons={best_metadata_fallback['reasons']} url={best_metadata_fallback['url']}"
+        )
+        print(f"[ToolImage] accepted image: {best_metadata_fallback['url']}")
+        return best_metadata_fallback["url"]
 
     print(f"[ImageSearch] no confident single-object image for {tool_name_en}; avoid using wrong image")
     print(f"[ToolImage] {SINGLE_IMAGE_FAILURE_MESSAGE}")
