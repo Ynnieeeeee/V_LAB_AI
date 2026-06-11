@@ -12,6 +12,7 @@ from app.models.base_db import engine, get_session
 from app.models.conversations import Conversations
 from app.models.profiles import Profiles
 from app.models.tools import Tools
+from app.services.image_service import SINGLE_IMAGE_FAILURE_MESSAGE
 from app.services.lab_service import LabServices
 from app.task.lab_task import get_processing_tool_ids, start_3d_pipeline_task
 from app.utils.get_current_user import get_current_user
@@ -26,6 +27,19 @@ LAST_PIPELINE_REQUEUE_AT = {}
 
 def _is_fallback_model(tool: Tools) -> bool:
     return tool.model_generation_status == "fallback"
+
+
+def _model_failure_response(tool: Tools) -> dict:
+    return {
+        "id_tool": str(tool.id_tool),
+        "name_tool_vi": tool.name_tool_vi,
+        "name_tool_en": tool.name_tool_en,
+        "tool_type": tool.tool_type,
+        "model_generation_status": tool.model_generation_status,
+        "message": SINGLE_IMAGE_FAILURE_MESSAGE,
+        "created_at": tool.created_at,
+        "updated_at": tool.updated_at,
+    }
 
 
 @router.post("/generate")
@@ -72,6 +86,7 @@ async def generate_lab(
 
     for item in extracted_data:
         response_data.append({
+            "id_tool": item["id_tool"],
             "name": item["name_vi"],
             "quantity": item["quantity"],
             "ready": item["model_3d_url"] is not None,
@@ -160,6 +175,7 @@ def _queue_pending_3d_tools(id_conv, backgroundtask: BackgroundTasks, session: S
 async def get_tool_status(
     id_conv: str,
     backgroundtask: BackgroundTasks,
+    include_failures: bool = False,
     session: Session = Depends(get_session),
     user: Profiles = Depends(get_current_user),
 ):
@@ -179,6 +195,21 @@ async def get_tool_status(
     )
     result = session.exec(statement).all()
     print(f"[LabStatus] ready tools for {id_conv}: {len(result)}")
+
+    if include_failures:
+        failed_statement = select(Tools).where(
+            Tools.id_conv == id_conv,
+            Tools.is_deleted == False,
+            Tools.model_3d_url == None,
+            Tools.image_2d_url == None,
+            Tools.model_generation_status == "failed",
+        )
+        failed_tools = session.exec(failed_statement).all()
+        return {
+            "tools": result,
+            "failed": [_model_failure_response(tool) for tool in failed_tools],
+        }
+
     return result
 
 

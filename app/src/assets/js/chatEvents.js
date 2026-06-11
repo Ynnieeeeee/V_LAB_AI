@@ -32,6 +32,7 @@ export function initChatEvents() {
             if (response.ok){
                 const result = await response.json();
                 const waitingForModels = (result.data || []).some(item => !item.ready);
+                window.registerPendingModelTools?.(result.data || []);
                 
                 // Nếu đây là chat mới, cập nhật ID và URL
                 if ((!window.currentConvId || window.currentConvId === "null" || window.currentConvId === "undefined") && result.conversation_id) {

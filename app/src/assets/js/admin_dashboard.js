@@ -31,9 +31,11 @@ const statusClass = {
     deleted: "is-deleted",
     completed: "is-active",
     processing: "is-processing",
+    running: "is-processing",
     pending: "is-pending",
     queued: "is-pending",
     failed: "is-deleted",
+    failed_public_image_url: "is-deleted",
     refunded: "is-processing",
     unknown: "is-unknown",
 };
@@ -464,6 +466,7 @@ function renderTools() {
                 <td>
                     <strong>${escapeHtml(tool.name_tool_vi || tool.name_tool_en || "-")}</strong>
                     <small>${escapeHtml(tool.name_tool_en || "")}</small>
+                    <small>${escapeHtml(tool.id_conv ? `Cuộc hội thoại: ${tool.id_conv}` : "Mẫu chung")}</small>
                 </td>
                 <td>${subjectLabel(tool.subject_type)}</td>
                 <td>${escapeHtml(tool.tool_type || "-")}</td>
@@ -475,6 +478,10 @@ function renderTools() {
                         <button class="row-action" data-action="edit-tool" data-id="${tool.id_tool}" title="Sửa" type="button">
                             <i class="fa-solid fa-pen"></i>
                         </button>
+                        ${tool.image_2d_url ? `
+                        <button class="row-action" data-action="generate-tool-model" data-id="${tool.id_tool}" title="Tạo mô hình từ ảnh 2D" type="button">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        </button>` : ""}
                         ${tool.is_deleted ? `
                         <button class="row-action" data-action="restore-tool" data-id="${tool.id_tool}" title="Khôi phục" type="button">
                             <i class="fa-solid fa-rotate-left"></i>
@@ -489,22 +496,26 @@ function renderTools() {
     }).join("");
 }
 
-function openToolModal(tool) {
-    $("toolId").value = tool.id_tool;
-    $("toolNameVi").value = tool.name_tool_vi || "";
-    $("toolNameEn").value = tool.name_tool_en || "";
-    $("toolType").value = tool.tool_type || "";
-    $("toolQuantity").value = Number(tool.quantity || 0);
-    $("toolSubject").value = tool.subject_type || "general";
-    $("toolStatus").value = tool.model_generation_status || "pending";
+function openToolModal(tool = null) {
+    $("toolModalTitle").textContent = tool ? "Sửa dụng cụ" : "Thêm dụng cụ";
+    $("toolId").value = tool?.id_tool || "";
+    $("toolNameVi").value = tool?.name_tool_vi || "";
+    $("toolNameEn").value = tool?.name_tool_en || "";
+    $("toolType").value = tool?.tool_type || "";
+    $("toolQuantity").value = Number(tool?.quantity ?? 1);
+    $("toolSubject").value = tool?.subject_type || "general";
+    $("toolStatus").value = tool?.model_generation_status || "pending";
+    $("toolConversationId").value = tool?.id_conv || "";
+    $("toolImageUrl").value = tool?.image_2d_url || "";
+    $("toolRegenerateModel").checked = false;
     openModal("toolModal");
 }
 
 async function saveTool(event) {
     event.preventDefault();
     const id = $("toolId").value;
-    await api(`/api/admin/tools/${id}`, {
-        method: "PUT",
+    await api(id ? `/api/admin/tools/${id}` : "/api/admin/tools", {
+        method: id ? "PUT" : "POST",
         body: JSON.stringify({
             name_tool_vi: $("toolNameVi").value.trim(),
             name_tool_en: $("toolNameEn").value.trim(),
@@ -512,10 +523,13 @@ async function saveTool(event) {
             quantity: $("toolQuantity").value,
             subject_type: $("toolSubject").value,
             model_generation_status: $("toolStatus").value,
+            id_conv: $("toolConversationId").value.trim(),
+            image_2d_url: $("toolImageUrl").value.trim(),
+            regenerate_model: $("toolRegenerateModel").checked,
         }),
     });
     closeModal("toolModal");
-    showToast("Đã lưu dụng cụ");
+    showToast($("toolRegenerateModel").checked ? "Đã đưa mô hình vào hàng đợi tạo 3D" : (id ? "Đã lưu dụng cụ" : "Đã thêm dụng cụ"));
     await loadTools();
     await loadOverview();
 }
@@ -639,6 +653,14 @@ async function handleRowAction(event) {
         }
 
         if (action === "edit-tool") openToolModal(findById(state.tools, id, "id_tool"));
+        if (action === "generate-tool-model" && confirm("Tạo lại mô hình 3D từ image_2d_url của dụng cụ này?")) {
+            await api(`/api/admin/tools/${id}`, {
+                method: "PUT",
+                body: JSON.stringify({ regenerate_model: true }),
+            });
+            showToast("Đã đưa mô hình vào hàng đợi tạo 3D");
+            await loadTools();
+        }
         if (action === "delete-tool" && confirm("Xóa mềm dụng cụ này?")) {
             await api(`/api/admin/tools/${id}/soft-delete`, { method: "PATCH" });
             showToast("Đã xóa mềm dụng cụ");
@@ -679,6 +701,7 @@ function bindEvents() {
     });
 
     $("addUserBtn").addEventListener("click", () => openUserModal());
+    $("addToolBtn").addEventListener("click", () => openToolModal());
     $("userForm").addEventListener("submit", (event) => saveUser(event).catch((error) => showToast(error.message, "error")));
     $("documentForm").addEventListener("submit", (event) => saveDocument(event).catch((error) => showToast(error.message, "error")));
     $("toolForm").addEventListener("submit", (event) => saveTool(event).catch((error) => showToast(error.message, "error")));

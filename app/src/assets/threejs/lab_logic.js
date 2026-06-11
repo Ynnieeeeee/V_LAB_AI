@@ -14,6 +14,49 @@ const API_URL = 'http://127.0.0.1:8000';
 let globalScene = null;
 let globalRegisterDraggable = null;
 let lastConvId = null; // Theo dõi sự thay đổi cuộc hội thoại
+const pendingModelToolIds = new Set();
+const notifiedModelFailureIds = new Set();
+
+function normalizeToolId(value) {
+    return value === undefined || value === null ? null : String(value);
+}
+
+function registerPendingModelTools(items = []) {
+    items.forEach((item) => {
+        const id = normalizeToolId(item?.id_tool);
+        if (id && !item.ready) {
+            pendingModelToolIds.add(id);
+        }
+    });
+}
+
+function toolDisplayName(tool = {}) {
+    return tool.name_tool_vi || tool.name_tool_en || tool.name || 'dụng cụ';
+}
+
+function notifyMissingImageFailures(failures = []) {
+    const freshFailures = failures.filter((failure) => {
+        const id = normalizeToolId(failure?.id_tool);
+        return id && pendingModelToolIds.has(id) && !notifiedModelFailureIds.has(id);
+    });
+
+    if (!freshFailures.length) return;
+
+    freshFailures.forEach((failure) => {
+        const id = normalizeToolId(failure.id_tool);
+        notifiedModelFailureIds.add(id);
+        pendingModelToolIds.delete(id);
+    });
+
+    const firstFailure = freshFailures[0];
+    const message = firstFailure.message || 'Không tìm được ảnh phù hợp để tạo mô hình 3D. Vui lòng thử lại với tên dụng cụ cụ thể hơn.';
+    const names = freshFailures.map(toolDisplayName).slice(0, 5).join(', ');
+    const extraCount = freshFailures.length > 5 ? ` và ${freshFailures.length - 5} dụng cụ khác` : '';
+    const detail = names ? `\nDụng cụ: ${names}${extraCount}` : '';
+
+    window.alert(`${message}${detail}\n\nNhấn OK để tiếp tục tạo mô hình khác.`);
+    document.getElementById('chat-input')?.focus();
+}
 
 /**
  * Khởi tạo môi trường làm việc
@@ -25,6 +68,7 @@ export function initLabLogic(scene, registerDraggable) {
     // Xuất các hàm ra window để chat_logic.js hoặc các file khác gọi trực tiếp
     window.clearLab = () => clearLab(scene);
     window.checkBackendStatus = () => checkBackendStatus(scene);
+    window.registerPendingModelTools = registerPendingModelTools;
     window.loadAndPlaceModel = (tool, displayIndex, instanceId) => 
         loadAndPlaceModel(scene, tool, displayIndex, instanceId);
 
@@ -50,6 +94,8 @@ export function clearLab(scene) {
     
     loaderModels.clear();
     currentlyLoading.clear();
+    pendingModelToolIds.clear();
+    notifiedModelFailureIds.clear();
     
     // Reset giao diện danh sách dụng cụ
     const list = document.getElementById('tool-list');
@@ -86,7 +132,7 @@ async function checkBackendStatus(scene) {
 
     try {
         // Gửi request kèm tham số id_conv rõ ràng
-        const res = await fetch(`${API_URL}/api/lab/status?id_conv=${encodeURIComponent(id_conv)}`, {
+        const res = await fetch(`${API_URL}/api/lab/status?id_conv=${encodeURIComponent(id_conv)}&include_failures=true`, {
             headers: {
                 Authorization: `Bearer ${token}`
             }
@@ -111,12 +157,17 @@ async function checkBackendStatus(scene) {
 
         if (!res.ok) return;
 
-        const data = await res.json();
+        const payload = await res.json();
+        const data = Array.isArray(payload) ? payload : (payload.tools || []);
+        const failures = Array.isArray(payload) ? [] : (payload.failed || []);
+        notifyMissingImageFailures(failures);
         
         // Cập nhật text trạng thái trên UI
         const statusText = document.getElementById('status-text');
         if (statusText && !statusText.innerText.includes("phân tích")) {
-            statusText.innerText = data.length > 0 ? 'Hệ thống sẵn sàng' : 'Bàn trống';
+            statusText.innerText = data.length > 0
+                ? 'Hệ thống sẵn sàng'
+                : (failures.length > 0 ? 'Có dụng cụ chưa tìm được ảnh' : 'Bàn trống');
         }
 
         // Sắp xếp dụng cụ theo thời gian tạo để vị trí Grid không bị nhảy lung tung
@@ -129,6 +180,9 @@ async function checkBackendStatus(scene) {
         let globalDisplayIndex = 0;
 
         data.forEach((tool) => {
+            const toolId = normalizeToolId(tool.id_tool);
+            if (toolId) pendingModelToolIds.delete(toolId);
+
             const quantity = tool.quantity || 1;
             for (let i = 0; i < quantity; i++) {
                 const instanceId = `${tool.id_tool}_instance_${i}`;

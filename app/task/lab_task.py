@@ -220,10 +220,10 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
                     )
                     print(f"[ToolImage] validation: {validation}")
                     if not validation.get("isValid"):
-                        print(f"[ImageValidation] rejected existing image: {validation.get('reason')}")
-                        tool.image_2d_url = None
-                        session.add(tool)
-                        session.commit()
+                        print(
+                            "[ImageValidation] existing image did not pass strict search validation; "
+                            f"keep provided image_2d_url: {validation.get('reason')}"
+                        )
 
                 if not tool.image_2d_url:
                     print(f"Dang tim anh cho: {tool.name_tool_en}")

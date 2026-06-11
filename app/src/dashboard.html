@@ -223,6 +223,10 @@
                             <input id="includeDeletedTools" type="checkbox" checked>
                             Đã xóa
                         </label>
+                        <button id="addToolBtn" class="primary-action" type="button">
+                            <i class="fa-solid fa-plus"></i>
+                            Thêm dụng cụ
+                        </button>
                     </div>
                     <div class="table-card">
                         <table class="admin-table">
@@ -317,7 +321,7 @@
     <div id="toolModal" class="modal-backdrop hidden">
         <form id="toolForm" class="modal-card">
             <div class="modal-head">
-                <h2>Dụng cụ</h2>
+                <h2 id="toolModalTitle">Dụng cụ</h2>
                 <button class="close-modal icon-btn" data-modal="toolModal" type="button">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
@@ -329,7 +333,10 @@
                 <label>Loại<input id="toolType" type="text"></label>
                 <label>Số lượng<input id="toolQuantity" min="0" type="number"></label>
                 <label>Môn<select id="toolSubject"><option value="chemistry">Hóa học</option><option value="physics">Vật lý</option><option value="biology">Sinh học</option><option value="general">Chung</option></select></label>
-                <label>Trạng thái<select id="toolStatus"><option value="pending">Pending</option><option value="processing">Processing</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label>
+                <label>Trạng thái<select id="toolStatus"><option value="pending">Pending</option><option value="running">Running</option><option value="processing">Processing</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="failed_public_image_url">Failed image URL</option></select></label>
+                <label class="span-2">ID cuộc hội thoại<input id="toolConversationId" type="text" placeholder="Để trống = dụng cụ mẫu chung"></label>
+                <label class="span-2">Image 2D URL<input id="toolImageUrl" type="url" placeholder="https://..."></label>
+                <label class="checkbox-label span-2"><input id="toolRegenerateModel" type="checkbox">Tạo mô hình 3D từ ảnh này sau khi lưu</label>
             </div>
             <div class="modal-actions">
                 <button class="secondary-action close-modal" data-modal="toolModal" type="button">Hủy</button>
@@ -340,7 +347,7 @@
 
     <div id="toast" class="toast hidden"></div>
 
-    <script src="/assets/js/admin_dashboard.js?v=20260524"></script>
+    <script src="/assets/js/admin_dashboard.js?v=20260612-conversation-tool"></script>
 </body>
 
 </html>

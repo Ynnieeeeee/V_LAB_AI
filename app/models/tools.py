@@ -8,7 +8,7 @@ class Tools (SQLModel, table=True):
     __tablename__="tools"
     
     id_tool: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True, index=True)
-    id_conv: uuid.UUID = Field(foreign_key="conversions.id_conv")
+    id_conv: Optional[uuid.UUID] = Field(default=None, foreign_key="conversions.id_conv")
     name_tool_vi: str = Field(nullable=False, index=True)
     name_tool_en: str = Field(nullable=False)
     description: Optional[str] = None

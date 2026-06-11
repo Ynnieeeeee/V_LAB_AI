@@ -7,20 +7,23 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copyfileobj
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select, text
 
 from app.models.base_db import engine, get_session
+from app.models.conversations import Conversations
 from app.models.documents import Documents
 from app.models.payments import Payments
 from app.models.profiles import Profiles
 from app.models.subscription_plans import SubscriptionPlans
 from app.models.tools import Tools
+from app.task.lab_task import start_3d_pipeline_task
 from app.utils.admin_schema import ensure_admin_schema
 from app.utils.get_current_user import get_current_user
-from app.utils.tool_classifier import ensure_tools_metadata_columns
+from app.utils.tool_classifier import classify_tool_by_name, ensure_tools_metadata_columns
 
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -58,6 +61,69 @@ def _safe_filename(filename: str) -> str:
     stem = Path(filename or "document.pdf").stem
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", stem).strip("-._") or "document"
     return f"{stem}.pdf"
+
+
+def _normalize_image_url(value: str | None) -> str | None:
+    image_url = str(value or "").strip()
+    if not image_url:
+        return None
+
+    parsed = urlparse(image_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Link anh phai la URL http(s) cong khai")
+
+    host = parsed.netloc.lower()
+    if "google." in host and parsed.path.startswith("/imgres"):
+        google_query = parse_qs(parsed.query)
+        direct_url = (google_query.get("imgurl") or [None])[0]
+        if direct_url:
+            return _normalize_image_url(direct_url)
+        raise HTTPException(status_code=400, detail="Hay copy dia chi anh truc tiep tu Google Images")
+
+    return image_url
+
+
+def _normalized_tool_subject(value: str | None) -> str:
+    subject = str(value or "general").strip().lower()
+    if subject not in ALLOWED_SUBJECTS:
+        raise HTTPException(status_code=400, detail="Mon hoc khong hop le")
+    return subject
+
+
+def _normalized_tool_quantity(value) -> int:
+    try:
+        quantity = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="So luong khong hop le")
+    return max(0, quantity)
+
+
+def _resolve_tool_conversation(session: Session, value) -> uuid.UUID | None:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+
+    conversation_id = _parse_uuid(raw_value, "id_conv")
+    conversation = session.get(Conversations, conversation_id)
+    if not conversation or conversation.is_deleted:
+        raise HTTPException(status_code=404, detail="Khong tim thay cuoc hoi thoai")
+    return conversation_id
+
+
+def _tool_regenerate_requested(payload: dict) -> bool:
+    regenerate_value = payload.get("regenerate_model")
+    return regenerate_value is True or str(regenerate_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _reset_tool_for_model_generation(tool: Tools) -> None:
+    if not tool.image_2d_url:
+        raise HTTPException(status_code=400, detail="Can co image_2d_url truoc khi tao mo hinh")
+    tool.model_3d_url = None
+    tool.model_image_hash = None
+    tool.model_job_id = None
+    tool.model_generation_status = "pending"
+    tool.force_regenerate_model = True
+    tool.image_hash = None
 
 
 def _ensure_admin_tables(session: Session) -> None:
@@ -108,6 +174,7 @@ def _tool_payload(tool: Tools) -> dict:
         "model_generation_status": tool.model_generation_status,
         "model_3d_url": tool.model_3d_url,
         "image_2d_url": tool.image_2d_url,
+        "force_regenerate_model": tool.force_regenerate_model,
         "is_deleted": tool.is_deleted,
         "created_at": tool.created_at,
         "updated_at": tool.updated_at,
@@ -559,10 +626,72 @@ def list_tools(
     return result
 
 
+@router.post("/tools")
+def create_tool(
+    payload: dict,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+    _: Profiles = Depends(_require_admin),
+):
+    _ensure_admin_tables(session)
+    name_vi = str(payload.get("name_tool_vi") or "").strip()
+    name_en = str(payload.get("name_tool_en") or "").strip().lower()
+    if not name_vi or not name_en:
+        raise HTTPException(status_code=400, detail="Can nhap ten dung cu tieng Viet va tieng Anh")
+
+    subject = _normalized_tool_subject(payload.get("subject_type"))
+    tool_meta = classify_tool_by_name(name_vi, name_en)
+    tool_type = str(payload.get("tool_type") or tool_meta.get("tool_type") or "unknown").strip() or "unknown"
+    image_url = _normalize_image_url(payload.get("image_2d_url"))
+    conversation_id = _resolve_tool_conversation(session, payload.get("id_conv"))
+    queue_model_generation = _tool_regenerate_requested(payload)
+
+    tool = Tools(
+        id_conv=conversation_id,
+        name_tool_vi=name_vi,
+        name_tool_en=name_en,
+        subject_type=subject,
+        tool_type=tool_type,
+        quantity=_normalized_tool_quantity(payload.get("quantity", 1)),
+        image_2d_url=image_url,
+        image_hash=None,
+        model_generation_status=str(payload.get("model_generation_status") or "pending").strip() or "pending",
+        is_heating_source=tool_meta.get("is_heating_source", False),
+        heating_power=tool_meta.get("heating_power", 0),
+        max_temperature=tool_meta.get("max_temperature", 25),
+        is_toggleable=tool_meta.get("is_toggleable", False),
+        is_support_stand=tool_meta.get("is_support_stand", False),
+        can_support_tools=tool_meta.get("can_support_tools", False),
+        support_height=tool_meta.get("support_height", 0.8),
+        support_radius=tool_meta.get("support_radius", 1.0),
+        capabilities=tool_meta.get("capabilities", []),
+        ports=tool_meta.get("ports", {}),
+        attach_points=tool_meta.get("attach_points", {}),
+        assembly_role=tool_meta.get("assembly_role", "none"),
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    if queue_model_generation:
+        _reset_tool_for_model_generation(tool)
+
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+
+    if queue_model_generation:
+        background_tasks.add_task(start_3d_pipeline_task, [tool.id_tool], engine)
+
+    result = _tool_payload(tool)
+    result["model_generation_queued"] = queue_model_generation
+    return result
+
+
 @router.put("/tools/{tool_id}")
 def update_tool(
     tool_id: str,
     payload: dict,
+    background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
     _: Profiles = Depends(_require_admin),
 ):
@@ -571,17 +700,33 @@ def update_tool(
     if not tool:
         raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
 
-    for field in ("name_tool_vi", "name_tool_en", "subject_type", "tool_type", "model_generation_status"):
+    for field in ("name_tool_vi", "tool_type", "model_generation_status"):
         if field in payload:
             value = payload.get(field)
             setattr(tool, field, str(value).strip() if value is not None else getattr(tool, field))
 
+    if "name_tool_en" in payload:
+        value = payload.get("name_tool_en")
+        tool.name_tool_en = str(value).strip().lower() if value is not None else tool.name_tool_en
+
+    if "subject_type" in payload:
+        tool.subject_type = _normalized_tool_subject(payload.get("subject_type"))
+
+    if "id_conv" in payload:
+        tool.id_conv = _resolve_tool_conversation(session, payload.get("id_conv"))
+
     if "quantity" in payload:
-        try:
-            quantity = int(payload.get("quantity"))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="So luong khong hop le")
-        tool.quantity = max(0, quantity)
+        tool.quantity = _normalized_tool_quantity(payload.get("quantity"))
+
+    if "image_2d_url" in payload:
+        image_url = _normalize_image_url(payload.get("image_2d_url"))
+        if image_url != (tool.image_2d_url or None):
+            tool.image_2d_url = image_url
+            tool.image_hash = None
+
+    queue_model_generation = _tool_regenerate_requested(payload)
+    if queue_model_generation:
+        _reset_tool_for_model_generation(tool)
 
     if "is_deleted" in payload:
         tool.is_deleted = bool(payload.get("is_deleted"))
@@ -590,7 +735,13 @@ def update_tool(
     session.add(tool)
     session.commit()
     session.refresh(tool)
-    return _tool_payload(tool)
+
+    if queue_model_generation:
+        background_tasks.add_task(start_3d_pipeline_task, [tool.id_tool], engine)
+
+    result = _tool_payload(tool)
+    result["model_generation_queued"] = queue_model_generation
+    return result
 
 
 @router.patch("/tools/{tool_id}/soft-delete")
