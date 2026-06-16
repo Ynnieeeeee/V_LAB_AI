@@ -3,6 +3,179 @@
 #removeChemicalBtn { background-color: #ef4444; color: #fff; }
 #removeChemicalBtn:hover { background-color: #dc2626; }
 
+.subject-login-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 240;
+    display: grid;
+    place-items: center;
+    padding: 1.25rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+}
+
+.subject-login-dialog.is-open {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.subject-login-backdrop {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(circle at 50% 62%, rgba(45, 212, 191, 0.22), transparent 34%),
+        rgba(8, 19, 30, 0.58);
+    backdrop-filter: blur(14px) saturate(1.18);
+}
+
+.subject-login-card {
+    position: relative;
+    width: min(560px, calc(100vw - 2rem));
+    padding: clamp(1.5rem, 4vw, 2.5rem);
+    border: 1px solid rgba(255, 255, 255, 0.68);
+    border-radius: 1.7rem;
+    background:
+        linear-gradient(135deg, rgba(125, 211, 252, 0.38), rgba(255, 255, 255, 0.24) 47%, rgba(45, 212, 191, 0.3)),
+        rgba(255, 255, 255, 0.12);
+    box-shadow:
+        0 26px 80px rgba(14, 165, 233, 0.24),
+        0 18px 48px rgba(0, 0, 0, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.75),
+        inset 0 -18px 52px rgba(45, 212, 191, 0.16);
+    color: #fff;
+    outline: none;
+    overflow: hidden;
+    transform: translateY(18px) scale(0.96);
+    transition: transform 200ms ease;
+    backdrop-filter: blur(28px) saturate(1.45);
+}
+
+.subject-login-dialog.is-open .subject-login-card {
+    transform: translateY(0) scale(1);
+}
+
+.subject-login-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 34%),
+        radial-gradient(circle at 50% 100%, rgba(56, 189, 248, 0.38), transparent 36%);
+    pointer-events: none;
+}
+
+.subject-login-header,
+.subject-login-divider,
+.subject-login-message,
+.subject-login-actions {
+    position: relative;
+    z-index: 1;
+}
+
+.subject-login-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.subject-login-header h2 {
+    margin: 0;
+    font-size: clamp(2rem, 6vw, 3.1rem);
+    line-height: 1;
+    font-weight: 900;
+    letter-spacing: 0;
+    text-shadow: 0 2px 18px rgba(8, 47, 73, 0.3);
+}
+
+.subject-login-divider {
+    height: 1px;
+    margin: 1.35rem 0 1.45rem;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+}
+
+.subject-login-message {
+    max-width: 28rem;
+    margin: 0 auto 1.85rem;
+    text-align: center;
+    font-size: clamp(1.05rem, 3vw, 1.45rem);
+    line-height: 1.5;
+    font-weight: 650;
+    text-shadow: 0 2px 16px rgba(8, 47, 73, 0.28);
+}
+
+.subject-login-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+}
+
+.subject-login-primary,
+.subject-login-secondary {
+    min-height: 3.15rem;
+    border: 0;
+    border-radius: 1rem;
+    cursor: pointer;
+    font-weight: 900;
+    letter-spacing: 0;
+    transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.subject-login-primary {
+    min-width: min(20rem, 100%);
+    padding: 0.85rem 2.4rem;
+    background: linear-gradient(180deg, #38bdf8, #14b8a6);
+    box-shadow:
+        0 14px 22px rgba(8, 145, 178, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.38);
+    color: #fff;
+    font-size: 1.45rem;
+    text-shadow: 0 1px 10px rgba(8, 47, 73, 0.22);
+}
+
+.subject-login-secondary {
+    padding: 0.85rem 1.25rem;
+    border: 1px solid rgba(255, 255, 255, 0.56);
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    font-size: 1rem;
+}
+
+.subject-login-primary:hover,
+.subject-login-secondary:hover {
+    transform: translateY(-1px);
+}
+
+.subject-login-primary:active,
+.subject-login-secondary:active {
+    transform: translateY(1px) scale(0.99);
+}
+
+@media (max-width: 520px) {
+    .subject-login-card {
+        padding: 1.25rem;
+        border-radius: 1.2rem;
+    }
+
+    .subject-login-header {
+        justify-content: center;
+    }
+
+    .subject-login-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .subject-login-primary,
+    .subject-login-secondary {
+        width: 100%;
+    }
+}
+
 #menuSidebar {
     position: fixed !important;
     top: 0;

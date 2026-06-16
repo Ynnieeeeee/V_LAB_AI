@@ -1,6 +1,5 @@
 import * as three from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
@@ -36,7 +35,6 @@ renderer.outputColorSpace = three.SRGBColorSpace;
 // VR Setup
 renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
-document.body.appendChild(VRButton.createButton(renderer));
 
 // --- CẤU HÌNH POST-PROCESSING ---
 const composer = new EffectComposer(renderer);

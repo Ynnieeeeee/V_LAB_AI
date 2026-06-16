@@ -504,6 +504,127 @@ export class PouringEffect {
         this.particleSystem.renderOrder = 999;
         this.scene.add(this.particleSystem);
 
+        this.streamUp = new THREE.Vector3(0, 1, 0);
+        this.streamStart = new THREE.Vector3();
+        this.streamEnd = new THREE.Vector3();
+        this.streamCenter = new THREE.Vector3();
+        this.streamDirection = new THREE.Vector3();
+        this.streamSideAxis = new THREE.Vector3();
+        this.streamLiftAxis = new THREE.Vector3();
+        this.streamTmp = new THREE.Vector3();
+        this.streamTmp2 = new THREE.Vector3();
+
+        this.streamGroup = new THREE.Group();
+        this.streamGroup.name = 'liquid_pouring_stream';
+        this.streamGroup.visible = false;
+        this.streamGroup.userData.isLiquid = true;
+        this.streamGroup.userData.isParticle = true;
+        this.streamGroup.userData.notDraggable = true;
+        this.streamGroup.userData.ignoreRaycast = true;
+
+        this.streamGeometry = new THREE.BufferGeometry();
+        this.streamMaterial = new THREE.MeshPhysicalMaterial({
+            color: this.color.clone(),
+            emissive: this.color.clone(),
+            emissiveIntensity: 0.18,
+            transparent: true,
+            opacity: 0.58,
+            roughness: 0.06,
+            metalness: 0,
+            transmission: 0.34,
+            thickness: 0.18,
+            ior: 1.333,
+            depthWrite: false,
+            depthTest: true,
+            side: THREE.DoubleSide
+        });
+        this.streamMesh = new THREE.Mesh(this.streamGeometry, this.streamMaterial);
+        this.streamMesh.name = 'liquid_pouring_stream_body';
+        this.streamMesh.userData = {
+            isLiquid: true,
+            isParticle: true,
+            notDraggable: true,
+            ignoreRaycast: true
+        };
+        this.streamMesh.raycast = () => null;
+        this.streamMesh.renderOrder = 998;
+        this.streamGroup.add(this.streamMesh);
+
+        this.streamCoreGeometry = new THREE.BufferGeometry();
+        this.streamCoreMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.18,
+            depthWrite: false,
+            depthTest: true,
+            blending: THREE.AdditiveBlending,
+            side: THREE.DoubleSide
+        });
+        this.streamCore = new THREE.Mesh(this.streamCoreGeometry, this.streamCoreMaterial);
+        this.streamCore.name = 'liquid_pouring_stream_highlight';
+        this.streamCore.userData = {
+            isLiquid: true,
+            isParticle: true,
+            notDraggable: true,
+            ignoreRaycast: true
+        };
+        this.streamCore.raycast = () => null;
+        this.streamCore.renderOrder = 999;
+        this.streamGroup.add(this.streamCore);
+
+        this.streamImpactMaterial = new THREE.MeshBasicMaterial({
+            color: this.color.clone(),
+            transparent: true,
+            opacity: 0.36,
+            depthWrite: false,
+            depthTest: true,
+            blending: THREE.AdditiveBlending,
+            side: THREE.DoubleSide
+        });
+        this.streamImpactRing = new THREE.Mesh(
+            new THREE.TorusGeometry(1, 0.08, 8, 48),
+            this.streamImpactMaterial
+        );
+        this.streamImpactRing.name = 'liquid_pouring_impact_ring';
+        this.streamImpactRing.userData = {
+            isLiquid: true,
+            isParticle: true,
+            notDraggable: true,
+            ignoreRaycast: true
+        };
+        this.streamImpactRing.raycast = () => null;
+        this.streamImpactRing.renderOrder = 1001;
+        this.streamGroup.add(this.streamImpactRing);
+
+        this.streamStrands = [];
+        this.streamStrandMaterials = [];
+        for (let i = 0; i < 3; i++) {
+            const material = new THREE.MeshBasicMaterial({
+                color: this.color.clone().lerp(new THREE.Color(0xffffff), 0.62),
+                transparent: true,
+                opacity: 0.18,
+                depthWrite: false,
+                depthTest: true,
+                blending: THREE.AdditiveBlending,
+                side: THREE.DoubleSide
+            });
+            const strand = new THREE.Mesh(new THREE.BufferGeometry(), material);
+            strand.name = `liquid_pouring_strand_${i + 1}`;
+            strand.userData = {
+                isLiquid: true,
+                isParticle: true,
+                notDraggable: true,
+                ignoreRaycast: true
+            };
+            strand.raycast = () => null;
+            strand.renderOrder = 1000 + i;
+            this.streamStrands.push(strand);
+            this.streamStrandMaterials.push(material);
+            this.streamGroup.add(strand);
+        }
+
+        this.scene.add(this.streamGroup);
+
         // ── Volume map ────────────────────────────────────────────────────
         this.volumes     = new Map();
 
@@ -566,10 +687,12 @@ export class PouringEffect {
             fragmentShader: `
                 uniform vec3 color;
                 void main() {
-                    float edgeX = min(gl_PointCoord.x, 1.0 - gl_PointCoord.x);
-                    float edgeY = min(gl_PointCoord.y, 1.0 - gl_PointCoord.y);
-                    float edgeAlpha = smoothstep(0.0, 0.08, min(edgeX, edgeY));
-                    gl_FragColor = vec4(color, edgeAlpha * 0.95);
+                    float d = distance(gl_PointCoord, vec2(0.5));
+                    if (d > 0.5) discard;
+                    float alpha = 1.0 - smoothstep(0.36, 0.5, d);
+                    float shine = 1.0 - smoothstep(0.0, 0.34, distance(gl_PointCoord, vec2(0.38, 0.62)));
+                    vec3 dropletColor = mix(color, vec3(1.0), shine * 0.42);
+                    gl_FragColor = vec4(dropletColor, alpha * 0.78);
                 }
             `,
             transparent: true,
@@ -620,13 +743,193 @@ export class PouringEffect {
         this.color.set(color || '#ffffff');
         this.particleMaterial.uniforms.color.value.copy(this.color);
         this.powderMaterial.uniforms.color.value.copy(this.color);
-        this.spawnPos = position.clone();
+        this._syncStreamColor();
+        this.spawnPos = position?.clone?.() || new THREE.Vector3();
     }
 
-    stop() { this.isPouring = false; }
+    stop() {
+        this.isPouring = false;
+        if (this.streamGroup) this.streamGroup.visible = false;
+    }
 
     emit(currentPos) {
         if (currentPos && this.spawnPos) this.spawnPos.copy(currentPos);
+    }
+
+    _syncStreamColor() {
+        if (this.streamMaterial) {
+            this.streamMaterial.color.copy(this.color);
+            this.streamMaterial.emissive.copy(this.color);
+            this.streamMaterial.needsUpdate = true;
+        }
+        if (this.streamImpactMaterial) {
+            this.streamImpactMaterial.color.copy(this.color);
+            this.streamImpactMaterial.needsUpdate = true;
+        }
+        this.streamStrandMaterials?.forEach(material => {
+            material.color.copy(this.color).lerp(new THREE.Color(0xffffff), 0.62);
+            material.needsUpdate = true;
+        });
+    }
+
+    _replaceTubeGeometry(mesh, curve, radius, tubularSegments, radialSegments, taperFn = null) {
+        if (!mesh || !curve) return;
+
+        const geometry = new THREE.TubeGeometry(curve, tubularSegments, radius, radialSegments, false);
+        if (taperFn) {
+            this._taperTubeGeometry(geometry, curve, tubularSegments, radialSegments, taperFn);
+        }
+
+        mesh.geometry?.dispose?.();
+        mesh.geometry = geometry;
+        mesh.position.set(0, 0, 0);
+        mesh.quaternion.identity();
+        mesh.scale.set(1, 1, 1);
+    }
+
+    _taperTubeGeometry(geometry, curve, tubularSegments, radialSegments, taperFn) {
+        const position = geometry?.getAttribute?.('position');
+        if (!position) return;
+
+        const ringStride = radialSegments + 1;
+        for (let i = 0; i <= tubularSegments; i++) {
+            const t = tubularSegments === 0 ? 0 : i / tubularSegments;
+            const center = curve.getPointAt(t, this.streamTmp);
+            const scale = Math.max(0.08, taperFn(t));
+
+            for (let j = 0; j <= radialSegments; j++) {
+                const index = i * ringStride + j;
+                const x = position.getX(index);
+                const y = position.getY(index);
+                const z = position.getZ(index);
+                position.setXYZ(
+                    index,
+                    center.x + (x - center.x) * scale,
+                    center.y + (y - center.y) * scale,
+                    center.z + (z - center.z) * scale
+                );
+            }
+        }
+
+        position.needsUpdate = true;
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+    }
+
+    _makeStreamCurve(length, radius) {
+        const horizontal = this.streamTmp.copy(this.streamEnd).sub(this.streamStart);
+        horizontal.y = 0;
+        const horizontalDistance = horizontal.length();
+        const sag = THREE.MathUtils.clamp(horizontalDistance * 0.24, 0, Math.max(length * 0.16, 0.012));
+
+        this.streamSideAxis.crossVectors(this.streamDirection, this.streamUp);
+        if (this.streamSideAxis.lengthSq() < 1e-6) this.streamSideAxis.set(1, 0, 0);
+        this.streamSideAxis.normalize();
+
+        this.streamLiftAxis.crossVectors(this.streamSideAxis, this.streamDirection);
+        if (this.streamLiftAxis.lengthSq() < 1e-6) this.streamLiftAxis.set(0, 0, 1);
+        this.streamLiftAxis.normalize();
+
+        const wobble = Math.sin(this.time * 7.5) * radius * 0.55;
+        const p0 = this.streamStart.clone();
+        const p1 = this.streamStart.clone().lerp(this.streamEnd, 0.28);
+        const p2 = this.streamStart.clone().lerp(this.streamEnd, 0.68);
+        const p3 = this.streamEnd.clone();
+
+        p1.y -= sag * 0.18;
+        p1.addScaledVector(this.streamSideAxis, wobble);
+        p2.y -= sag;
+        p2.addScaledVector(this.streamSideAxis, -wobble * 0.55);
+
+        return new THREE.CatmullRomCurve3([p0, p1, p2, p3], false, 'centripetal', 0.32);
+    }
+
+    _makeStrandCurve(baseCurve, radius, phase) {
+        const points = [];
+        for (let i = 0; i <= 5; i++) {
+            const t = i / 5;
+            const point = baseCurve.getPointAt(t).clone();
+            const strandWave = Math.sin(t * 9.5 + phase + this.time * 8.0) * radius * 0.85;
+            const strandLift = Math.cos(t * 7.0 + phase + this.time * 5.5) * radius * 0.35;
+            point
+                .addScaledVector(this.streamSideAxis, strandWave)
+                .addScaledVector(this.streamLiftAxis, strandLift);
+            points.push(point);
+        }
+        return new THREE.CatmullRomCurve3(points, false, 'centripetal', 0.22);
+    }
+
+    _updateStreamMesh(targetPos) {
+        if (!this.streamGroup) return;
+        if (!this.isPouring || this.isPouringSolid || !this.spawnPos || !targetPos) {
+            this.streamGroup.visible = false;
+            return;
+        }
+
+        this.streamStart.copy(this.spawnPos);
+        this.streamEnd.copy(targetPos);
+        const length = this.streamStart.distanceTo(this.streamEnd);
+        if (!Number.isFinite(length) || length < 0.035) {
+            this.streamGroup.visible = false;
+            return;
+        }
+
+        this.streamDirection.copy(this.streamEnd).sub(this.streamStart).normalize();
+
+        const radius = THREE.MathUtils.clamp(length * 0.015, 0.006, 0.018);
+        const pulse = 0.5 + 0.5 * Math.sin(this.time * 18);
+        const bodyRadius = radius * (0.95 + pulse * 0.08);
+        const coreRadius = radius * (0.28 + pulse * 0.04);
+        const tubularSegments = THREE.MathUtils.clamp(Math.round(length * 32), 18, 34);
+        const curve = this._makeStreamCurve(length, bodyRadius);
+
+        this.streamGroup.visible = true;
+
+        this._replaceTubeGeometry(
+            this.streamMesh,
+            curve,
+            bodyRadius,
+            tubularSegments,
+            14,
+            t => {
+                const neckTaper = THREE.MathUtils.lerp(1.18, 0.72, t);
+                const impactBulge = THREE.MathUtils.smoothstep(t, 0.76, 1.0) * 0.18;
+                const movingRipple = Math.sin(t * 28 - this.time * 16) * 0.035;
+                return neckTaper + impactBulge + movingRipple;
+            }
+        );
+        this.streamMaterial.opacity = 0.5 + pulse * 0.08;
+
+        this._replaceTubeGeometry(
+            this.streamCore,
+            curve,
+            coreRadius,
+            tubularSegments,
+            8,
+            t => THREE.MathUtils.lerp(0.9, 0.52, t)
+        );
+        this.streamCoreMaterial.opacity = 0.12 + pulse * 0.08;
+
+        this.streamStrands.forEach((strand, index) => {
+            const strandCurve = this._makeStrandCurve(curve, bodyRadius, index * 2.1);
+            this._replaceTubeGeometry(
+                strand,
+                strandCurve,
+                bodyRadius * (0.09 + index * 0.018),
+                Math.max(10, Math.floor(tubularSegments * 0.58)),
+                5,
+                t => THREE.MathUtils.lerp(0.88, 0.36, t)
+            );
+            const material = this.streamStrandMaterials[index];
+            if (material) material.opacity = 0.1 + pulse * 0.07 + index * 0.015;
+        });
+
+        const ringScale = THREE.MathUtils.clamp(radius * (5.3 + pulse * 1.8), 0.038, 0.12);
+        this.streamImpactRing.position.copy(this.streamEnd);
+        this.streamImpactRing.rotation.set(Math.PI / 2, 0, this.time * 1.6);
+        this.streamImpactRing.scale.setScalar(ringScale);
+        this.streamImpactMaterial.opacity = 0.16 + pulse * 0.22;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -809,15 +1112,22 @@ export class PouringEffect {
     update(targetPos) {
         this.time += 0.016;
         this.particleMaterial.uniforms.time.value = this.time;
+        this._updateStreamMesh(targetPos);
 
         if (this.isPouring) {
             this.spawnTimer += 0.016;
             if (this.spawnTimer > 0.01) {
                 if (this.isPouringSolid) {
-                    this._spawnPowderParticle(targetPos);
-                    this._spawnPowderParticle(targetPos);
-                } else {
+                    if (targetPos) {
+                        this._spawnPowderParticle(targetPos);
+                        this._spawnPowderParticle(targetPos);
+                        this._spawnPowderParticle(targetPos);
+                    }
+                } else if (targetPos) {
                     this._spawnParticle(targetPos);
+                    this._spawnParticle(targetPos);
+                    this._spawnParticle(targetPos);
+                    this._spawnSplashParticle(targetPos);
                 }
                 this.spawnTimer = 0;
             }
@@ -862,6 +1172,41 @@ export class PouringEffect {
         const p = this.particles[idx];
         p.pos.copy(pos); p.vel.copy(vel);
         p.life = 1.0; p.target = targetPos ? targetPos.clone() : null;
+        p.isSplash = false;
+        p.userData = {
+            color: this.color.clone(),
+            chemicalName: this.chemicalName,
+            chemicalType: this.chemicalType
+        };
+        this.activeParticles++;
+    }
+
+    _spawnSplashParticle(targetPos) {
+        if (!targetPos) return;
+        const idx = this.activeParticles % this.particleCount;
+        const pos = targetPos.clone();
+        const angle = Math.random() * Math.PI * 2;
+        const spread = 0.014 + Math.random() * 0.028;
+        pos.x += Math.cos(angle) * spread;
+        pos.z += Math.sin(angle) * spread;
+        pos.y += 0.004;
+
+        const vel = new THREE.Vector3(
+            Math.cos(angle) * (0.08 + Math.random() * 0.16),
+            0.08 + Math.random() * 0.18,
+            Math.sin(angle) * (0.08 + Math.random() * 0.16)
+        );
+
+        if (!this.particles[idx]) {
+            this.particles[idx] = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), life: 0, userData: {} };
+        }
+
+        const p = this.particles[idx];
+        p.pos.copy(pos);
+        p.vel.copy(vel);
+        p.life = 0.46 + Math.random() * 0.18;
+        p.target = null;
+        p.isSplash = true;
         p.userData = {
             color: this.color.clone(),
             chemicalName: this.chemicalName,
@@ -878,15 +1223,15 @@ export class PouringEffect {
             const p = this.particles[i];
             if (!p || p.life <= 0) { size[i] = 0; pos[i*3+1] = -100; continue; }
 
-            p.vel.y -= 0.12;
+            p.vel.y -= p.isSplash ? 0.075 : 0.12;
             p.pos.addScaledVector(p.vel, 0.016);
-            p.life -= 0.012;
+            p.life -= p.isSplash ? 0.028 : 0.012;
 
             if (p.pos.y < 0 || (p.target && p.pos.y < p.target.y && p.vel.y < 0 && p.life < 0.98))
                 p.life = 0;
 
             pos[i*3] = p.pos.x; pos[i*3+1] = p.pos.y; pos[i*3+2] = p.pos.z;
-            size[i]  = 6.4 * p.life;
+            size[i]  = (p.isSplash ? 3.2 : 5.8) * p.life;
         }
         this.particleGeometry.attributes.position.needsUpdate = true;
         this.particleGeometry.attributes.size.needsUpdate     = true;
@@ -896,18 +1241,31 @@ export class PouringEffect {
     _spawnPowderParticle(targetPos) {
         if (!this.spawnPos) return;
         const idx = this.activePowderParticles % this.powderCount;
+        const hasTarget = !!targetPos;
         const pos = this.spawnPos.clone();
-        pos.x += (Math.random() - 0.5) * 0.035;
-        pos.z += (Math.random() - 0.5) * 0.035;
+        const sourceSpread = hasTarget ? 0.014 : 0.035;
+        pos.x += (Math.random() - 0.5) * sourceSpread;
+        pos.z += (Math.random() - 0.5) * sourceSpread;
 
         const vel = new THREE.Vector3(
             (Math.random() - 0.5) * 0.09,
             -0.55 - Math.random() * 0.45,
             (Math.random() - 0.5) * 0.09
         );
+        let target = null;
         if (targetPos) {
-            const toTarget = targetPos.clone().sub(pos).normalize().multiplyScalar(1.2);
-            vel.lerp(toTarget, 0.45);
+            target = targetPos.clone();
+            target.y = Math.max(target.y - 0.035, 0.01);
+            const mouthJitter = 0.018;
+            target.x += (Math.random() - 0.5) * mouthJitter;
+            target.z += (Math.random() - 0.5) * mouthJitter;
+
+            const toTarget = target.clone().sub(pos);
+            const distance = Math.max(toTarget.length(), 0.001);
+            vel.copy(toTarget.multiplyScalar(1 / distance))
+                .multiplyScalar(THREE.MathUtils.clamp(distance * 2.8, 1.35, 2.25));
+            vel.x += (Math.random() - 0.5) * 0.025;
+            vel.z += (Math.random() - 0.5) * 0.025;
         }
 
         if (!this.powderParticles[idx]) {
@@ -918,8 +1276,10 @@ export class PouringEffect {
         p.pos.copy(pos);
         p.vel.copy(vel);
         p.life = 1.0;
-        p.target = targetPos ? targetPos.clone() : null;
+        p.target = target;
         p.settled = false;
+        p.guidedToMouth = hasTarget;
+        p.arriveRadius = hasTarget ? 0.055 : 0.08;
         this.activePowderParticles++;
     }
 
@@ -936,9 +1296,24 @@ export class PouringEffect {
             }
 
             if (!p.settled) {
-                p.vel.y -= 0.035;
+                if (p.guidedToMouth && p.target) {
+                    const toTarget = p.target.clone().sub(p.pos);
+                    const dist = toTarget.length();
+                    if (dist < p.arriveRadius || (p.pos.y < p.target.y && p.vel.y < 0)) {
+                        p.pos.copy(p.target);
+                        p.settled = true;
+                        p.vel.set(0, 0, 0);
+                    } else {
+                        const desiredSpeed = THREE.MathUtils.clamp(dist * 5.8, 0.85, 2.15);
+                        const desired = toTarget.multiplyScalar(1 / Math.max(dist, 0.001)).multiplyScalar(desiredSpeed);
+                        p.vel.lerp(desired, 0.22);
+                        p.vel.y -= 0.012;
+                    }
+                } else {
+                    p.vel.y -= 0.035;
+                }
                 p.pos.addScaledVector(p.vel, 0.016);
-                if (p.target && p.pos.distanceTo(p.target) < 0.08) {
+                if (!p.guidedToMouth && p.target && p.pos.distanceTo(p.target) < 0.08) {
                     p.settled = true;
                     p.vel.set(0, 0, 0);
                 }

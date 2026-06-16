@@ -11,6 +11,65 @@ from app.models.base_db import engine
 from app.utils.tool_classifier import classify_tool_by_name, ensure_tools_metadata_columns
 from sqlmodel import select, Session
 import uuid
+import os
+import re
+from pathlib import Path
+from urllib.parse import urlparse
+
+
+APP_DIR = Path(__file__).resolve().parents[1]
+STATIC_MODEL_DIR = APP_DIR / "static" / "models"
+MODEL_URL_PREFIX = "/static/models/"
+
+
+def _normalize_tool_vi_name(value: str = "") -> str:
+    return re.sub(r"\s+", " ", str(value or "").casefold()).strip()
+
+
+def _local_static_model_exists(model_url: str = "") -> bool:
+    if not model_url or not str(model_url).startswith(MODEL_URL_PREFIX):
+        return True
+    filename = os.path.basename(urlparse(str(model_url)).path)
+    return bool(filename and (STATIC_MODEL_DIR / filename).exists())
+
+
+def _find_reusable_model_tool(session: Session, name_vi: str, subject_code: str) -> Tools | None:
+    normalized_name = _normalize_tool_vi_name(name_vi)
+    if not normalized_name:
+        return None
+
+    statement = (
+        select(Tools)
+        .where(
+            Tools.model_3d_url != None,
+            Tools.force_regenerate_model == False,
+            Tools.is_deleted == False,
+        )
+        .order_by(Tools.created_at.desc())
+    )
+    buckets = ([], [], [], [])
+    for candidate in session.exec(statement).all():
+        if _normalize_tool_vi_name(candidate.name_tool_vi) != normalized_name:
+            continue
+        if not _local_static_model_exists(candidate.model_3d_url):
+            continue
+
+        same_subject = candidate.subject_type == subject_code
+        is_template = candidate.id_conv is None
+        if same_subject and is_template:
+            buckets[0].append(candidate)
+        elif same_subject:
+            buckets[1].append(candidate)
+        elif is_template:
+            buckets[2].append(candidate)
+        else:
+            buckets[3].append(candidate)
+
+    for bucket in buckets:
+        if bucket:
+            return bucket[0]
+    return None
+
 
 class LabServices:
     def __init__(self):
@@ -92,12 +151,22 @@ class LabServices:
                 template_tool = session.exec(statement).first()
                 if template_tool and template_tool.model_3d_url:
                     print(
-                        "[LabService] Template model exists but new user-requested tool will regenerate:",
+                        "[LabService] Template model exists; Vietnamese-name lookup decides reuse:",
                         item.name_en,
                         template_tool.model_3d_url,
                     )
 
                 # luôn tạo mới bản ghi Tool cho cuộc hội thoại này
+                reusable_model_tool = _find_reusable_model_tool(session, item.name_vi, subject_code)
+                if reusable_model_tool:
+                    template_tool = reusable_model_tool
+                    print(
+                        "[LabService] Reuse existing 3D model by Vietnamese name:",
+                        item.name_vi,
+                        reusable_model_tool.model_3d_url,
+                    )
+                has_reusable_model = reusable_model_tool is not None
+
                 new_tool = Tools(
                     id_conv=id_conv,
                     name_tool_vi=item.name_vi,
@@ -108,17 +177,19 @@ class LabServices:
                     # Copy đầy đủ từ mẫu nếu có
                     image_2d_url=template_tool.image_2d_url if template_tool else None,
                     image_hash=template_tool.image_hash if template_tool else None,
-                    model_3d_url=None,
-                    model_image_hash=None,
-                    model_generation_status="pending",
-                    force_regenerate_model=True,
+                    model_3d_url=reusable_model_tool.model_3d_url if has_reusable_model else None,
+                    model_image_hash=(reusable_model_tool.model_image_hash or reusable_model_tool.image_hash) if has_reusable_model else None,
+                    model_generation_status="completed" if has_reusable_model else "pending",
+                    force_regenerate_model=False if has_reusable_model else True,
                     material_color=template_tool.material_color if template_tool else "#ffffff",
                     material_type=template_tool.material_type if template_tool else None,
                     roughness=template_tool.roughness if template_tool else 0.5,
                     metalness=template_tool.metalness if template_tool else 0.0,
+                    clearcoat=template_tool.clearcoat if template_tool else 0.0,
                     is_glass=template_tool.is_glass if template_tool else False,
                     ior=template_tool.ior if template_tool else 1.5,
                     transmission=template_tool.transmission if template_tool else 0.0,
+                    thickness=template_tool.thickness if template_tool else 0.0,
                     tool_type=tool_meta["tool_type"],
                     is_heating_source=tool_meta["is_heating_source"],
                     heating_power=tool_meta["heating_power"],

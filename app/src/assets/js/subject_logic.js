@@ -7,6 +7,7 @@ window.currentSubject = null;
 window.currentConvId = null;
 
 const SUBJECT_AUTH_TOKEN_KEY = "access_token";
+let subjectLoginDialogState = null;
 
 function getSubjectAuthToken() {
     const storedToken = localStorage.getItem(SUBJECT_AUTH_TOKEN_KEY);
@@ -23,6 +24,96 @@ function clearSubjectAuthState() {
 
 function redirectToLogin() {
     window.location.href = "/login";
+}
+
+function ensureSubjectLoginDialog() {
+    let dialog = document.getElementById("subject-login-dialog");
+    if (dialog) return dialog;
+
+    dialog = document.createElement("div");
+    dialog.id = "subject-login-dialog";
+    dialog.className = "subject-login-dialog hidden";
+    dialog.setAttribute("aria-hidden", "true");
+    dialog.innerHTML = `
+        <div class="subject-login-backdrop" data-subject-login-cancel></div>
+        <div class="subject-login-card" role="dialog" aria-modal="true" aria-labelledby="subject-login-title" tabindex="-1">
+            <div class="subject-login-header">
+                <h2 id="subject-login-title">Đăng nhập để tiếp tục</h2>
+            </div>
+            <div class="subject-login-divider"></div>
+            <p class="subject-login-message">
+                Bạn cần đăng nhập để chọn môn học và bắt đầu phòng thí nghiệm.
+            </p>
+            <div class="subject-login-actions">
+                <button type="button" class="subject-login-primary" data-subject-login-confirm>
+                    Đăng nhập
+                </button>
+                <button type="button" class="subject-login-secondary" data-subject-login-cancel>
+                    Hủy
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(dialog);
+
+    const closeDialog = (shouldLogin) => {
+        if (!subjectLoginDialogState) return;
+
+        const { resolve } = subjectLoginDialogState;
+        subjectLoginDialogState = null;
+
+        dialog.classList.remove("is-open");
+        dialog.setAttribute("aria-hidden", "true");
+
+        setTimeout(() => {
+            dialog.classList.add("hidden");
+        }, 180);
+
+        resolve(shouldLogin);
+    };
+
+    dialog.querySelector("[data-subject-login-confirm]").addEventListener("click", () => {
+        closeDialog(true);
+    });
+
+    dialog.querySelectorAll("[data-subject-login-cancel]").forEach((element) => {
+        element.addEventListener("click", () => {
+            closeDialog(false);
+        });
+    });
+
+    dialog.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+            closeDialog(false);
+        }
+    });
+
+    return dialog;
+}
+
+function confirmLoginBeforeSelectingSubject() {
+    if (subjectLoginDialogState) {
+        return subjectLoginDialogState.promise;
+    }
+
+    const dialog = ensureSubjectLoginDialog();
+    const card = dialog.querySelector(".subject-login-card");
+
+    dialog.classList.remove("hidden");
+    dialog.setAttribute("aria-hidden", "false");
+
+    subjectLoginDialogState = {};
+    subjectLoginDialogState.promise = new Promise((resolve) => {
+        subjectLoginDialogState.resolve = resolve;
+    });
+
+    requestAnimationFrame(() => {
+        dialog.classList.add("is-open");
+        card?.focus();
+    });
+
+    return subjectLoginDialogState.promise;
 }
 
 async function canSelectSubject() {
@@ -55,7 +146,10 @@ async function canSelectSubject() {
 async function requireLoginBeforeSelectingSubject() {
     if (await canSelectSubject()) return true;
 
-    redirectToLogin();
+    if (await confirmLoginBeforeSelectingSubject()) {
+        redirectToLogin();
+    }
+
     return false;
 }
 
