@@ -1,20 +1,21 @@
 import * as three from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260609-network-topology';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js?v=20260609-network-topology';
+import { initControls } from './controls.js?v=20260617-xr-rotate-held2';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js?v=20260617-xr-rotate-held2';
 import { initChatEvents } from '../js/chatEvents.js?v=20260527-liquid-soft-waves';
 import { initLabLogic } from './lab_logic.js?v=20260609-network-topology';
 import { initLights } from './lights.js';
 import { initEnvironment } from './environment.js';
 import { initMascot, updateMascot } from './mascot.js';
 import { setupChemicalCabinet } from './cabinetChemical.js?v=20260609-network-topology';
-import { pouringEffect, pouringState } from './interaction.js?v=20260609-network-topology';
+import { pouringEffect, pouringState } from './interaction.js?v=20260617-xr-rotate-held2';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -35,6 +36,40 @@ renderer.outputColorSpace = three.SRGBColorSpace;
 // VR Setup
 renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
+const vrButton = VRButton.createButton(renderer);
+const vrButtonSlot = document.getElementById('vrButtonSlot');
+
+Object.assign(vrButton.style, {
+    position: 'static',
+    bottom: 'auto',
+    left: 'auto',
+    transform: 'none',
+    width: 'auto',
+    minWidth: '112px',
+    height: 'auto',
+    margin: '0',
+    padding: '0.5rem 1.5rem',
+    borderRadius: '1rem',
+    border: '1px solid rgba(255, 255, 255, 0.2)',
+    background: 'rgba(255, 255, 255, 0.1)',
+    color: '#ffffff',
+    fontFamily: 'inherit',
+    fontSize: '14px',
+    fontWeight: '700',
+    lineHeight: '20px',
+    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.45)',
+    backdropFilter: 'blur(12px)',
+    cursor: 'pointer'
+});
+
+vrButton.addEventListener('mouseenter', () => {
+    vrButton.style.background = '#2563eb';
+});
+vrButton.addEventListener('mouseleave', () => {
+    vrButton.style.background = 'rgba(255, 255, 255, 0.1)';
+});
+
+(vrButtonSlot || document.body).appendChild(vrButton);
 
 // --- CẤU HÌNH POST-PROCESSING ---
 const composer = new EffectComposer(renderer);
@@ -86,6 +121,39 @@ composer.addPass(outputPass);
 
 scene.add(cameraGroup);
 const controlsManager = initControls(camera, renderer.domElement, cameraGroup);
+const xrControllerSlots = [renderer.xr.getController(0), renderer.xr.getController(1)];
+const xrControllerGripSlots = [renderer.xr.getControllerGrip(0), renderer.xr.getControllerGrip(1)];
+const xrReticle = createXRControllerReticle(scene, xrControllerSlots);
+controlsManager.xrControllerAimTargets = xrReticle.aimTargets;
+
+xrControllerSlots.forEach((controller, index) => {
+    const grip = xrControllerGripSlots[index];
+
+    controller.name = `XR Controller Slot ${index + 1}`;
+    controller.userData.slot = index;
+    controller.userData.grip = grip;
+
+    if (grip) {
+        grip.name = `XR Controller Grip Slot ${index + 1}`;
+        grip.userData.slot = index;
+        grip.userData.targetRay = controller;
+        scene.add(grip);
+    }
+
+    controller.addEventListener('connected', (event) => {
+        controlsManager.connectXRController(controller, event.data);
+    });
+    controller.addEventListener('disconnected', () => {
+        controlsManager.disconnectXRController(controller);
+    });
+    scene.add(controller);
+});
+controlsManager.xrControllerSlots = xrControllerSlots;
+controlsManager.xrControllerGripSlots = xrControllerGripSlots;
+controlsManager.getXRCamera = () => renderer.xr.getCamera(camera);
+controlsManager.getXRSession = () => renderer.xr.getSession();
+controlsManager.isXRPresenting = () => renderer.xr.isPresenting || Boolean(renderer.xr.getSession());
+
 initInteractionEvents(camera, controlsManager, scene);
 initLights(scene, renderer);
 initEnvironment(scene);
@@ -98,7 +166,7 @@ const assemblyGraphManager = createAssemblyGraphManager(scene, { getObjects: () 
 window.assemblyGraphManager = assemblyGraphManager;
 
 const loader = new GLTFLoader();
-const modelPath = './assets/models/';
+const modelPath = '/assets/models/';
 let chemicalCabinet = null;
 const frameClock = new three.Clock();
 
@@ -140,12 +208,108 @@ async function loadLaboratoryModels() {
 }
 loadLaboratoryModels();
 
+function createXRControllerReticle(scene, controllers) {
+    const root = new three.Group();
+    root.name = 'XR Controller Reticles';
+    root.visible = false;
+    root.userData.ignoreRaycast = true;
+    scene.add(root);
+
+    const outlineMaterial = new three.MeshBasicMaterial({
+        color: 0x020617,
+        transparent: true,
+        opacity: 0.85,
+        depthTest: false,
+        depthWrite: false
+    });
+    const dotMaterial = new three.MeshBasicMaterial({
+        color: 0x22d3ee,
+        transparent: true,
+        opacity: 0.95,
+        depthTest: false,
+        depthWrite: false
+    });
+
+    const makeDot = (name) => {
+        const group = new three.Group();
+        group.name = name;
+        group.visible = false;
+        group.userData.ignoreRaycast = true;
+
+        const outline = new three.Mesh(new three.SphereGeometry(0.045, 16, 16), outlineMaterial);
+        const dot = new three.Mesh(new three.SphereGeometry(0.027, 16, 16), dotMaterial);
+        outline.renderOrder = 10000;
+        dot.renderOrder = 10001;
+        group.add(outline, dot);
+        root.add(group);
+        return group;
+    };
+
+    const markers = controllers.map((_, index) => makeDot(`XR Controller Dot ${index + 1}`));
+    const raycaster = new three.Raycaster();
+    const aimTargets = new Map();
+    const origin = new three.Vector3();
+    const direction = new three.Vector3();
+    const fallbackDistance = 1.8;
+    const maxDistance = 8;
+
+    return {
+        object: root,
+        aimTargets,
+        update(isPresenting) {
+            root.visible = isPresenting;
+            if (!isPresenting) {
+                markers.forEach(marker => marker.visible = false);
+                aimTargets.clear();
+                return;
+            }
+
+            controllers.forEach((controller, index) => {
+                const marker = markers[index];
+                const hasInput = Boolean(controller?.userData?.inputSource);
+
+                if (!controller || !hasInput) {
+                    marker.visible = false;
+                    if (controller) aimTargets.set(controller, null);
+                    return;
+                }
+
+                controller.updateMatrixWorld(true);
+                controller.getWorldPosition(origin);
+                direction.set(0, 0, -1).transformDirection(controller.matrixWorld).normalize();
+
+                raycaster.ray.origin.copy(origin);
+                raycaster.ray.direction.copy(direction);
+                raycaster.near = 0.02;
+                raycaster.far = maxDistance;
+
+                const hits = raycaster.intersectObjects(draggableObjects, true);
+                const hit = hits.find(item => item.object?.userData?.root || item.object?.userData?.isInteractable);
+                const distance = hit ? Math.max(hit.distance - 0.02, 0.08) : fallbackDistance;
+                aimTargets.set(controller, hit?.object || null);
+
+                marker.visible = true;
+                marker.position.copy(origin).addScaledVector(direction, distance);
+                marker.scale.setScalar(hit ? 1.35 : 1);
+            });
+        }
+    };
+}
+
 function animate() {
     renderer.setAnimationLoop(() => {
         const delta = Math.min(0.05, frameClock.getDelta());
-        if (controlsManager.orbit.enabled) controlsManager.orbit.update();
-        const isMoving = controlsManager.updateMovement();
-        if (controlsManager.fps.isLocked) updateArmsAnimation(performance.now() / 1000, isMoving);
+        const isXRPresenting = controlsManager.isXRPresenting();
+        controlsManager.updateXRPresentationState(isXRPresenting);
+        xrReticle.update(isXRPresenting);
+        if (!isXRPresenting && controlsManager.orbit.enabled) controlsManager.orbit.update();
+        let isMoving = controlsManager.updateMovement();
+        controlsManager.updateXRPressButtons?.();
+        if (isXRPresenting) {
+            isMoving = controlsManager.updateXRMovement(delta) || isMoving;
+            controlsManager.updateXRHeldToolRotation?.(delta);
+        }
+        if (controlsManager.fps.isLocked || isXRPresenting) updateArmsAnimation(performance.now() / 1000, isMoving);
         updateMascot();
         labAssemblyManager.syncObjects();
         assemblyGraphManager.syncObjects();
@@ -153,7 +317,11 @@ function animate() {
         heatingManager.update(delta);
         if (window.checkPouringCollision) window.checkPouringCollision();
         if (pouringEffect) pouringEffect.update(pouringState.currentPourTargetPos);
-        composer.render();
+        if (isXRPresenting) {
+            renderer.render(scene, camera);
+        } else {
+            composer.render();
+        }
     });
 }
 

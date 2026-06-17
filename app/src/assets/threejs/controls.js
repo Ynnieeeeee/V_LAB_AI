@@ -1,7 +1,7 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260609-network-topology';
+import { setArmsVisibility } from './interaction.js?v=20260617-xr-rotate-held2';
 
 function isEditableTarget(event) {
     const target = event?.target;
@@ -21,8 +21,17 @@ export function initControls(camera, domElement, cameraGroup) {
     // Trạng thái phím nhấn
     const keys = { forward: false, backward: false, left: false, right: false };
     const moveSpeed = 0.1;
+    const xrMoveSpeed = moveSpeed * 60;
+    const xrTurnSpeed = 1.8;
+    const xrDeadzone = 0.15;
+    const xrEyeHeight = 2.8;
+    const xrControllers = { left: null, right: null };
     const direction = new three.Vector3();
+    const rightDirection = new three.Vector3();
+    const upDirection = new three.Vector3(0, 1, 0);
     const velocity = new three.Vector3();
+    let wasXRPresenting = false;
+    let isXRHandHolding = () => false;
 
     // Lắng nghe sự kiện bàn phím
     const onKeyDown = (event) => {
@@ -96,5 +105,109 @@ export function initControls(camera, domElement, cameraGroup) {
         return isMoving;
     };
 
-    return { orbit, fps, updateMovement };
+    const getStickAxes = (controller) => {
+        const axes = controller?.userData?.inputSource?.gamepad?.axes || controller?.userData?.gamepad?.axes || [];
+        const xPrimary = axes[2] ?? 0;
+        const yPrimary = axes[3] ?? 0;
+        const xFallback = axes[0] ?? 0;
+        const yFallback = axes[1] ?? 0;
+
+        if (Math.abs(xPrimary) > xrDeadzone || Math.abs(yPrimary) > xrDeadzone) {
+            return { x: xPrimary, y: yPrimary };
+        }
+
+        return { x: xFallback, y: yFallback };
+    };
+
+    const applyDeadzone = (value) => Math.abs(value) > xrDeadzone ? value : 0;
+
+    const updateXRPresentationState = (isPresenting) => {
+        if (isPresenting) {
+            cameraGroup.position.y = xrEyeHeight;
+            if (crosshair) crosshair.classList.add('hidden');
+            setArmsVisibility(false);
+        } else if (wasXRPresenting) {
+            cameraGroup.position.y = 0;
+            if (!fps.isLocked && crosshair) crosshair.classList.add('hidden');
+            if (!fps.isLocked) setArmsVisibility(false);
+        }
+
+        wasXRPresenting = isPresenting;
+    };
+
+    const connectXRController = (controller, inputSource) => {
+        const handedness = inputSource?.handedness;
+        if (handedness !== 'left' && handedness !== 'right') return;
+
+        controller.name = handedness === 'left' ? 'Left Controller' : 'Right Controller';
+        controller.userData.handedness = handedness;
+        controller.userData.inputSource = inputSource;
+        controller.userData.gamepad = inputSource?.gamepad || null;
+        if (controller.userData.grip?.userData) {
+            controller.userData.grip.userData.handedness = handedness;
+            controller.userData.grip.userData.inputSource = inputSource;
+            controller.userData.grip.userData.gamepad = inputSource?.gamepad || null;
+        }
+        xrControllers[handedness] = controller;
+    };
+
+    const disconnectXRController = (controller) => {
+        if (xrControllers.left === controller) xrControllers.left = null;
+        if (xrControllers.right === controller) xrControllers.right = null;
+
+        controller.userData.handedness = null;
+        controller.userData.inputSource = null;
+        controller.userData.gamepad = null;
+        if (controller.userData.grip?.userData) {
+            controller.userData.grip.userData.handedness = null;
+            controller.userData.grip.userData.inputSource = null;
+            controller.userData.grip.userData.gamepad = null;
+        }
+    };
+
+    const updateXRMovement = (delta) => {
+        const leftAxes = getStickAxes(xrControllers.left);
+        const rightAxes = isXRHandHolding('any') ? { x: 0, y: 0 } : getStickAxes(xrControllers.right);
+        const moveX = applyDeadzone(leftAxes.x);
+        const moveY = applyDeadzone(leftAxes.y);
+        const turnX = applyDeadzone(rightAxes.x);
+        let isMoving = false;
+
+        if (turnX) {
+            cameraGroup.rotation.y -= turnX * xrTurnSpeed * delta;
+            isMoving = true;
+        }
+
+        if (moveX || moveY) {
+            camera.getWorldDirection(direction);
+            direction.y = 0;
+
+            if (direction.lengthSq() > 0) {
+                direction.normalize();
+                rightDirection.crossVectors(direction, upDirection).normalize();
+
+                cameraGroup.position.addScaledVector(direction, -moveY * xrMoveSpeed * delta);
+                cameraGroup.position.addScaledVector(rightDirection, moveX * xrMoveSpeed * delta);
+                cameraGroup.position.y = xrEyeHeight;
+                isMoving = true;
+            }
+        }
+
+        return isMoving;
+    };
+
+    const setXRHandHoldingProvider = (provider) => {
+        isXRHandHolding = typeof provider === 'function' ? provider : () => false;
+    };
+
+    return {
+        orbit,
+        fps,
+        updateMovement,
+        updateXRPresentationState,
+        connectXRController,
+        disconnectXRController,
+        updateXRMovement,
+        setXRHandHoldingProvider
+    };
 }

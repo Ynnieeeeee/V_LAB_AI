@@ -6,7 +6,7 @@ const cameraGroup = new three.Group();
 cameraGroup.position.set(6, 0, 10);
 cameraGroup.add(camera);
 
-camera.position.set(0, 5, 0);
+camera.position.set(0, 9.5, 0);
 
 export function updateCameraAspect() {
     camera.aspect = window.innerWidth / window.innerHeight;

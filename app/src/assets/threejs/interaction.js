@@ -96,6 +96,28 @@ function isDescendantOf(object, ancestor) {
     return false;
 }
 
+function isTableObject(object) {
+    if (!object?.isObject3D) return false;
+    if (object.userData?.isTable || object.parent?.userData?.isTable) return true;
+    const table = window.tableObject || window.labTable || window.tableMesh;
+    return Boolean(table?.isObject3D && isDescendantOf(object, table));
+}
+
+function liftObjectBottomToSurface(object, surfaceY, clearance = 0.01) {
+    if (!object?.isObject3D || !Number.isFinite(surfaceY)) return false;
+    object.updateMatrixWorld(true);
+    const box = new three.Box3().setFromObject(object);
+    if (box.isEmpty() || !Number.isFinite(box.min.y)) return false;
+
+    const targetBottomY = surfaceY + clearance;
+    if (box.min.y >= targetBottomY) return false;
+
+    object.position.y += targetBottomY - box.min.y;
+    object.updateMatrixWorld(true);
+    updateOffsetToFloor(object);
+    return true;
+}
+
 function getObjectWorldPositionClone(object) {
     const position = new three.Vector3();
     object?.updateMatrixWorld?.(true);
@@ -1235,6 +1257,12 @@ const leftArm = createArm(false);
 const rightArm = createArm(true);
 leftArmGroup.add(leftArm);
 rightArmGroup.add(rightArm);
+const playerArmGroups = [leftArmGroup, rightArmGroup];
+playerArmGroups.forEach(group => {
+    group.traverse(node => {
+        if (node.isMesh) node.userData.isPlayerArmVisual = true;
+    });
+});
 
 export function registerDraggableObject(obj) {
     obj.updateMatrixWorld(true);
@@ -1523,6 +1551,143 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return true;
     }
 
+    let activeXRHandRayController = null;
+    const handRayOrigin = new three.Vector3();
+    const handRayDirection = new three.Vector3();
+    const handRayEnd = new three.Vector3();
+    const handRayCameraPosition = new three.Vector3();
+
+    const getHandRayCamera = () => {
+        const xrCamera = controlsManager.isXRPresenting?.()
+            ? controlsManager.getXRCamera?.()
+            : null;
+        if (xrCamera?.isArrayCamera) return xrCamera.cameras?.[0] || camera;
+        return xrCamera || camera;
+    };
+
+    const setHandInteractionRaycaster = () => {
+        if (controlsManager.isXRPresenting?.() && activeXRHandRayController?.isObject3D) {
+            activeXRHandRayController.updateMatrixWorld(true);
+            activeXRHandRayController.getWorldPosition(handRayOrigin);
+            handRayDirection.set(0, 0, -1).transformDirection(activeXRHandRayController.matrixWorld).normalize();
+            raycaster.ray.origin.copy(handRayOrigin);
+            raycaster.ray.direction.copy(handRayDirection);
+            return;
+        }
+
+        raycaster.setFromCamera({ x: 0, y: 0 }, getHandRayCamera());
+    };
+
+    const getXRHandAimedRoot = (candidates = []) => {
+        if (!controlsManager.isXRPresenting?.() || !activeXRHandRayController?.isObject3D) return null;
+        const aimedRoot = resolveDraggableRoot(controlsManager.xrControllerAimTargets?.get(activeXRHandRayController));
+        return aimedRoot && (!candidates.length || candidates.includes(aimedRoot)) ? aimedRoot : null;
+    };
+
+    const getHandRayFallbackRoot = (candidates = [], maxDistance = 8) => {
+        if (!controlsManager.isXRPresenting?.() || !activeXRHandRayController?.isObject3D) return null;
+
+        let closest = null;
+        handRayEnd.copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, maxDistance);
+
+        candidates.forEach((candidate) => {
+            if (!candidate?.isObject3D) return;
+
+            const box = new three.Box3().setFromObject(candidate);
+            if (box.isEmpty()) return;
+
+            const expandedBox = box.clone().expandByScalar(0.38);
+            const hitPoint = raycaster.ray.intersectBox(expandedBox, new three.Vector3());
+            const center = box.getCenter(new three.Vector3());
+            const rayDistanceSq = raycaster.ray.distanceSqToPoint(center);
+            const tipDistanceSq = expandedBox.distanceToPoint(handRayEnd) ** 2;
+            const score = hitPoint
+                ? raycaster.ray.origin.distanceToSquared(hitPoint)
+                : Math.min(rayDistanceSq, tipDistanceSq);
+
+            if (hitPoint || rayDistanceSq < 0.42 || tipDistanceSq < 0.42) {
+                if (!closest || score < closest.score) {
+                    closest = { object: candidate, score };
+                }
+            }
+        });
+
+        return closest?.object || null;
+    };
+
+    const getXRReachFallbackRoot = (candidates = [], maxDistance = 2.3) => {
+        if (!controlsManager.isXRPresenting?.()) return null;
+
+        const points = [];
+        if (activeXRHandRayController?.isObject3D) {
+            activeXRHandRayController.updateMatrixWorld(true);
+            activeXRHandRayController.getWorldPosition(handRayOrigin);
+            points.push({ point: handRayOrigin.clone(), weight: 0.75 });
+        }
+
+        const handCamera = getHandRayCamera();
+        handCamera.updateMatrixWorld?.(true);
+        handCamera.getWorldPosition(handRayCameraPosition);
+        points.push({ point: handRayCameraPosition.clone(), weight: 1 });
+
+        let closest = null;
+        candidates.forEach((candidate) => {
+            if (!candidate?.isObject3D) return;
+
+            const box = new three.Box3().setFromObject(candidate);
+            if (box.isEmpty()) return;
+
+            const score = points.reduce((best, item) => {
+                const distance = box.distanceToPoint(item.point);
+                return Math.min(best, distance * item.weight);
+            }, Infinity);
+
+            if (score <= maxDistance && (!closest || score < closest.score)) {
+                closest = { object: candidate, score };
+            }
+        });
+
+        return closest?.object || null;
+    };
+
+    const getHandInteractionTargetRoot = (candidates = []) => {
+        setHandInteractionRaycaster();
+
+        const aimedRoot = getXRHandAimedRoot(candidates);
+        if (aimedRoot) return aimedRoot;
+
+        const oldFar = raycaster.far;
+        raycaster.far = controlsManager.isXRPresenting?.() ? 8 : oldFar;
+        const intersects = raycaster.intersectObjects(candidates, true);
+        raycaster.far = oldFar;
+
+        for (const hit of intersects) {
+            const root = resolveDraggableRoot(hit.object);
+            if (root) return root;
+        }
+
+        const handFallbackRoot = getHandRayFallbackRoot(candidates);
+        if (handFallbackRoot) return handFallbackRoot;
+
+        const reachFallbackRoot = getXRReachFallbackRoot(candidates);
+        if (reachFallbackRoot) return reachFallbackRoot;
+
+        if (controlsManager.isXRPresenting?.()) {
+            raycaster.setFromCamera({ x: 0, y: 0 }, getHandRayCamera());
+            const oldCameraFar = raycaster.far;
+            raycaster.far = 8;
+            const cameraIntersects = raycaster.intersectObjects(candidates, true);
+            raycaster.far = oldCameraFar;
+
+            for (const hit of cameraIntersects) {
+                const root = resolveDraggableRoot(hit.object);
+                if (root) return root;
+            }
+        }
+
+        return null;
+    };
+
     const handleHandInteraction = (isRightHand = true) => {
         let currentHeld = isRightHand ? heldObjectRight : heldObjectLeft;
         const arm = isRightHand ? rightArm : leftArm;
@@ -1543,7 +1708,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             currentHeld.updateMatrixWorld(true);
 
             // Tìm điểm va chạm để đặt vật thể
-            raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+            setHandInteractionRaycaster();
 
             // Ẩn tạm thời các nhóm camera và vật thể để tránh va chạm sai
             const originalVisible = currentHeld.visible;
@@ -1560,23 +1725,29 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 returnChemicalBottleToCabinetHome(currentHeld);
 
             if (!returnedToCabinet) {
+            let dropSurfaceY = null;
             if (sceneIntersects.length > 0) {
                 // Ưu tiên tìm mặt bàn hoặc sàn nhà
                 let bestHit = sceneIntersects[0];
                 for (let i = 0; i < sceneIntersects.length; i++) {
                     const hit = sceneIntersects[i];
-                    const isTable = hit.object.userData.isTable || (hit.object.parent && hit.object.parent.userData.isTable);
+                    const isTable = isTableObject(hit.object);
                     if (isTable) {
                         bestHit = hit;
                         break;
                     }
                 }
+                dropSurfaceY = isTableObject(bestHit.object) ? getTableSurfaceY() : bestHit.point.y;
                 currentHeld.position.copy(bestHit.point);
             } else {
                 // Nếu không chạm gì, đặt phía trước người chơi 1m
-                const forward = new three.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-                currentHeld.position.copy(camera.position).add(forward.multiplyScalar(1));
+                const handCamera = getHandRayCamera();
+                const forward = new three.Vector3();
+                handCamera.getWorldDirection(forward);
+                handCamera.getWorldPosition(handRayCameraPosition);
+                currentHeld.position.copy(handRayCameraPosition).add(forward.multiplyScalar(1));
                 currentHeld.position.y = 0;
+                dropSurfaceY = 0;
             }
 
             // Bảo toàn scale sau khi đổi vị trí đặt xuống.
@@ -1596,6 +1767,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             completeAssemblyDrop(currentHeld);
             resolvePlacementOverlapAfterLegacyLogic(currentHeld);
             restoreCustomScale(currentHeld, savedScale);
+            liftObjectBottomToSurface(currentHeld, dropSurfaceY);
             currentHeld.updateMatrixWorld(true);
             } else {
                 currentHeld.updateMatrixWorld(true);
@@ -1617,16 +1789,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         } else {
             // NHẶT VẬT THỂ
-            raycaster.setFromCamera({ x: 0, y: 0 }, camera);
-            const oldFar = raycaster.far;
             const candidates = getInteractionCandidates();
-            const intersects = raycaster.intersectObjects(candidates, true);
-            raycaster.far = oldFar;
+            const root = getHandInteractionTargetRoot(candidates);
 
-            if (intersects.length > 0) {
-                let root = resolveDraggableRoot(intersects[0].object);
-                if (!root) return;
-
+            if (root) {
                 // Kiểm tra xem vật này có đang bị tay kia cầm không
                 if (root === heldObjectRight || root === heldObjectLeft) return;
 
@@ -1676,6 +1842,276 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         }
     };
 
+    const xrButtonState = new Map();
+    const xrToggleDebounceMs = 140;
+
+    const getXRControllerHandedness = (controller) => {
+        const handedness = controller?.userData?.handedness || controller?.userData?.inputSource?.handedness;
+        if (handedness === 'left' || handedness === 'right') return handedness;
+        return controller?.userData?.slot === 1 ? 'left' : 'right';
+    };
+
+    const releaseXRPress = (controller, inputName = null) => {
+        const previous = xrButtonState.get(controller);
+        if (!previous) return;
+        if (inputName && previous.activeInputName && previous.activeInputName !== inputName) return;
+
+        previous.pressed = false;
+        previous.activeInputName = null;
+        previous.lastInputAt = performance.now();
+        xrButtonState.set(controller, previous);
+    };
+
+    const handleXRPressAsHandInteraction = (controller, inputName = 'select', options = {}) => {
+        if (!controller) return false;
+
+        const previous = xrButtonState.get(controller) || {
+            pressed: false,
+            activeInputName: null,
+            lastInputAt: 0,
+            lastToggleAt: 0
+        };
+        const now = performance.now();
+
+        if (options.markPressed) {
+            if (previous.pressed) {
+                previous.activeInputName ??= inputName;
+                previous.lastInputAt = now;
+                xrButtonState.set(controller, previous);
+                return false;
+            }
+
+            previous.pressed = true;
+            previous.activeInputName = inputName;
+            previous.lastInputAt = now;
+        } else {
+            previous.lastInputAt = now;
+        }
+
+        if (now - (previous.lastToggleAt || 0) < xrToggleDebounceMs) {
+            xrButtonState.set(controller, previous);
+            return false;
+        }
+
+        const handedness = getXRControllerHandedness(controller);
+        const isRightHand = handedness !== 'left';
+        const beforeHeld = isRightHand ? heldObjectRight : heldObjectLeft;
+
+        const runHandInteraction = (rayController) => {
+            activeXRHandRayController = rayController;
+            try {
+                handleHandInteraction(isRightHand);
+            } finally {
+                activeXRHandRayController = null;
+            }
+        };
+
+        runHandInteraction(controller);
+
+        let afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
+        if (!beforeHeld && afterHeld === beforeHeld) {
+            runHandInteraction(null);
+            afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
+        }
+        const toggled = Boolean(beforeHeld) || beforeHeld !== afterHeld;
+
+        if (toggled) {
+            previous.lastToggleAt = now;
+        }
+
+        xrButtonState.set(controller, previous);
+        return toggled;
+    };
+
+    const isXRButtonPressed = (button) => Boolean(
+        button?.pressed ||
+        Number(button?.value || 0) > 0.45
+    );
+
+    const getPressedXRButtonName = (buttons = []) => {
+        const names = ['trigger', 'grip', 'touchpad', 'thumbstick', 'buttonA', 'buttonB', 'buttonX', 'buttonY'];
+        const pressedIndex = Array.from(buttons).findIndex(button => isXRButtonPressed(button));
+        if (pressedIndex < 0) return null;
+        return names[pressedIndex] || `button${pressedIndex}`;
+    };
+
+    const getXRControllerForInputSource = (inputSource, fallbackIndex = 0) => {
+        const xrControllerSlots = controlsManager.xrControllerSlots || [];
+        return xrControllerSlots.find(controller => controller?.userData?.inputSource === inputSource) ||
+            xrControllerSlots.find(controller =>
+                inputSource?.handedness &&
+                controller?.userData?.handedness === inputSource.handedness
+            ) ||
+            xrControllerSlots.find(controller => controller?.userData?.slot === fallbackIndex) ||
+            xrControllerSlots[fallbackIndex] ||
+            null;
+    };
+
+    let xrPressSession = null;
+    let xrSessionPressHandlers = null;
+
+    const getXRControllerForSessionEvent = (event) => {
+        const inputSources = Array.from(controlsManager.getXRSession?.()?.inputSources || []);
+        const fallbackIndex = Math.max(0, inputSources.indexOf(event?.inputSource));
+        return getXRControllerForInputSource(event?.inputSource, fallbackIndex);
+    };
+
+    const refreshXRPressSessionListeners = () => {
+        const session = controlsManager.getXRSession?.() || null;
+        if (session === xrPressSession) return;
+
+        if (xrPressSession && xrSessionPressHandlers) {
+            Object.entries(xrSessionPressHandlers).forEach(([eventName, handler]) => {
+                xrPressSession.removeEventListener(eventName, handler);
+            });
+        }
+
+        xrPressSession = session;
+        xrSessionPressHandlers = null;
+        if (!session) return;
+
+        const press = (event, inputName) => {
+            const controller = getXRControllerForSessionEvent(event);
+            refreshXRControllerInputSource(controller, event?.inputSource);
+            handleXRPressAsHandInteraction(controller, inputName, { markPressed: true });
+        };
+        const release = (event, inputName) => {
+            const controller = getXRControllerForSessionEvent(event);
+            releaseXRPress(controller, inputName);
+        };
+
+        xrSessionPressHandlers = {
+            selectstart: event => press(event, 'select'),
+            select: event => press(event, 'select'),
+            selectend: event => release(event, 'select'),
+            squeezestart: event => press(event, 'squeeze'),
+            squeeze: event => press(event, 'squeeze'),
+            squeezeend: event => release(event, 'squeeze'),
+            end: () => {
+                xrPressSession = null;
+                xrSessionPressHandlers = null;
+            }
+        };
+
+        Object.entries(xrSessionPressHandlers).forEach(([eventName, handler]) => {
+            session.addEventListener(eventName, handler);
+        });
+    };
+
+    const refreshXRControllerInputSource = (controller, inputSource) => {
+        if (!controller || !inputSource) return;
+        controller.userData.inputSource = inputSource;
+        controller.userData.gamepad = inputSource.gamepad || controller.userData.gamepad || null;
+        if (inputSource.handedness === 'left' || inputSource.handedness === 'right') {
+            controller.userData.handedness = inputSource.handedness;
+        }
+    };
+
+    const processXRControllerButtons = (controller, buttons = []) => {
+        if (!controller) return;
+
+        const pressedButtonName = getPressedXRButtonName(buttons);
+        const pressed = Boolean(pressedButtonName);
+        const previous = xrButtonState.get(controller) || {
+            pressed: false,
+            activeInputName: null,
+            lastInputAt: 0,
+            lastToggleAt: 0
+        };
+
+        if (pressed && !previous.pressed) {
+            handleXRPressAsHandInteraction(controller, pressedButtonName, { markPressed: true });
+            return;
+        }
+
+        if (!pressed && previous.pressed) {
+            releaseXRPress(controller, previous.activeInputName);
+            return;
+        }
+
+        if (pressed && previous.pressed) {
+            const now = performance.now();
+            const handedness = getXRControllerHandedness(controller);
+            const isRightHand = handedness !== 'left';
+            const currentHeld = isRightHand ? heldObjectRight : heldObjectLeft;
+
+            if (!currentHeld && now - (previous.lastInputAt || 0) > 160) {
+                handleXRPressAsHandInteraction(controller, pressedButtonName);
+                return;
+            }
+
+            previous.lastInputAt = now;
+        }
+        xrButtonState.set(controller, previous);
+    };
+
+    const updateXRPressButtons = () => {
+        refreshXRPressSessionListeners();
+
+        const xrControllerSlots = controlsManager.xrControllerSlots || [];
+        const sessionInputSources = Array.from(controlsManager.getXRSession?.()?.inputSources || []);
+        const processedControllers = new Set();
+
+        sessionInputSources.forEach((inputSource, index) => {
+            const controller = getXRControllerForInputSource(inputSource, index);
+            if (!controller) return;
+
+            refreshXRControllerInputSource(controller, inputSource);
+            processedControllers.add(controller);
+            processXRControllerButtons(controller, inputSource.gamepad?.buttons || []);
+        });
+
+        xrControllerSlots.forEach((controller) => {
+            if (processedControllers.has(controller)) return;
+            const buttons = controller?.userData?.inputSource?.gamepad?.buttons ||
+                controller?.userData?.gamepad?.buttons ||
+                [];
+            processXRControllerButtons(controller, buttons);
+        });
+    };
+
+    const setupXRPressControls = () => {
+        const xrControllerSlots = controlsManager.xrControllerSlots || [];
+        xrControllerSlots.forEach((controller) => {
+            controller.addEventListener('selectstart', () => handleXRPressAsHandInteraction(controller, 'select', { markPressed: true }));
+            controller.addEventListener('select', () => handleXRPressAsHandInteraction(controller, 'select', { markPressed: true }));
+            controller.addEventListener('selectend', () => releaseXRPress(controller, 'select'));
+            controller.addEventListener('squeezestart', () => handleXRPressAsHandInteraction(controller, 'squeeze', { markPressed: true }));
+            controller.addEventListener('squeeze', () => handleXRPressAsHandInteraction(controller, 'squeeze', { markPressed: true }));
+            controller.addEventListener('squeezeend', () => releaseXRPress(controller, 'squeeze'));
+            controller.addEventListener('disconnected', () => releaseXRPress(controller));
+        });
+    };
+
+    setupXRPressControls();
+    controlsManager.updateXRPressButtons = updateXRPressButtons;
+
+    const getXRControllerForPointerFallback = () => {
+        const xrControllerSlots = controlsManager.xrControllerSlots || [];
+        return xrControllerSlots.find(controller => resolveDraggableRoot(controlsManager.xrControllerAimTargets?.get(controller))) ||
+            xrControllerSlots.find(controller => controller?.userData?.inputSource) ||
+            xrControllerSlots[1] ||
+            xrControllerSlots[0] ||
+            null;
+    };
+
+    window.addEventListener('pointerdown', (event) => {
+        if (!controlsManager.isXRPresenting?.()) return;
+        if (event.button !== 0) return;
+
+        const targetTag = event.target?.tagName?.toLowerCase?.();
+        if (targetTag && targetTag !== 'canvas') return;
+
+        const controller = getXRControllerForPointerFallback();
+        if (!controller) return;
+
+        if (handleXRPressAsHandInteraction(controller, 'pointer', { markPressed: true })) {
+            window.addEventListener('pointerup', () => releaseXRPress(controller, 'pointer'), { once: true, capture: true });
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }
+    }, true);
+
     const toolRotateState = {
         activeAxis: null,
         isDragging: false,
@@ -1684,6 +2120,71 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         speed: 0.01,
         step: 0.12
     };
+
+    const xrHeldRotateDeadzone = 0.18;
+    const xrHeldRotateSpeed = 1.65;
+    const xrHeldRotationPersistMs = 700;
+
+    const getXRControllerForHand = (handedness) => {
+        const xrControllerSlots = controlsManager.xrControllerSlots || [];
+        return xrControllerSlots.find(controller => controller?.userData?.handedness === handedness) ||
+            xrControllerSlots.find(controller => controller?.userData?.inputSource?.handedness === handedness) ||
+            xrControllerSlots.find(controller => handedness === 'left' ? controller?.userData?.slot === 1 : controller?.userData?.slot === 0) ||
+            null;
+    };
+
+    const getXRRotationAxes = (controller) => {
+        const axes = controller?.userData?.inputSource?.gamepad?.axes || controller?.userData?.gamepad?.axes || [];
+        const xPrimary = axes[2] ?? 0;
+        const yPrimary = axes[3] ?? 0;
+        const xFallback = axes[0] ?? 0;
+        const yFallback = axes[1] ?? 0;
+        const x = Math.abs(xPrimary) > xrHeldRotateDeadzone || Math.abs(yPrimary) > xrHeldRotateDeadzone
+            ? xPrimary
+            : xFallback;
+        const y = Math.abs(xPrimary) > xrHeldRotateDeadzone || Math.abs(yPrimary) > xrHeldRotateDeadzone
+            ? yPrimary
+            : yFallback;
+
+        return {
+            x: Math.abs(x) > xrHeldRotateDeadzone ? x : 0,
+            y: Math.abs(y) > xrHeldRotateDeadzone ? y : 0
+        };
+    };
+
+    const rotateHeldToolWithXRStick = (object, handedness, delta) => {
+        if (!object?.isObject3D) return false;
+        const controller = getXRControllerForHand(handedness);
+        const axes = getXRRotationAxes(controller);
+        if (!axes.x && !axes.y) return false;
+
+        selectedObjectForMenu = object;
+        const pitch = axes.y * xrHeldRotateSpeed * delta;
+        const roll = axes.x * xrHeldRotateSpeed * delta;
+        const rotated = rotateToolObject(object, pitch, 0, roll, 'vr');
+
+        if (rotated) {
+            const now = performance.now();
+            if (now - (object.userData.xrLastRotationPersistAt || 0) > xrHeldRotationPersistMs) {
+                object.userData.xrLastRotationPersistAt = now;
+                persistToolRotation(object);
+            }
+        }
+
+        return rotated;
+    };
+
+    const updateXRHeldToolRotation = (delta = 0) => {
+        if (!controlsManager.isXRPresenting?.()) return false;
+        const heldTool = heldObjectRight || heldObjectLeft;
+        return rotateHeldToolWithXRStick(heldTool, 'right', delta);
+    };
+
+    controlsManager.updateXRHeldToolRotation = updateXRHeldToolRotation;
+    controlsManager.setXRHandHoldingProvider?.((handedness) => {
+        if (handedness === 'any') return Boolean(heldObjectLeft || heldObjectRight);
+        return handedness === 'left' ? Boolean(heldObjectLeft) : Boolean(heldObjectRight);
+    });
 
 
     const getRaycastToolUnderPointer = (event = null) => {
@@ -3466,8 +3967,12 @@ function animateFingers(arm, isGripping) {
 }
 
 export function setArmsVisibility(visible) {
-    leftArmGroup.visible = visible;
-    rightArmGroup.visible = visible;
+    playerArmGroups.forEach(group => {
+        group.visible = true;
+        group.traverse(node => {
+            if (node.userData?.isPlayerArmVisual) node.visible = visible;
+        });
+    });
 }
 
 

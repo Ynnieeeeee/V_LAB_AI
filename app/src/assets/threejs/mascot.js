@@ -11,7 +11,7 @@ export function initMascot(scene, camera) {
     ensureMascotPanel();
 
     const loader = new GLTFLoader();
-    loader.load('./assets/models/mascot.glb', (gltf) => {
+    loader.load('/assets/models/mascot.glb', (gltf) => {
         mascotModel = gltf.scene;
         mascotModel.scale.set(MASCOT_SCALE, MASCOT_SCALE, MASCOT_SCALE);
         camera.add(mascotModel);
