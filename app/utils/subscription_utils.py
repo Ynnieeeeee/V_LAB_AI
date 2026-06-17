@@ -6,7 +6,6 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.models.conversations import Conversations
-from app.models.message_mascot import MascotMessages
 from app.models.profiles import Profiles
 from app.models.subscription_plans import SubscriptionPlans
 from app.models.subscriptions import Subscriptions
@@ -65,7 +64,6 @@ def _admin_plan_info(session: Session, id_profile: str | UUID) -> dict | None:
         "plan": None,
         "plan_name": "Admin",
         "tool_limit_per_day": -1,
-        "mascot_limit_per_day": -1,
         "is_admin": True,
     }
 
@@ -122,7 +120,6 @@ def get_user_plan_info(session: Session, id_profile: str | UUID) -> dict:
             "plan": None,
             "plan_name": None,
             "tool_limit_per_day": 0,
-            "mascot_limit_per_day": 0,
         }
 
     return {
@@ -131,7 +128,6 @@ def get_user_plan_info(session: Session, id_profile: str | UUID) -> dict:
         "plan": plan,
         "plan_name": plan.plan_name,
         "tool_limit_per_day": int(plan.tool_limit_per_day or 0),
-        "mascot_limit_per_day": int(plan.mascot_limit_per_day or 0),
     }
 
 
@@ -149,21 +145,6 @@ def _count_tools_today(session: Session, id_profile: str | UUID) -> int:
             Conversations.is_deleted == False,
             Tools.is_deleted == False,
             Tools.created_at >= _today_start(),
-        )
-    )
-    return int(session.exec(stmt).one() or 0)
-
-
-def _count_mascot_messages_today(session: Session, id_profile: str | UUID) -> int:
-    profile_id = _to_uuid(id_profile)
-    stmt = (
-        select(func.count(MascotMessages.id_msg_mascot))
-        .join(Conversations, MascotMessages.id_conv == Conversations.id_conv)
-        .where(
-            Conversations.id_profile == profile_id,
-            Conversations.is_deleted == False,
-            MascotMessages.role == "user",
-            MascotMessages.created_at >= _today_start(),
         )
     )
     return int(session.exec(stmt).one() or 0)
@@ -208,37 +189,6 @@ def require_tool_limit(session: Session, id_profile: str | UUID, requested_quant
 
     info["used_tools_today"] = used
     info["remaining_tools_today"] = max(0, limit - used)
-    return info
-
-
-def require_mascot_limit(session: Session, id_profile: str | UUID):
-    info = require_active_plan(session, id_profile)
-    limit = info["mascot_limit_per_day"]
-
-    if _is_unlimited(limit):
-        info["used_mascot_today"] = _count_mascot_messages_today(session, id_profile)
-        info["remaining_mascot_today"] = None
-        return info
-
-    if limit <= 0:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Gói {info['plan_name']} không hỗ trợ Mascot AI. Vui lòng nâng cấp gói."
-        )
-
-    used = _count_mascot_messages_today(session, id_profile)
-
-    if used >= limit:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Bạn đã dùng {used}/{limit} lượt hỏi Mascot trong hôm nay. "
-                "Vui lòng nâng cấp gói hoặc quay lại vào ngày mai."
-            )
-        )
-
-    info["used_mascot_today"] = used
-    info["remaining_mascot_today"] = max(0, limit - used)
     return info
 
 

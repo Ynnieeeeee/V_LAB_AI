@@ -13,7 +13,7 @@ import { initChatEvents } from '../js/chatEvents.js?v=20260527-liquid-soft-waves
 import { initLabLogic } from './lab_logic.js?v=20260609-network-topology';
 import { initLights } from './lights.js';
 import { initEnvironment } from './environment.js';
-import { initMascot, updateMascot } from './mascot.js';
+import './labNotifier.js';
 import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-xr-sprite-ray1';
 import { pouringEffect, pouringState } from './interaction.js?v=20260618-xr-sprite-ray1';
 import { createHeatingManager } from './HeatingManager.js';
@@ -157,7 +157,6 @@ controlsManager.isXRPresenting = () => renderer.xr.isPresenting || Boolean(rende
 initInteractionEvents(camera, controlsManager, scene);
 initLights(scene, renderer);
 initEnvironment(scene);
-initMascot(scene, camera);
 const heatingManager = createHeatingManager(scene, { getObjects: () => draggableObjects });
 window.heatingManager = heatingManager;
 const labAssemblyManager = createLabAssemblyManager(scene, { getObjects: () => draggableObjects });
@@ -312,7 +311,6 @@ function animate() {
             controlsManager.updateXRHeldToolRotation?.(delta);
         }
         if (controlsManager.fps.isLocked || isXRPresenting) updateArmsAnimation(performance.now() / 1000, isMoving);
-        updateMascot();
         labAssemblyManager.syncObjects();
         assemblyGraphManager.syncObjects();
         assemblyGraphManager.update(delta);

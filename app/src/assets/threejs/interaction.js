@@ -1,5 +1,5 @@
 import * as three from 'three';
-import { triggerMascotSpeech } from './mascot.js';
+import { notifyLab } from './labNotifier.js';
 import { PouringEffect, getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-soft-waves';
 import { detectReaction } from './reactionRules.js?v=20260527-liquid-soft-waves';
 import { selectDominantCavityPoints } from './CavityCSG.js?v=20260527-liquid-soft-waves';
@@ -685,9 +685,9 @@ function removeChemicalFromTool(tool, scene = null) {
     return objectsToRemove.length > 0;
 }
 
-function formatReactionMascotText(reaction) {
+function formatReactionMessage(reaction) {
     const raw = reaction?.raw || {};
-    const speech = reaction?.mascotText || raw?.mascot_speech || raw?.mascotText || 'Phản ứng hóa học đã xảy ra.';
+    const speech = reaction?.reactionMessage || raw?.reaction_message || raw?.reactionMessage || 'Phản ứng hóa học đã xảy ra.';
     const equation = reaction?.equation || raw?.reaction_data?.equation || raw?.equation || '';
     return equation ? `${speech}\n${equation}` : speech;
 }
@@ -1012,12 +1012,12 @@ function translateToolObject(object, worldDelta, options = {}) {
 
 function toggleHeatingForObject(object) {
     if (!canToggleHeatingSource(object)) {
-        triggerMascotSpeech('Dụng cụ này không phải nguồn nhiệt có thể bật/tắt.');
+        notifyLab('Dụng cụ này không phải nguồn nhiệt có thể bật/tắt.');
         return false;
     }
     const isOn = toggleHeatingSource(object);
     const name = object.userData.toolData?.name_tool_vi || object.userData.toolData?.name_tool_en || 'nguồn nhiệt';
-    triggerMascotSpeech(isOn ? `Đã bật ${name}.` : `Đã tắt ${name}.`);
+    notifyLab(isOn ? `Đã bật ${name}.` : `Đã tắt ${name}.`);
     return true;
 }
 
@@ -1108,27 +1108,27 @@ function toggleManualAssembly(object) {
     if (object.userData?.isAttached || object.userData?.parentTool) {
         window.labAssemblyManager?.detachMagneticBinding?.(object);
         updateOffsetToFloor(object);
-        triggerMascotSpeech?.(`ÄÃ£ thÃ¡o ${toolDisplayName(object)} khá»i liÃªn káº¿t.`);
+        notifyLab?.(`ÄÃ£ thÃ¡o ${toolDisplayName(object)} khá»i liÃªn káº¿t.`);
         return true;
     }
 
     if (object.userData?.isAssemblySnapped || object.userData?.assemblyConnections?.length) {
         releaseHeatingSnapIfNeeded(object);
         updateOffsetToFloor(object);
-        triggerMascotSpeech?.(`Đã tháo ${toolDisplayName(object)} khỏi vị trí lắp.`);
+        notifyLab?.(`Đã tháo ${toolDisplayName(object)} khỏi vị trí lắp.`);
         return true;
     }
 
     const connection = window.labAssemblyManager?.tryAutoConnect?.(object, draggableObjects, { maxDistance: 1.15 });
     if (!connection) {
-        triggerMascotSpeech?.('Chưa có điểm lắp hợp lệ gần dụng cụ này. Hãy đưa dụng cụ lại gần cổ bình, giá đỡ, ống dẫn hoặc vị trí cần gắn rồi bấm M.');
+        notifyLab?.('Chưa có điểm lắp hợp lệ gần dụng cụ này. Hãy đưa dụng cụ lại gần cổ bình, giá đỡ, ống dẫn hoặc vị trí cần gắn rồi bấm M.');
         return false;
     }
 
     updateOffsetToFloor(object);
     resolvePlacementOverlapAfterLegacyLogic(object);
     if (pouringEffect) pouringEffect.invalidateCavity(object);
-    triggerMascotSpeech?.(`Đã lắp ${toolDisplayName(object)} vào vị trí phù hợp.`);
+    notifyLab?.(`Đã lắp ${toolDisplayName(object)} vào vị trí phù hợp.`);
     return true;
 }
 
@@ -1485,7 +1485,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     function clearDirectPourSource(message = null) {
         setDirectPourSource(null);
-        if (message) triggerMascotSpeech?.(message);
+        if (message) notifyLab?.(message);
     }
 
     function previewDirectPour(sourceObj, targetObj, targetMouthPos) {
@@ -1527,23 +1527,23 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (!selectedDirectPourSource || !selectedDirectPourSource.parent) {
             if (isPourSource(aimedTool)) {
                 setDirectPourSource(aimedTool);
-                triggerMascotSpeech?.(`Đã chọn nguồn rót: ${getChemicalName(aimedTool)}. Nhắm vào cốc/bình/ống nghiệm muốn nhận rồi bấm P hoặc Space.`);
+                notifyLab?.(`Đã chọn nguồn rót: ${getChemicalName(aimedTool)}. Nhắm vào cốc/bình/ống nghiệm muốn nhận rồi bấm P hoặc Space.`);
                 return true;
             }
 
-            triggerMascotSpeech?.('Hãy nhắm vào chai/lọ hoặc dụng cụ đang chứa hóa chất rồi bấm P để chọn nguồn rót.');
+            notifyLab?.('Hãy nhắm vào chai/lọ hoặc dụng cụ đang chứa hóa chất rồi bấm P để chọn nguồn rót.');
             return false;
         }
 
         if (aimedTool && aimedTool !== selectedDirectPourSource && isPourSource(aimedTool) && !isPourReceiver(aimedTool)) {
             setDirectPourSource(aimedTool);
-            triggerMascotSpeech?.(`Đã đổi nguồn rót sang: ${getChemicalName(aimedTool)}. Nhắm vào dụng cụ nhận rồi bấm P hoặc Space.`);
+            notifyLab?.(`Đã đổi nguồn rót sang: ${getChemicalName(aimedTool)}. Nhắm vào dụng cụ nhận rồi bấm P hoặc Space.`);
             return true;
         }
 
         const target = getPreferredPourTargetForSource(selectedDirectPourSource);
         if (!target) {
-            triggerMascotSpeech?.(`Đang chọn nguồn rót ${getChemicalName(selectedDirectPourSource)}. Hãy nhắm đúng vào dụng cụ nhận rồi bấm P hoặc Space.`);
+            notifyLab?.(`Đang chọn nguồn rót ${getChemicalName(selectedDirectPourSource)}. Hãy nhắm đúng vào dụng cụ nhận rồi bấm P hoặc Space.`);
             return false;
         }
 
@@ -1882,8 +1882,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     // Scale khi cầm trên tay (nhỏ đi một chút)
                     restoreCustomScale(root, savedScale);
 
-                    // Không gọi mascot khi chỉ cầm/nhặt dụng cụ hoặc hóa chất.
-                    // Mascot chỉ hiển thị sau khi phản ứng thật sự xảy ra.
+                    // Không hiện thông báo khi chỉ cầm/nhặt dụng cụ hoặc hóa chất.
+                    // Thông báo chỉ hiển thị sau khi phản ứng thật sự xảy ra.
                 }
             }
         }
@@ -2616,10 +2616,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     function reactionTextHaystack(reaction) {
         const raw = reaction?.raw || {};
         const parts = [
-            reaction?.mascotText,
+            reaction?.reactionMessage,
             reaction?.equation,
-            raw?.mascot_speech,
-            raw?.mascotText,
+            raw?.reaction_message,
+            raw?.reactionMessage,
             raw?.equation,
             raw?.reaction_data?.equation,
             ...(reaction?.products || []),
@@ -2834,7 +2834,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             products: ['Phenolphthalein dạng bazơ'],
             effects: [{ type: 'colorChange', color: '#FF1493' }],
             producesState: { indicator: 'pink' },
-            mascotText: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.',
+            reactionMessage: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.',
             raw: {
                 id: 'phenolphthalein_base_pink',
                 has_reaction: true,
@@ -2844,7 +2844,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 products: ['Phenolphthalein dạng bazơ'],
                 effects: [{ type: 'colorChange', color: '#FF1493' }],
                 producesState: { indicator: 'pink' },
-                mascotText: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.'
+                reactionMessage: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.'
             }
         };
     }
@@ -2895,7 +2895,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return window.heatingManager?.findActiveHeatingSourceBelowContainer?.(container) || null;
     }
 
-    function getHeatingRequiredMascotMessage(container) {
+    function getHeatingRequiredMessage(container) {
         const source = findActiveHeatingSourceBelowReactionContainer(container);
         if (!source) {
             return 'Phản ứng cần nhiệt. Hãy đặt nguồn nhiệt đang bật bên dưới dụng cụ chứa phản ứng.';
@@ -3053,9 +3053,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (targetObject?.userData) targetObject.userData.isReacting = false;
         }, 1800);
 
-        triggerMascotSpeech(hasActiveExperimentPlan()
-            ? (window.currentExperimentPlan?.success_message || formatReactionMascotText(reaction))
-            : formatReactionMascotText(reaction));
+        notifyLab(hasActiveExperimentPlan()
+            ? (window.currentExperimentPlan?.success_message || formatReactionMessage(reaction))
+            : formatReactionMessage(reaction));
     }
 
     function tryTriggerPendingReaction(container) {
@@ -3354,11 +3354,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             });
             if (hasActiveExperimentPlan() && pourRecord.recorded) {
                 const guidance = describeNextRequirement(target);
-                if (guidance) triggerMascotSpeech(guidance);
+                if (guidance) notifyLab(guidance);
             }
             if (pourRecord.autoStopped) {
                 stopPouringForAutoStop(source);
-                if (pourRecord.message) triggerMascotSpeech(pourRecord.message);
+                if (pourRecord.message) notifyLab(pourRecord.message);
             }
             return;
         }
@@ -3399,7 +3399,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                         direct: options.direct
                     });
                     target.userData.isReacting = false;
-                    triggerMascotSpeech(validation.message || 'Thí nghiệm chưa đúng điều kiện nên phản ứng chưa xảy ra.');
+                    notifyLab(validation.message || 'Thí nghiệm chưa đúng điều kiện nên phản ứng chưa xảy ra.');
                     return;
                 }
             }
@@ -3423,7 +3423,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                         direct: options.direct
                     });
                     target.userData.isReacting = false;
-                    triggerMascotSpeech(setupValidation.message || 'Cần lắp đúng bộ dụng cụ trước khi phản ứng xảy ra.');
+                    notifyLab(setupValidation.message || 'Cần lắp đúng bộ dụng cụ trước khi phản ứng xảy ra.');
                     return;
                 }
             }
@@ -3438,7 +3438,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 storePendingReaction(target, reaction, source);
                 target.userData.isReacting = false;
                 const targetTemp = reaction.requiredTemperature ?? reactionTemperatureTarget(getPendingReactionPayload(reaction));
-                triggerMascotSpeech(getHeatingRequiredMascotMessage(target));
+                notifyLab(getHeatingRequiredMessage(target));
                 return;
             }
 
@@ -3457,7 +3457,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     currentTemperature: target.userData.currentTemperature ?? 25
                 }, source);
                 target.userData.isReacting = false;
-                triggerMascotSpeech(getHeatingRequiredMascotMessage(target));
+                notifyLab(getHeatingRequiredMessage(target));
                 return;
             }
 
@@ -3471,7 +3471,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                         direct: options.direct
                     });
                     target.userData.isReacting = false;
-                    triggerMascotSpeech(conditionValidation.message || 'Thí nghiệm chưa đủ điều kiện nên phản ứng chưa xảy ra.');
+                    notifyLab(conditionValidation.message || 'Thí nghiệm chưa đủ điều kiện nên phản ứng chưa xảy ra.');
                     return;
                 }
                 const reactionValidation = validateReactionResult(reaction);
@@ -3483,7 +3483,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                         direct: options.direct
                     });
                     target.userData.isReacting = false;
-                    triggerMascotSpeech(reactionValidation.message || 'Phản ứng chưa khớp thí nghiệm đã chọn nên chưa được sinh ra.');
+                    notifyLab(reactionValidation.message || 'Phản ứng chưa khớp thí nghiệm đã chọn nên chưa được sinh ra.');
                     return;
                 }
             }
@@ -3659,11 +3659,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     }
                 }
 
-                // Mascot chỉ hiển thị kết quả phản ứng: mascot_speech + equation.
+                // Thông báo chỉ hiển thị kết quả phản ứng: reaction_message + equation.
                 if (hasActiveExperimentPlan() && !isPhenolphthaleinBaseReaction(reaction)) {
-                    triggerMascotSpeech(window.currentExperimentPlan?.success_message || formatReactionMascotText(reaction));
+                    notifyLab(window.currentExperimentPlan?.success_message || formatReactionMessage(reaction));
                 } else {
-                    triggerMascotSpeech(formatReactionMascotText(reaction));
+                    notifyLab(formatReactionMessage(reaction));
                 }
 
                 if (isSilverOxidePrecipitationReaction(reaction)) {
@@ -3744,7 +3744,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             orbit.enabled = false;
 
-            // Không gọi mascot khi kéo/thả. Mascot chỉ nói kết quả phản ứng.
+            // Không hiện thông báo khi kéo/thả. Thông báo chỉ nêu kết quả phản ứng.
         }
     });
 
@@ -3862,7 +3862,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             removeChemicalFromTool(tool, scene);
             removeChemicalBtn.classList.add('hidden');
-            triggerMascotSpeech?.('Đã xóa chất hóa học bên trong dụng cụ.');
+            notifyLab?.('Đã xóa chất hóa học bên trong dụng cụ.');
         };
     }
 
@@ -3877,10 +3877,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             try {
                 await persistToolSoftDelete(objectToDelete);
                 removeToolFromCurrentLab(objectToDelete, scene);
-                triggerMascotSpeech?.('Đã xóa dụng cụ khỏi bàn thí nghiệm.');
+                notifyLab?.('Đã xóa dụng cụ khỏi bàn thí nghiệm.');
             } catch (error) {
                 console.error('[ToolDelete] soft delete failed:', error);
-                triggerMascotSpeech?.(error?.message || 'Không thể xóa dụng cụ.');
+                notifyLab?.(error?.message || 'Không thể xóa dụng cụ.');
             } finally {
                 deleteToolBtn.disabled = false;
             }

@@ -47,7 +47,7 @@ def _base_result(**kwargs: Any) -> dict[str, Any]:
         "result_chemical_type": kwargs.get("result_chemical_type", "generic_solution"),
         "equation": kwargs.get("equation", ""),
         "products": kwargs.get("products", []),
-        "mascot_speech": kwargs.get("mascot_speech", "Phản ứng hóa học đã xảy ra."),
+        "reaction_message": kwargs.get("reaction_message", "Phản ứng hóa học đã xảy ra."),
     }
     return result
 
@@ -71,7 +71,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="strong_base",
             equation="2Na + 2H₂O → 2NaOH + H₂↑",
             products=["NaOH", "H₂"],
-            mascot_speech="Natri phản ứng mạnh với nước, tạo Natri hiđroxit và khí H₂; phản ứng tỏa nhiệt nên H₂ có thể bốc cháy.",
+            reaction_message="Natri phản ứng mạnh với nước, tạo Natri hiđroxit và khí H₂; phản ứng tỏa nhiệt nên H₂ có thể bốc cháy.",
         )
 
     # CuSO4 + 2NaOH -> Cu(OH)2(s) + Na2SO4.
@@ -82,7 +82,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             color="#9bd6ff",
             equation="CuSO₄ + 2NaOH → Cu(OH)₂↓ + Na₂SO₄",
             products=["Cu(OH)₂", "Na₂SO₄"],
-            mascot_speech="Đã tạo kết tủa Đồng(II) hiđroxit Cu(OH)₂ màu xanh lam.",
+            reaction_message="Đã tạo kết tủa Đồng(II) hiđroxit Cu(OH)₂ màu xanh lam.",
         )
 
     # BaCl2 + H2SO4 -> BaSO4(s) + 2HCl.
@@ -93,7 +93,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             color="#f8f8ff",
             equation="BaCl₂ + H₂SO₄ → BaSO₄↓ + 2HCl",
             products=["BaSO₄", "HCl"],
-            mascot_speech="Xuất hiện kết tủa Bari sunfat BaSO₄ màu trắng, rất ít tan trong nước.",
+            reaction_message="Xuất hiện kết tủa Bari sunfat BaSO₄ màu trắng, rất ít tan trong nước.",
         )
 
     # AgNO3 detects chloride: Ag+ + Cl- -> AgCl(s).
@@ -106,7 +106,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             color="#ffffff",
             equation=equation,
             products=["AgCl"],
-            mascot_speech="Ion Ag⁺ gặp ion Cl⁻ tạo kết tủa AgCl màu trắng.",
+            reaction_message="Ion Ag⁺ gặp ion Cl⁻ tạo kết tủa AgCl màu trắng.",
         )
 
 
@@ -118,7 +118,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="neutral_salt_solution",
             equation="NaOH + HCl → NaCl + H₂O",
             products=["NaCl", "H₂O"],
-            mascot_speech="Natri hiđroxit trung hòa axit clohiđric, tạo natri clorua và nước; phản ứng tỏa nhiệt nhẹ.",
+            reaction_message="Natri hiđroxit trung hòa axit clohiđric, tạo natri clorua và nước; phản ứng tỏa nhiệt nhẹ.",
         )
 
     if _has(pair, "NaOH", "Natri Hydroxit") and _has(pair, "H2SO4", "Axit Sunfuric"):
@@ -128,7 +128,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="neutral_salt_solution",
             equation="2NaOH + H₂SO₄ → Na₂SO₄ + 2H₂O",
             products=["Na₂SO₄", "H₂O"],
-            mascot_speech="Natri hiđroxit trung hòa axit sunfuric, tạo natri sunfat và nước; phản ứng tỏa nhiệt.",
+            reaction_message="Natri hiđroxit trung hòa axit sunfuric, tạo natri sunfat và nước; phản ứng tỏa nhiệt.",
         )
 
     if _has(pair, "NaOH", "Natri Hydroxit") and _has(pair, "HNO3", "Axit Nitric"):
@@ -138,7 +138,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="neutral_salt_solution",
             equation="NaOH + HNO₃ → NaNO₃ + H₂O",
             products=["NaNO₃", "H₂O"],
-            mascot_speech="Natri hiđroxit trung hòa axit nitric, tạo natri nitrat và nước; phản ứng tỏa nhiệt nhẹ.",
+            reaction_message="Natri hiđroxit trung hòa axit nitric, tạo natri nitrat và nước; phản ứng tỏa nhiệt nhẹ.",
         )
 
     # Amoniac với axit mạnh tạo muối amoni; có thể thấy khói trắng khi hơi NH3 gặp hơi HCl.
@@ -150,7 +150,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="ammonium_salt_solution",
             equation="NH₃ + HCl → NH₄Cl",
             products=["NH₄Cl"],
-            mascot_speech="Amoniac phản ứng với HCl tạo amoni clorua NH₄Cl; có thể quan sát khói trắng/mù muối amoni.",
+            reaction_message="Amoniac phản ứng với HCl tạo amoni clorua NH₄Cl; có thể quan sát khói trắng/mù muối amoni.",
         )
 
     if _has(pair, "NH3", "Amoniac") and _has(pair, "HNO3", "Axit Nitric"):
@@ -160,7 +160,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="ammonium_salt_solution",
             equation="NH₃ + HNO₃ → NH₄NO₃",
             products=["NH₄NO₃"],
-            mascot_speech="Amoniac trung hòa axit nitric tạo amoni nitrat.",
+            reaction_message="Amoniac trung hòa axit nitric tạo amoni nitrat.",
         )
 
     if _has(pair, "AgNO3", "Bạc Nitrat") and _has(pair, "NH3", "Amoniac"):
@@ -171,7 +171,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="precipitate_suspension",
             equation="2AgNO₃ + 2NH₃ + H₂O → Ag₂O↓ + 2NH₄NO₃",
             products=["Ag₂O", "NH₄NO₃"],
-            mascot_speech="Bạc nitrat gặp amoniac tạo kết tủa bạc(I) oxit Ag₂O màu nâu đen và amoni nitrat.",
+            reaction_message="Bạc nitrat gặp amoniac tạo kết tủa bạc(I) oxit Ag₂O màu nâu đen và amoni nitrat.",
         )
 
     # BaCl2 phát hiện ion sulfate, không chỉ với H2SO4 mà cả sulfate sau trung hòa.
@@ -182,7 +182,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             color="#f8f8ff",
             equation="Ba²⁺ + SO₄²⁻ → BaSO₄↓",
             products=["BaSO₄"],
-            mascot_speech="Ion Ba²⁺ gặp ion SO₄²⁻ tạo kết tủa BaSO₄ màu trắng.",
+            reaction_message="Ion Ba²⁺ gặp ion SO₄²⁻ tạo kết tủa BaSO₄ màu trắng.",
         )
 
     # AgNO3 phát hiện halide/iodide: bạc iodua màu vàng nhạt.
@@ -193,7 +193,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             color="#fff8cc",
             equation="Ag⁺ + I⁻ → AgI↓ (mô phỏng thuốc thử iodide)",
             products=["AgI"],
-            mascot_speech="Bạc nitrat với ion iodide tạo kết tủa bạc iodua màu vàng nhạt. Với I₂ rắn, đây là mô phỏng khi có iodide trong môi trường.",
+            reaction_message="Bạc nitrat với ion iodide tạo kết tủa bạc iodua màu vàng nhạt. Với I₂ rắn, đây là mô phỏng khi có iodide trong môi trường.",
         )
 
     # Iodine với glucose: không phải test tinh bột, nhưng iod có thể bị khử chậm trong môi trường kiềm.
@@ -203,7 +203,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             heat=False,
             equation="I₂ + 2OH⁻ → I⁻ + IO⁻ + H₂O",
             products=["I⁻", "IO⁻", "H₂O"],
-            mascot_speech="Iốt bị kiềm làm mất màu dần do tạo iodide/hypoiodite; không sinh khí hay kết tủa rõ.",
+            reaction_message="Iốt bị kiềm làm mất màu dần do tạo iodide/hypoiodite; không sinh khí hay kết tủa rõ.",
         )
 
     # Reactive metal + acids: hydrogen gas and heat. Sodium can ignite the hydrogen.
@@ -218,7 +218,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="salt_solution",
             equation=f"Na + {acid} → muối natri + H₂↑",
             products=["muối natri", "H₂"],
-            mascot_speech="Natri gặp axit phản ứng rất mạnh, giải phóng khí H₂ và tỏa nhiều nhiệt; H₂ có thể bốc cháy.",
+            reaction_message="Natri gặp axit phản ứng rất mạnh, giải phóng khí H₂ và tỏa nhiều nhiệt; H₂ có thể bốc cháy.",
         )
 
     if (_has(pair, "Zn", "Kẽm") or _has(pair, "Fe", "Sắt") or _has(pair, "Mg", "Magie")) and (_has(pair, "HCl", "Axit Clohidric") or _has(pair, "H2SO4", "Axit Sunfuric")):
@@ -232,7 +232,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="salt_solution",
             equation=f"{metal} + {acid} → {salt} + H₂↑",
             products=[salt, "H₂"],
-            mascot_speech="Kim loại hoạt động phản ứng với axit, sinh bọt khí H₂ và tỏa nhiệt nhẹ.",
+            reaction_message="Kim loại hoạt động phản ứng với axit, sinh bọt khí H₂ và tỏa nhiệt nhẹ.",
         )
 
     # Carbonate / bicarbonate + acid: CO2 bubbles/foam.
@@ -244,7 +244,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="salt_solution",
             equation="CO₃²⁻ + 2H⁺ → CO₂↑ + H₂O",
             products=["CO₂", "H₂O", "muối"],
-            mascot_speech="Muối cacbonat gặp axit sủi bọt mạnh do giải phóng khí CO₂.",
+            reaction_message="Muối cacbonat gặp axit sủi bọt mạnh do giải phóng khí CO₂.",
         )
 
     # Concentrated sulfuric acid with sugar/glucose-like carbohydrate: dehydration creates steam/smoke and black carbon.
@@ -256,7 +256,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             result_chemical_type="charred_mixture",
             equation="C₆H₁₂O₆ --H₂SO₄ đặc--> C + H₂O (mô phỏng)",
             products=["C", "H₂O"],
-            mascot_speech="Axit sunfuric đặc hút nước mạnh khỏi đường/glucozơ, tạo khối than đen và hơi/khói do tỏa nhiệt.",
+            reaction_message="Axit sunfuric đặc hút nước mạnh khỏi đường/glucozơ, tạo khối than đen và hơi/khói do tỏa nhiệt.",
         )
 
     # Strong acid + strong base neutralization. Visible effect is mild heat; no fake gas/smoke.
@@ -266,7 +266,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             color="#ffffff",
             equation="H⁺ + OH⁻ → H₂O",
             products=["muối", "H₂O"],
-            mascot_speech="Đây là phản ứng trung hòa axit–bazơ, tạo muối và nước; thường không sinh khí nếu không có muối cacbonat hoặc kim loại hoạt động.",
+            reaction_message="Đây là phản ứng trung hòa axit–bazơ, tạo muối và nước; thường không sinh khí nếu không có muối cacbonat hoặc kim loại hoạt động.",
         )
 
     # Phenolphthalein: indicator color change, not a chemical reaction producing new substance.
@@ -275,14 +275,14 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             color="#ff4fa3",
             equation="Phenolphthalein: không màu ⇌ hồng trong môi trường bazơ",
             products=["indicator_color_change"],
-            mascot_speech="Phenolphthalein chuyển sang màu hồng trong môi trường bazơ. Đây là đổi màu chỉ thị, không phải phản ứng tạo kết tủa hay khí.",
+            reaction_message="Phenolphthalein chuyển sang màu hồng trong môi trường bazơ. Đây là đổi màu chỉ thị, không phải phản ứng tạo kết tủa hay khí.",
         )
     if "indicator_phenol" in t and ("strong_acid" in t or "weak_acid" in t):
         return _base_result(
             color="#ffffff",
             equation="Phenolphthalein không màu trong môi trường axit hoặc trung tính",
             products=["indicator_color_change"],
-            mascot_speech="Phenolphthalein không màu trong môi trường axit hoặc trung tính.",
+            reaction_message="Phenolphthalein không màu trong môi trường axit hoặc trung tính.",
         )
 
     # Iodine + glucose/starch-like carbohydrate: visible brown/blue-black is not reliable for glucose.
@@ -298,7 +298,7 @@ def predict_accurate_reaction(source: ChemLite, target: ChemLite) -> dict[str, A
             heat=True,
             equation="KMnO₄ oxi hóa C₂H₅OH; MnO₄⁻ bị khử tạo MnO₂ màu nâu trong môi trường trung tính/kiềm",
             products=["MnO₂", "sản phẩm oxi hóa của ethanol"],
-            mascot_speech="KMnO₄ oxi hóa ethanol; màu tím nhạt dần và có thể xuất hiện MnO₂ nâu tùy môi trường.",
+            reaction_message="KMnO₄ oxi hóa ethanol; màu tím nhạt dần và có thể xuất hiện MnO₂ nâu tùy môi trường.",
         )
 
     return {"has_reaction": False, "reason": "no_high_confidence_reaction"}

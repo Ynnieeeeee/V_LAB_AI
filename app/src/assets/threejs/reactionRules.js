@@ -41,8 +41,8 @@ function normalizeSetup(value) {
 function inferVisibleEffects(data, text = '') {
     const haystack = [
         text,
-        data?.mascot_speech,
-        data?.mascotText,
+        data?.reaction_message,
+        data?.reactionMessage,
         data?.equation,
         ...(data?.products || [])
     ].join(' ').toLowerCase();
@@ -84,7 +84,7 @@ function normalizeApiReaction(data) {
             foam: data?.foam ?? visual.foam ?? effects.foam ?? inferred.foam,
             requiredSetup,
             required_setup: requiredSetup,
-            mascotText: data?.mascot_speech || 'Không có dấu hiệu phản ứng hóa học rõ ràng.'
+            reactionMessage: data?.reaction_message || 'Không có dấu hiệu phản ứng hóa học rõ ràng.'
         };
     }
 
@@ -126,20 +126,20 @@ function normalizeApiReaction(data) {
 
     const inferredPrecipitateColor =
         /xanh lam|xanh dương|blue|cu\(oh\)₂|cu\(oh\)2/i.test([
-            data?.mascot_speech,
-            data?.mascotText,
+            data?.reaction_message,
+            data?.reactionMessage,
             data?.equation,
             ...(data?.products || [])
         ].join(' ').toLowerCase()) ? '#4fc3f7' :
         /nâu đỏ|đỏ nâu|brown|fe\(oh\)₃|fe\(oh\)3/i.test([
-            data?.mascot_speech,
-            data?.mascotText,
+            data?.reaction_message,
+            data?.reactionMessage,
             data?.equation,
             ...(data?.products || [])
         ].join(' ').toLowerCase()) ? '#8b4a2b' :
         /vàng|yellow|pbi₂|pbi2|agi/i.test([
-            data?.mascot_speech,
-            data?.mascotText,
+            data?.reaction_message,
+            data?.reactionMessage,
             data?.equation,
             ...(data?.products || [])
         ].join(' ').toLowerCase()) ? '#ffd54f' :
@@ -180,7 +180,7 @@ function normalizeApiReaction(data) {
         producesState: data.producesState || data.produces_state || data.reaction_data?.producesState || {},
         requiredSetup,
         required_setup: requiredSetup,
-        mascotText: data.mascot_speech || data.mascotText || 'Phản ứng hóa học đã xảy ra.',
+        reactionMessage: data.reaction_message || data.reactionMessage || 'Phản ứng hóa học đã xảy ra.',
         raw: data
     };
 }
@@ -197,7 +197,7 @@ const VERIFIED_FALLBACK_RULES = [
             color: '#c58a3d',
             heat: false,
             equation: 'I₂ bị khử bởi glucozơ',
-            mascotText: 'Màu nâu của iốt nhạt dần.'
+            reactionMessage: 'Màu nâu của iốt nhạt dần.'
         }
     },
 
@@ -208,7 +208,7 @@ const VERIFIED_FALLBACK_RULES = [
             explosion: true,
             color: '#553311',
             equation: 'Tạo NI₃',
-            mascotText: 'Tạo hợp chất NI₃ nhạy nổ.'
+            reactionMessage: 'Tạo hợp chất NI₃ nhạy nổ.'
         }
     },
 
@@ -223,7 +223,7 @@ const VERIFIED_FALLBACK_RULES = [
             fire: true,
             heat: true,
             equation: 'C₂H₅OH + 3O₂ → 2CO₂ + 3H₂O',
-            mascotText: 'Ancol Etylic cháy tạo ngọn lửa xanh.'
+            reactionMessage: 'Ancol Etylic cháy tạo ngọn lửa xanh.'
         }
     },
 
@@ -238,7 +238,7 @@ const VERIFIED_FALLBACK_RULES = [
             heat: true,
             color: '#ffffff',
             equation: 'CH₃COOH + NaOH → CH₃COONa + H₂O',
-            mascotText: 'Phản ứng trung hòa tạo Natri Axetat.'
+            reactionMessage: 'Phản ứng trung hòa tạo Natri Axetat.'
         }
     },
 
@@ -253,7 +253,7 @@ const VERIFIED_FALLBACK_RULES = [
             heat: true,
             color: '#f5e28a',
             equation: 'C₆H₆ + HNO₃ → C₆H₅NO₂ + H₂O',
-            mascotText: 'Xảy ra phản ứng nitro hóa benzen.'
+            reactionMessage: 'Xảy ra phản ứng nitro hóa benzen.'
         }
     }
 ];

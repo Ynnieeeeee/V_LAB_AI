@@ -156,14 +156,14 @@ function smokeTextOf(reaction) {
     const data = reactionData(reaction);
     return [
         reaction?.phenomenon,
-        reaction?.mascotText,
-        reaction?.mascot_speech,
+        reaction?.reactionMessage,
+        reaction?.reaction_message,
         reaction?.description,
         data?.phenomenon,
         data?.description,
         raw?.phenomenon,
-        raw?.mascotText,
-        raw?.mascot_speech,
+        raw?.reactionMessage,
+        raw?.reaction_message,
         raw?.description,
         raw?.reaction_data?.phenomenon,
         raw?.reaction_data?.description,

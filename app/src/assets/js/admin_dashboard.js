@@ -13,13 +13,13 @@ const state = {
 const viewTitles = {
     overview: "Tổng quan",
     users: "Quản lý người dùng",
-    documents: "Quản lý tài liệu AI/RAG",
+    documents: "Quản lý tài liệu hệ thống",
     tools: "Quản lý dụng cụ phòng thí nghiệm",
     revenue: "Thống kê, báo cáo doanh thu",
 };
 
 const viewCopies = {
-    overview: "Theo dõi nhanh người dùng, tài liệu RAG, dụng cụ và doanh thu của hệ thống.",
+    overview: "Theo dõi nhanh người dùng, tài liệu hệ thống, dụng cụ và doanh thu của hệ thống.",
     users: "Thêm, sửa, xóa mềm và phân quyền tài khoản sử dụng Virtual Lab AI.",
     documents: "Tải PDF lên, cập nhật metadata và đưa tài liệu vào pipeline vector hóa.",
     tools: "Quản lý danh sách dụng cụ, trạng thái tạo mô hình 3D và xóa mềm.",

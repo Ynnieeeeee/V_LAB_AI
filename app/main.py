@@ -15,7 +15,6 @@ from app.router.google_login import router as google_login
 from app.router.get_msg import router as get_msg
 from app.router.message_router import router as message_router
 from app.router.conversation_router import router as conversation_router
-from app.router.message_mascot_router import router as mascot_router
 from app.router.chemical_router import router as chemical_router
 from app.router.reaction_rule_router import router as reaction_router
 from app.router.subscription_router import router as subscription_router
@@ -73,7 +72,6 @@ app.include_router(google_login)
 app.include_router(get_msg)
 app.include_router(message_router)
 app.include_router(conversation_router)
-app.include_router(mascot_router)
 app.include_router(chemical_router)
 app.include_router(reaction_router)   
 app.include_router(subscription_router) 

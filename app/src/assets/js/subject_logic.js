@@ -168,7 +168,7 @@ window.selectSubject = async function(type, name) {
     // 1. Thiết lập trạng thái ban đầu
     window.currentSubject = type;
     window.currentConvId = null; 
-    localStorage.removeItem('mascot_conv_id'); // Xóa ID cũ để tránh bị gộp nhầm hội thoại
+    localStorage.removeItem('lab_conv_id'); // Xóa ID cũ để tránh bị gộp nhầm hội thoại
     // 2. Hiệu ứng đóng Overlay mượt mà
     const overlay = document.getElementById('subject-overlay');
     if (overlay) {
@@ -205,10 +205,10 @@ window.selectSubject = async function(type, name) {
         }
     }
 
-    // 4. Gửi lời chào từ Assistant
+    // 4. Gửi lời chào từ hệ thống
     // Lưu ý: Hàm addMessage phải được định nghĩa trong chat_logic.js
     if (typeof addMessage === "function") {
-        addMessage(`Chào mừng bạn đến với phòng thí nghiệm **${name}**. Tôi có thể giúp bạn tạo dụng cụ hay thực hiện thí nghiệm nào?`, "assistant");
+        addMessage(`Chào mừng bạn đến với phòng thí nghiệm **${name}**. Hãy nhập dụng cụ hoặc thí nghiệm bạn muốn chuẩn bị.`, "assistant");
     }
 };
 

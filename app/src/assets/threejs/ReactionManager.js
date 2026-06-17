@@ -20,6 +20,7 @@ import {
     shouldEmitSmokeOrGas,
     reactionGasDebug
 } from './reactionGasUtils.js';
+import { notifyLab } from './labNotifier.js';
 
 const DEFAULT_REACTION_HEAT_TEMPERATURE = 45;
 
@@ -119,12 +120,7 @@ export class ReactionManager {
     notifySetupIssue(validation) {
         const message = validation?.message;
         if (!message) return;
-        const appWindow = typeof window !== 'undefined' ? window : null;
-        if (typeof appWindow?.triggerMascotSpeech === 'function') {
-            appWindow.triggerMascotSpeech(message);
-        } else if (typeof appWindow?.mascotTalk === 'function') {
-            appWindow.mascotTalk(message);
-        }
+        notifyLab(message);
     }
 
     validateSetupBeforeReaction(container, reaction = {}) {

@@ -11,6 +11,6 @@ class ReactionRules(SQLModel, table=True):
     target_type: str
     result_color: str
     gas_effect: Optional[bool] = Field(default=False)
-    mascot_speech: str
+    reaction_message: str
     formula_gas: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

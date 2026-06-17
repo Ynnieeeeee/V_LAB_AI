@@ -37,7 +37,7 @@ export function initChatEvents() {
                 // Nếu đây là chat mới, cập nhật ID và URL
                 if ((!window.currentConvId || window.currentConvId === "null" || window.currentConvId === "undefined") && result.conversation_id) {
                     window.currentConvId = result.conversation_id;
-                    localStorage.setItem('mascot_conv_id', result.conversation_id);
+                    localStorage.setItem('lab_conv_id', result.conversation_id);
                     window.history.pushState({}, "", `/chat/${result.conversation_id}`);
                     
                     // Cập nhật lại danh sách hội thoại ở sidebar (nếu hàm tồn tại)

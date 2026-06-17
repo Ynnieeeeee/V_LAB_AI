@@ -74,7 +74,7 @@ def check_reaction(
                 "formula": target_chem.formula,
                 "chemical_type": target_chem.chemical_type,
             },
-            "mascot_speech": "Không có dấu hiệu phản ứng hóa học rõ ràng; đây chủ yếu là trộn vật lý.",
+            "reaction_message": "Không có dấu hiệu phản ứng hóa học rõ ràng; đây chủ yếu là trộn vật lý.",
         }
 
     return {

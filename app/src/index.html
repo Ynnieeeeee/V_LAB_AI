@@ -117,42 +117,6 @@
         </div>
     </div>
 
-    <!-- Mascot Dialog -->
-    <div id="mascot-container" class="fixed top-1/2 right-6 -translate-y-1/2 z-50 flex flex-row items-center pointer-events-none group">
-        <!-- Placeholder cho Mascot -->
-        <div id="mascot-3d-placeholder" class="w-32 h-32 ml-4"></div>
-
-        <!-- Dialog Bubble -->
-        <div id="mascot-dialog" class="scribble-bubble pointer-events-auto">
-            <div class="flex flex-col gap-3 relative z-10 pointer-events-auto">
-                <!-- Mascot Response -->
-                <div class="text-indigo-900">
-                    <div class="flex items-center gap-2 mb-1">
-                        <div class="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse"></div>
-                        <span class="text-[9px] text-indigo-400 font-black uppercase tracking-[0.2em]">Sean Shine</span>
-                    </div>
-                    <p id="mascot-text" class="text-sm font-bold leading-relaxed break-words whitespace-pre-wrap">Chào bạn! Mình có thể giúp gì cho bạn?</p>
-                </div>
-                
-                <!-- Input field -->
-                <div class="relative pointer-events-auto">
-                    <input 
-                        type="text" 
-                        id="mascot-input" 
-                        placeholder="Viết điều gì đó..." 
-                        class="w-full bg-white/70 border-2 border-indigo-200 rounded-xl px-4 py-2 text-xs text-indigo-900 placeholder:text-indigo-300 outline-none focus:border-indigo-500 transition-all shadow-inner relative z-20 pointer-events-auto"
-                    >
-                    <button id="mascot-send-btn" class="absolute top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center bg-indigo-600 text-white rounded-xl hover:scale-110 transition-all shadow-md z-30 pointer-events-auto border-2 border-white/20" style="right: 10px; left: auto;">
-                        <i class="fa-solid fa-paper-plane text-xs text-black"></i>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Cái đuôi bong bóng thoại -->
-            <div class="scribble-tail"></div>
-        </div>
-    </div>
-
     <!-- Ô nhập liệu -->
     <div class="absolute bottom-10 left-0 right-0 z-10 flex justify-center px-6">
         <div id="chat-input-shell"
@@ -257,8 +221,6 @@
     <script src="/assets/js/subject_logic.js"></script>
     <script src="/assets/js/conversation.js"></script>
     <script src="/assets/js/button.js"></script>
-    <script type="module" src="/assets/threejs/mascot.js"></script>
-    <script src="/assets/js/mascotTalk.js"></script>
     <script type="module" src="/assets/threejs/main.js?v=20260618-xr-sprite-ray1"></script>
 </body>
 

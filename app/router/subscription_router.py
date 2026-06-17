@@ -37,7 +37,6 @@ def my_subscription(
         "subscription": subscription,
         "limits": {
             "tool_limit_per_day": info["tool_limit_per_day"],
-            "mascot_limit_per_day": info["mascot_limit_per_day"],
         },
     }
 

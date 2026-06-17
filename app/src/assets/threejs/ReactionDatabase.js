@@ -220,7 +220,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'silver_mirror_product',
             result_chemical_type: 'metal_coating_solution',
             equation: 'C6H12O6 + 2[Ag(NH3)2]OH -> 2Ag + oxidation products',
-            mascotText: 'Glucozơ khử thuốc thử Tollens khi đun nóng, tạo lớp bạc kim loại bám trong thành ống nghiệm.'
+            reactionMessage: 'Glucozơ khử thuốc thử Tollens khi đun nóng, tạo lớp bạc kim loại bám trong thành ống nghiệm.'
         })
     },
     {
@@ -237,7 +237,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'tollens_reagent',
             result_chemical_type: 'complex_solution',
             equation: 'AgOH + 2NH3 -> [Ag(NH3)2]OH',
-            mascotText: 'Amoniac dư hòa tan kết tủa bạc, tạo dung dịch phức bạc trong suốt.'
+            reactionMessage: 'Amoniac dư hòa tan kết tủa bạc, tạo dung dịch phức bạc trong suốt.'
         })
     },
     {
@@ -255,7 +255,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'cu_tetrammine_complex_solution',
             result_chemical_type: 'complex_solution',
             equation: 'Cu(OH)2 + 4NH3 -> [Cu(NH3)4](OH)2',
-            mascotText: 'Kết tủa Cu(OH)2 tan trong NH3 dư, tạo dung dịch xanh thẫm trong suốt.'
+            reactionMessage: 'Kết tủa Cu(OH)2 tan trong NH3 dư, tạo dung dịch xanh thẫm trong suốt.'
         })
     },
     {
@@ -271,7 +271,7 @@ export const LOCAL_REACTION_RULES = [
             color: '#ffffff',
             result_chemical_type: 'indicator_solution',
             equation: 'H+ neutralizes OH- -> phenolphthalein becomes colorless',
-            mascotText: 'Axit dư trung hòa bazơ, màu hồng phenolphthalein mất hoàn toàn.'
+            reactionMessage: 'Axit dư trung hòa bazơ, màu hồng phenolphthalein mất hoàn toàn.'
         })
     },
     {
@@ -289,7 +289,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'cuoh2_precipitate_suspension',
             result_chemical_type: 'precipitate_suspension',
             equation: 'CuSO4 + 2NH3 + 2H2O -> Cu(OH)2 + (NH4)2SO4',
-            mascotText: 'Xuất hiện kết tủa keo xanh lam nhạt Cu(OH)2.'
+            reactionMessage: 'Xuất hiện kết tủa keo xanh lam nhạt Cu(OH)2.'
         })
     },
     {
@@ -311,7 +311,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'ag2o_precipitate_suspension',
             result_chemical_type: 'precipitate_suspension',
             equation: '2AgNO3 + 2NH3 + H2O -> Ag2O + 2NH4NO3',
-            mascotText: 'Tạo kết tủa nâu đen Ag2O.'
+            reactionMessage: 'Tạo kết tủa nâu đen Ag2O.'
         })
     },
     {
@@ -328,7 +328,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'ag2o_precipitate_suspension',
             result_chemical_type: 'precipitate_suspension',
             equation: '2AgNO3 + 2NaOH -> Ag2O + 2NaNO3 + H2O',
-            mascotText: 'Tạo kết tủa xám đen Ag2O.'
+            reactionMessage: 'Tạo kết tủa xám đen Ag2O.'
         })
     },
     {
@@ -349,7 +349,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'sodium_salt_solution',
             result_chemical_type: 'salt_solution',
             equation: '2Na + 2H+ -> 2Na+ + H2',
-            mascotText: 'Natri ưu tiên phản ứng rất mạnh với axit, sủi H2 và tỏa nhiệt mạnh.'
+            reactionMessage: 'Natri ưu tiên phản ứng rất mạnh với axit, sủi H2 và tỏa nhiệt mạnh.'
         })
     },
     {
@@ -368,7 +368,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'naoh_solution',
             result_chemical_type: 'base_solution',
             equation: '2Na + 2H2O -> 2NaOH + H2',
-            mascotText: 'Khi axit không còn dư, Natri tiếp tục phản ứng với nước tạo NaOH và H2.'
+            reactionMessage: 'Khi axit không còn dư, Natri tiếp tục phản ứng với nước tạo NaOH và H2.'
         })
     },
     {
@@ -382,7 +382,7 @@ export const LOCAL_REACTION_RULES = [
         products: ['Bari Sunfat', 'Axit Clohidric'],
         effects: [effect('precipitate', { color: '#ffffff', amount: 900 })],
         producesState: { precipitateSpecies: 'Bari Sunfat' },
-        result: result({ color: '#ffffff', precipitate: true, precipitateColor: '#ffffff', equation: 'BaCl2 + H2SO4 -> BaSO4 + 2HCl', mascotText: 'Xuất hiện kết tủa trắng đặc BaSO4.' })
+        result: result({ color: '#ffffff', precipitate: true, precipitateColor: '#ffffff', equation: 'BaCl2 + H2SO4 -> BaSO4 + 2HCl', reactionMessage: 'Xuất hiện kết tủa trắng đặc BaSO4.' })
     },
     {
         id: 'ba_cl2_cuso4',
@@ -391,7 +391,7 @@ export const LOCAL_REACTION_RULES = [
         products: ['Bari Sunfat', 'Đồng(II) Clorua'],
         effects: [effect('precipitate', { color: '#ffffff', amount: 760 })],
         producesState: { precipitateSpecies: 'Bari Sunfat' },
-        result: result({ color: '#d9f4ff', precipitate: true, precipitateColor: '#ffffff', equation: 'BaCl2 + CuSO4 -> BaSO4 + CuCl2', mascotText: 'Tạo kết tủa trắng BaSO4.' })
+        result: result({ color: '#d9f4ff', precipitate: true, precipitateColor: '#ffffff', equation: 'BaCl2 + CuSO4 -> BaSO4 + CuCl2', reactionMessage: 'Tạo kết tủa trắng BaSO4.' })
     },
     {
         id: 'ag_no3_hcl',
@@ -400,7 +400,7 @@ export const LOCAL_REACTION_RULES = [
         products: ['Bạc Clorua', 'Axit Nitric'],
         effects: [effect('precipitate', { color: '#ffffff', amount: 780, clumpy: true })],
         producesState: { precipitateSpecies: 'Bạc Clorua' },
-        result: result({ color: '#ffffff', precipitate: true, precipitateColor: '#ffffff', equation: 'AgNO3 + HCl -> AgCl + HNO3', mascotText: 'Tạo kết tủa trắng vón cục AgCl.' })
+        result: result({ color: '#ffffff', precipitate: true, precipitateColor: '#ffffff', equation: 'AgNO3 + HCl -> AgCl + HNO3', reactionMessage: 'Tạo kết tủa trắng vón cục AgCl.' })
     },
     {
         id: 'ag_no3_bacl2',
@@ -409,7 +409,7 @@ export const LOCAL_REACTION_RULES = [
         products: ['Bạc Clorua', 'Bari Nitrat'],
         effects: [effect('precipitate', { color: '#ffffff', amount: 820, clumpy: true })],
         producesState: { precipitateSpecies: 'Bạc Clorua' },
-        result: result({ color: '#ffffff', precipitate: true, precipitateColor: '#ffffff', equation: '2AgNO3 + BaCl2 -> 2AgCl + Ba(NO3)2', mascotText: 'Tạo kết tủa trắng vón cục AgCl.' })
+        result: result({ color: '#ffffff', precipitate: true, precipitateColor: '#ffffff', equation: '2AgNO3 + BaCl2 -> 2AgCl + Ba(NO3)2', reactionMessage: 'Tạo kết tủa trắng vón cục AgCl.' })
     },
     {
         id: 'cu_so4_naoh',
@@ -422,7 +422,7 @@ export const LOCAL_REACTION_RULES = [
         products: ['Đồng Hydroxit', 'Natri Sunfat'],
         effects: [effect('precipitate', { color: '#4fc3f7', amount: 760 })],
         producesState: { precipitateSpecies: 'Đồng Hydroxit' },
-        result: result({ color: '#9bd6ff', precipitate: true, precipitateColor: '#4fc3f7', equation: 'CuSO4 + 2NaOH -> Cu(OH)2 + Na2SO4', mascotText: 'Xuất hiện kết tủa xanh lam keo Cu(OH)2.' })
+        result: result({ color: '#9bd6ff', precipitate: true, precipitateColor: '#4fc3f7', equation: 'CuSO4 + 2NaOH -> Cu(OH)2 + Na2SO4', reactionMessage: 'Xuất hiện kết tủa xanh lam keo Cu(OH)2.' })
     },
     {
         id: 'kmno4_conc_hcl_chlorine',
@@ -437,7 +437,7 @@ export const LOCAL_REACTION_RULES = [
             smoke: 0.35,
             gasColor: '#d8ff9d',
             equation: '2KMnO4 + 16HCl -> 2KCl + 2MnCl2 + 5Cl2 + 8H2O',
-            mascotText: 'Màu tím KMnO4 mất dần, sinh khí Clo vàng lục nhạt.'
+            reactionMessage: 'Màu tím KMnO4 mất dần, sinh khí Clo vàng lục nhạt.'
         })
     },
     {
@@ -453,7 +453,7 @@ export const LOCAL_REACTION_RULES = [
             smoke: 0.35,
             gasColor: '#d8ff9d',
             equation: 'MnO2 + 4HCl -> MnCl2 + Cl2 + 2H2O',
-            mascotText: 'Khi đun nóng, bột MnO2 đen tan dần và sinh khí Clo vàng lục.'
+            reactionMessage: 'Khi đun nóng, bột MnO2 đen tan dần và sinh khí Clo vàng lục.'
         })
     },
     {
@@ -466,7 +466,7 @@ export const LOCAL_REACTION_RULES = [
         result: result({
             color: '#ffffff',
             equation: 'I2 is reduced to I- by glucose in alkaline solution',
-            mascotText: 'Glucozơ khử I2 trong môi trường kiềm, dung dịch iốt mất màu hoàn toàn.'
+            reactionMessage: 'Glucozơ khử I2 trong môi trường kiềm, dung dịch iốt mất màu hoàn toàn.'
         })
     },
     {
@@ -483,7 +483,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'nh4cl_smoke',
             result_chemical_type: 'smoke_product',
             equation: 'HCl(g) + NH3(g) -> NH4Cl(s)',
-            mascotText: 'Hơi HCl và NH3 gặp nhau gần miệng dụng cụ, tạo khói trắng NH4Cl.'
+            reactionMessage: 'Hơi HCl và NH3 gặp nhau gần miệng dụng cụ, tạo khói trắng NH4Cl.'
         })
     },
     ...[
@@ -504,7 +504,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: `${id}_solution`,
             result_chemical_type: 'salt_solution',
             equation,
-            mascotText: 'Phản ứng trung hòa tạo muối tan, dung dịch trong suốt và tỏa nhiệt.'
+            reactionMessage: 'Phản ứng trung hòa tạo muối tan, dung dịch trong suốt và tỏa nhiệt.'
         })
     })),
     {
@@ -523,7 +523,7 @@ export const LOCAL_REACTION_RULES = [
             result_chemical_id: 'ethyl_acetate_two_layer',
             result_chemical_type: 'ester_two_layer_solution',
             equation: 'CH3COOH + C2H5OH <-> CH3COOC2H5 + H2O',
-            mascotText: 'Có H2SO4 đặc xúc tác và nhiệt độ trên 80°C, tạo etyl axetat tách thành lớp nhẹ nổi phía trên.'
+            reactionMessage: 'Có H2SO4 đặc xúc tác và nhiệt độ trên 80°C, tạo etyl axetat tách thành lớp nhẹ nổi phía trên.'
         })
     },
     {
@@ -538,7 +538,7 @@ export const LOCAL_REACTION_RULES = [
             color: '#FF1493',
             result_chemical_type: 'indicator_solution',
             equation: 'Phenolphthalein + base -> pink form',
-            mascotText: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.'
+            reactionMessage: 'Phenolphthalein chuyển hồng cánh sen trong môi trường bazơ.'
         })
     }
 ];
@@ -583,7 +583,7 @@ function displayNameFromRule(rule) {
 }
 
 function phenomenonFromRule(rule) {
-    return rule.phenomenon || rule.result?.mascotText || '';
+    return rule.phenomenon || rule.result?.reactionMessage || '';
 }
 
 function normalizedReaction(rule) {
@@ -644,7 +644,7 @@ export function scoreReaction(query, reaction) {
         ...(rule.requiredExistingSpecies || []),
         ...(rule.products || []),
         rule.phenomenon,
-        rule.result?.mascotText,
+        rule.result?.reactionMessage,
         rule.result?.equation,
         ...(rule.effects || []).map(fx => fx.type)
     ].filter(Boolean).join(' '));
@@ -692,11 +692,11 @@ function bestFuzzyMatch(query, reactions) {
 
 export function searchReactionDatabaseByQuery(query, reactions = REACTION_SEARCH_RULES) {
     const normalizedQuery = norm(query);
-    console.log('[MascotSearch] query:', query);
-    console.log('[MascotSearch] normalized query:', normalizedQuery);
+    console.log('[ReactionSearch] query:', query);
+    console.log('[ReactionSearch] normalized query:', normalizedQuery);
 
     const exactKeywordMatches = reactions.filter(reaction => hasExactKeywordMatch(query, reaction));
-    console.log('[MascotSearch] exact keyword matches:', exactKeywordMatches.map(reaction => ({
+    console.log('[ReactionSearch] exact keyword matches:', exactKeywordMatches.map(reaction => ({
         id: reaction.id,
         name: normalizedReaction(reaction).name
     })));
@@ -708,18 +708,18 @@ export function searchReactionDatabaseByQuery(query, reactions = REACTION_SEARCH
             score: scoreReaction(query, reaction)
         }))
         .sort((a, b) => b.score - a.score);
-    console.log('[MascotSearch] fuzzy scores:', fuzzyScores.slice(0, 8));
+    console.log('[ReactionSearch] fuzzy scores:', fuzzyScores.slice(0, 8));
 
     if (exactKeywordMatches.length > 0) {
         const selected = bestByScore(exactKeywordMatches, query);
-        console.log('[MascotSearch] selected reaction:', selected ? normalizedReaction(selected.reaction).name : undefined);
-        console.log('[MascotSearch] selected reason:', 'exact keyword match');
+        console.log('[ReactionSearch] selected reaction:', selected ? normalizedReaction(selected.reaction).name : undefined);
+        console.log('[ReactionSearch] selected reason:', 'exact keyword match');
         return selected?.reaction || null;
     }
 
     const fuzzy = bestFuzzyMatch(query, reactions);
-    console.log('[MascotSearch] selected reaction:', fuzzy ? normalizedReaction(fuzzy.reaction).name : undefined);
-    console.log('[MascotSearch] selected reason:', fuzzy ? `fuzzy score ${fuzzy.score}` : 'fuzzy score below threshold');
+    console.log('[ReactionSearch] selected reaction:', fuzzy ? normalizedReaction(fuzzy.reaction).name : undefined);
+    console.log('[ReactionSearch] selected reason:', fuzzy ? `fuzzy score ${fuzzy.score}` : 'fuzzy score below threshold');
     return fuzzy?.reaction || null;
 }
 

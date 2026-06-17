@@ -230,9 +230,9 @@ function buildPlanFromSteps(steps, basePlan = currentExperimentPlan) {
     const heatingStep = steps.find(step => step.action_type === 'heat' || step.heating_required);
     return {
         ...(basePlan || {}),
-        experiment_id: basePlan?.experiment_id || 'rag_experiment',
+        experiment_id: basePlan?.experiment_id || 'planned_experiment',
         reaction_id: basePlan?.reaction_id || basePlan?.success_reaction_id || null,
-        title: basePlan?.title || 'Thí nghiệm từ Mascot/RAG',
+        title: basePlan?.title || 'Thí nghiệm đã lưu',
         steps,
         required_chemicals: requiredChemicals,
         required_conditions: {
@@ -293,7 +293,7 @@ export function setCurrentExperimentSteps(steps = []) {
     return currentExperimentSteps;
 }
 
-export async function fetchExperimentSteps(idConversation = window.currentConvId || localStorage.getItem('mascot_conv_id')) {
+export async function fetchExperimentSteps(idConversation = window.currentConvId || localStorage.getItem('lab_conv_id')) {
     if (!idConversation) return [];
     const token = localStorage.getItem('access_token');
     if (!token) return [];
@@ -670,7 +670,7 @@ export function validateReactionResult(reaction) {
     if (!currentExperimentPlan || !reaction?.has_reaction) return { ok: true };
 
     const expected = currentExperimentPlan.reaction_id || currentExperimentPlan.success_reaction_id;
-    if (!expected || expected === 'rag_validated_reaction') return { ok: true };
+    if (!expected || expected === 'validated_reaction') return { ok: true };
 
     const actual = reaction.id ||
         reaction.rule_id ||

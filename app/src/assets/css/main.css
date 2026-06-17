@@ -231,6 +231,35 @@
     color: #fff;
 }
 
+.lab-notification {
+    position: fixed;
+    top: 5.5rem;
+    left: 50%;
+    z-index: 70;
+    width: min(34rem, calc(100vw - 2rem));
+    transform: translate(-50%, -0.5rem);
+    padding: 0.85rem 1rem;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 0.75rem;
+    background: rgba(15, 23, 42, 0.88);
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+    color: #f8fafc;
+    font-size: 0.88rem;
+    font-weight: 700;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    opacity: 0;
+    pointer-events: none;
+    backdrop-filter: blur(16px);
+    transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.lab-notification.is-visible {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
 #menuSidebar > div {
     position: absolute;
     inset: 5rem 1.5rem auto 1.5rem;
@@ -288,242 +317,3 @@
     border-color: rgba(124, 94, 255, 0.75);
     box-shadow: 0 0 0 3px rgba(124, 94, 255, 0.16);
 }
-
-@keyframes float {
-    0% { transform: translateY(0px); }
-    50% { transform: translateY(-10px); }
-    100% { transform: translateY(0px); }
-}
-
-.floating-mascot {
-    animation: float 3s ease-in-out infinite;
-}
-
-#mascot-dialog {
-    filter: drop-shadow(0 10px 15px rgba(0, 0, 0, 0.1));
-}
-
-.scribble-bubble {
-    background-color: rgba(215, 205, 245, 0.95); /* Màu tím nhạt hơn chút cho sang */
-    border: 2px solid #7c4dff;
-    border-radius: 40px 50px 30px 60px / 50px 30px 60px 40px; /* Hình dáng ngẫu hứng nhưng rộng rãi */
-    position: relative;
-    box-shadow: 3px 3px 0 #7c4dff;
-    padding: 1.5rem 2rem; 
-    pointer-events: auto;
-    max-width: 350px;
-    max-height: 50vh;
-    overflow-y: auto;
-    width: fit-content;
-    min-width: 200px;
-    transition: all 0.3s ease;
-    scrollbar-width: thin;
-    scrollbar-color: #7c4dff transparent;
-}
-
-.scribble-bubble::-webkit-scrollbar {
-    width: 4px;
-}
-
-.scribble-bubble::-webkit-scrollbar-thumb {
-    background: #7c4dff;
-    border-radius: 10px;
-}
-
-#mascot-text {
-    word-break: break-word;
-    white-space: pre-wrap;
-    line-height: 1.5;
-    margin: 0;
-}
-
-.scribble-bubble::before {
-    content: "";
-    position: absolute;
-    inset: -4px;
-    border: 1px solid #7c4dff;
-    border-radius: 51% / 39%;
-    transform: rotate(1deg);
-    pointer-events: none;
-}
-
-.scribble-bubble::after {
-    content: "";
-    position: absolute;
-    inset: -6px;
-    border: 1px solid #7c4dff;
-    border-radius: 49% / 41%;
-    transform: rotate(-1.5deg);
-    pointer-events: none;
-}
-
-.scribble-tail {
-    position: absolute;
-    right: 15%;
-    bottom: -20px;
-    width: 30px;
-    height: 40px;
-    background-color: rgba(209, 196, 233, 0.9);
-    clip-path: polygon(0 0, 100% 0, 80% 100%, 20% 0);
-    border-left: 2px solid #7c4dff;
-    border-right: 2px solid #7c4dff;
-}
-
-/* Mascot panel is a persistent text-only UI that always stays visible. */
-#mascot-container {
-    display: flex !important;
-    flex-direction: row !important;
-    align-items: center !important;
-    gap: 0.2rem;
-    max-width: min(560px, calc(100vw - 1.5rem));
-    opacity: 1 !important;
-    visibility: visible !important;
-    pointer-events: none;
-}
-
-#mascot-3d-placeholder {
-    width: clamp(5.5rem, 9vw, 8rem);
-    height: clamp(5.5rem, 9vw, 8rem);
-    margin-left: 0 !important;
-    margin-right: 0 !important;
-    flex: 0 0 auto;
-    order: 0;
-}
-
-#mascot-dialog {
-    order: 1;
-}
-
-#mascot-dialog,
-#mascot-dialog.hidden {
-    display: block !important;
-    opacity: 1 !important;
-    visibility: visible !important;
-    transform: none !important;
-    pointer-events: auto;
-}
-
-.scribble-bubble {
-    width: min(380px, calc(100vw - 9rem));
-    min-width: 265px;
-    max-width: min(380px, calc(100vw - 9rem));
-    max-height: min(46vh, 360px);
-    overflow-y: auto;
-    overflow-x: hidden;
-    border: 3px solid #8b5cf6;
-    border-radius: 22px;
-    box-shadow: 4px 5px 0 #8b5cf6;
-    padding: 0.9rem 1rem 1rem;
-    background: rgba(239, 235, 255, 0.96);
-    backdrop-filter: blur(12px);
-    transition: none;
-}
-
-.scribble-bubble::before {
-    inset: 5px;
-    border-color: rgba(124, 77, 255, 0.55);
-    border-radius: 20px 28px 22px 30px / 24px 20px 30px 22px;
-    transform: rotate(1.1deg);
-}
-
-.scribble-bubble::after {
-    inset: 9px;
-    border-color: rgba(124, 77, 255, 0.42);
-    border-radius: 27px 19px 29px 21px / 18px 28px 20px 30px;
-    transform: rotate(-1deg);
-}
-
-.scribble-tail {
-    left: -11px;
-    right: auto;
-    top: 2rem;
-    bottom: auto;
-    width: 18px;
-    height: 24px;
-    background-color: rgba(239, 235, 255, 0.96);
-    clip-path: polygon(100% 0, 0 50%, 100% 100%);
-    border-left: 0;
-    border-right: 3px solid #8b5cf6;
-}
-
-.mascot-history {
-    max-height: 95px;
-    overflow-y: auto;
-    padding-right: 0.25rem;
-    margin-bottom: 0.65rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.45rem;
-    scrollbar-width: thin;
-    scrollbar-color: #7c4dff transparent;
-}
-
-.mascot-history-item {
-    padding: 0.5rem 0.65rem;
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.62);
-    border: 1px solid rgba(124, 77, 255, 0.18);
-    color: #312e81;
-    font-size: 0.75rem;
-    line-height: 1.35;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-#mascot-text {
-    max-height: 120px;
-    overflow-y: auto;
-    padding: 0.35rem 0.45rem 0.7rem;
-    border-radius: 10px;
-    background: transparent;
-    border: 0;
-    font-size: 0.86rem;
-}
-
-#mascot-input {
-    height: 2.35rem;
-    border-radius: 999px !important;
-    border: 1px solid rgba(139, 92, 246, 0.22) !important;
-    background: rgba(255, 255, 255, 0.9) !important;
-    padding-left: 1.05rem !important;
-    padding-right: 3.2rem !important;
-    box-shadow: inset 0 1px 5px rgba(79, 70, 229, 0.08);
-}
-
-#mascot-send-btn {
-    right: 0.35rem !important;
-    width: 1.85rem !important;
-    height: 1.85rem !important;
-    border-radius: 999px !important;
-    background: #ffffff !important;
-    color: #111827 !important;
-    border: 0 !important;
-    box-shadow: 0 2px 8px rgba(79, 70, 229, 0.16);
-}
-
-#mascot-send-btn i {
-    color: #111827 !important;
-}
-
-@media (max-width: 640px) {
-    #mascot-container {
-        max-width: calc(100vw - 1.5rem);
-        right: 0.75rem !important;
-        gap: 0.15rem;
-    }
-
-    #mascot-3d-placeholder {
-        width: 4.25rem;
-        height: 4.25rem;
-    }
-
-    .scribble-bubble {
-        width: calc(100vw - 5.5rem);
-        max-width: calc(100vw - 5.5rem);
-        min-width: 0;
-        max-height: 42vh;
-        padding: 0.8rem;
-    }
-}
-
-

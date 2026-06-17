@@ -63,7 +63,7 @@ document.addEventListener("click", async (e) => {
         const subject = item.dataset.subject;
         window.currentConvId = id;
         window.currentSubject = subject;
-        localStorage.setItem('mascot_conv_id', id); // Đồng bộ với mascotTalk.js
+        localStorage.setItem('lab_conv_id', id);
         window.history.pushState({}, "", `/chat/${id}`);
         
         // Tải lại lịch sử tin nhắn và dụng cụ
@@ -168,7 +168,7 @@ async function confirmDeleteConversation() {
     });
     if (window.currentConvId === deleteConversationId) {
         window.currentConvId = null;
-        localStorage.removeItem('mascot_conv_id');
+        localStorage.removeItem('lab_conv_id');
         window.history.pushState({}, "", "/chat");
         window.clearLab();
         document.getElementById('subject-overlay')?.classList.remove('hidden');
@@ -185,7 +185,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (newChatBtn) {
         newChatBtn.addEventListener("click", () => {
             window.currentConvId = null;
-            localStorage.removeItem('mascot_conv_id');
+            localStorage.removeItem('lab_conv_id');
             window.history.pushState({}, "", "/chat");
             if (window.clearLab) window.clearLab();
             
