@@ -7,15 +7,15 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260617-xr-rotate-held2';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js?v=20260617-xr-rotate-held2';
+import { initControls } from './controls.js?v=20260618-xr-sprite-ray1';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js?v=20260618-xr-sprite-ray1';
 import { initChatEvents } from '../js/chatEvents.js?v=20260527-liquid-soft-waves';
 import { initLabLogic } from './lab_logic.js?v=20260609-network-topology';
 import { initLights } from './lights.js';
 import { initEnvironment } from './environment.js';
 import { initMascot, updateMascot } from './mascot.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260609-network-topology';
-import { pouringEffect, pouringState } from './interaction.js?v=20260617-xr-rotate-held2';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-xr-sprite-ray1';
+import { pouringEffect, pouringState } from './interaction.js?v=20260618-xr-sprite-ray1';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -137,7 +137,7 @@ xrControllerSlots.forEach((controller, index) => {
         grip.name = `XR Controller Grip Slot ${index + 1}`;
         grip.userData.slot = index;
         grip.userData.targetRay = controller;
-        scene.add(grip);
+        cameraGroup.add(grip);
     }
 
     controller.addEventListener('connected', (event) => {
@@ -146,7 +146,7 @@ xrControllerSlots.forEach((controller, index) => {
     controller.addEventListener('disconnected', () => {
         controlsManager.disconnectXRController(controller);
     });
-    scene.add(controller);
+    cameraGroup.add(controller);
 });
 controlsManager.xrControllerSlots = xrControllerSlots;
 controlsManager.xrControllerGripSlots = xrControllerGripSlots;
@@ -282,6 +282,8 @@ function createXRControllerReticle(scene, controllers) {
                 raycaster.ray.direction.copy(direction);
                 raycaster.near = 0.02;
                 raycaster.far = maxDistance;
+                const xrCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null;
+                raycaster.camera = xrCamera?.isArrayCamera ? xrCamera.cameras?.[0] || camera : xrCamera || camera;
 
                 const hits = raycaster.intersectObjects(draggableObjects, true);
                 const hit = hits.find(item => item.object?.userData?.root || item.object?.userData?.isInteractable);

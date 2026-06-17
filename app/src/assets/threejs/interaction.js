@@ -1551,6 +1551,52 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return true;
     }
 
+    function getHeldPourSourceForHand(handedness = null) {
+        const preferred = handedness === 'left' ? heldObjectLeft :
+            handedness === 'right' ? heldObjectRight :
+            null;
+        if (isPourSource(preferred)) return preferred;
+        if (isPourSource(heldObjectRight)) return heldObjectRight;
+        if (isPourSource(heldObjectLeft)) return heldObjectLeft;
+        if (isPourSource(draggedObject)) return draggedObject;
+        return null;
+    }
+
+    function beginPouringFromHeldObject(sourceObj, options = {}) {
+        if (!sourceObj?.isObject3D || !isPourSource(sourceObj)) return false;
+
+        const now = performance.now();
+        if (!options.ignoreCooldown && sourceObj.userData.lastReactionCheck &&
+            now - sourceObj.userData.lastReactionCheck < 1000) {
+            return false;
+        }
+        sourceObj.userData.lastReactionCheck = now;
+
+        isPouringAction = true;
+        activePourSource = sourceObj;
+
+        const pourPoint = getPourSourceWorldPoint(sourceObj);
+        pouringEffect.startPouring(
+            pourPoint,
+            getChemicalColor(sourceObj),
+            getChemicalName(sourceObj),
+            getChemicalType(sourceObj),
+            getPhysicalState(sourceObj)
+        );
+        return true;
+    }
+
+    function stopActivePouring(options = {}) {
+        const sourceObj = activePourSource || heldObjectRight || heldObjectLeft || draggedObject;
+        isPouringAction = false;
+        activePourSource = null;
+        if (options.resetRotation && sourceObj?.rotation) sourceObj.rotation.z = 0;
+        pouringEffect?.stop();
+        pouringState.currentPourTargetPos = null;
+        lastPouredTarget = null;
+        return true;
+    }
+
     let activeXRHandRayController = null;
     const handRayOrigin = new three.Vector3();
     const handRayDirection = new three.Vector3();
@@ -1572,6 +1618,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             handRayDirection.set(0, 0, -1).transformDirection(activeXRHandRayController.matrixWorld).normalize();
             raycaster.ray.origin.copy(handRayOrigin);
             raycaster.ray.direction.copy(handRayDirection);
+            raycaster.camera = getHandRayCamera();
             return;
         }
 
@@ -1843,7 +1890,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     };
 
     const xrButtonState = new Map();
+    const xrPourButtonState = new Map();
     const xrToggleDebounceMs = 140;
+    const xrGrabButtonNames = new Set(['trigger', 'grip']);
+    const xrPourButtonNames = new Set(['buttonA', 'buttonB', 'buttonX', 'buttonY']);
 
     const getXRControllerHandedness = (controller) => {
         const handedness = controller?.userData?.handedness || controller?.userData?.inputSource?.handedness;
@@ -1928,9 +1978,12 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         Number(button?.value || 0) > 0.45
     );
 
-    const getPressedXRButtonName = (buttons = []) => {
+    const getPressedXRButtonName = (buttons = [], allowedNames = null) => {
         const names = ['trigger', 'grip', 'touchpad', 'thumbstick', 'buttonA', 'buttonB', 'buttonX', 'buttonY'];
-        const pressedIndex = Array.from(buttons).findIndex(button => isXRButtonPressed(button));
+        const pressedIndex = Array.from(buttons).findIndex((button, index) => {
+            const name = names[index] || `button${index}`;
+            return (!allowedNames || allowedNames.has(name)) && isXRButtonPressed(button);
+        });
         if (pressedIndex < 0) return null;
         return names[pressedIndex] || `button${pressedIndex}`;
     };
@@ -1988,6 +2041,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             squeeze: event => press(event, 'squeeze'),
             squeezeend: event => release(event, 'squeeze'),
             end: () => {
+                stopActivePouring({ resetRotation: false });
+                xrPourButtonState.clear();
                 xrPressSession = null;
                 xrSessionPressHandlers = null;
             }
@@ -2007,10 +2062,47 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         }
     };
 
+    const processXRPourButton = (controller, inputName, pressed) => {
+        if (!controller) return;
+
+        const previous = xrPourButtonState.get(controller) || {
+            pressed: false,
+            activeInputName: null,
+            source: null
+        };
+
+        if (pressed && !previous.pressed) {
+            const source = getHeldPourSourceForHand(getXRControllerHandedness(controller));
+            if (beginPouringFromHeldObject(source, { ignoreCooldown: true })) {
+                previous.pressed = true;
+                previous.activeInputName = inputName;
+                previous.source = source;
+            }
+            xrPourButtonState.set(controller, previous);
+            return;
+        }
+
+        if (!pressed && previous.pressed) {
+            if (!previous.source || activePourSource === previous.source) {
+                stopActivePouring({ resetRotation: false });
+            }
+            previous.pressed = false;
+            previous.activeInputName = null;
+            previous.source = null;
+            xrPourButtonState.set(controller, previous);
+            return;
+        }
+
+        xrPourButtonState.set(controller, previous);
+    };
+
     const processXRControllerButtons = (controller, buttons = []) => {
         if (!controller) return;
 
-        const pressedButtonName = getPressedXRButtonName(buttons);
+        const pourButtonName = getPressedXRButtonName(buttons, xrPourButtonNames);
+        processXRPourButton(controller, pourButtonName, Boolean(pourButtonName));
+
+        const pressedButtonName = getPressedXRButtonName(buttons, xrGrabButtonNames);
         const pressed = Boolean(pressedButtonName);
         const previous = xrButtonState.get(controller) || {
             pressed: false,
@@ -2079,7 +2171,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             controller.addEventListener('squeezestart', () => handleXRPressAsHandInteraction(controller, 'squeeze', { markPressed: true }));
             controller.addEventListener('squeeze', () => handleXRPressAsHandInteraction(controller, 'squeeze', { markPressed: true }));
             controller.addEventListener('squeezeend', () => releaseXRPress(controller, 'squeeze'));
-            controller.addEventListener('disconnected', () => releaseXRPress(controller));
+            controller.addEventListener('disconnected', () => {
+                releaseXRPress(controller);
+                processXRPourButton(controller, null, false);
+            });
         });
     };
 
@@ -2414,6 +2509,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             }
             heldObj.userData.lastReactionCheck = now;
 
+            beginPouringFromHeldObject(heldObj, { ignoreCooldown: true });
+            return;
+
             console.log("Phím Space được nhấn, đối tượng đang cầm/kéo:", heldObj.userData);
             if (isPourSource(heldObj)) {
                 isPouringAction = true;
@@ -2453,8 +2551,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 isPouringAction = false;
                 activePourSource = null;
                 heldObj.rotation.z = 0; // Trả lọ về thẳng đứng
-                pouringEffect.stop();
-                lastPouredTarget = null; // Reset mục tiêu đổ
+                stopActivePouring({ resetRotation: false });
             }
         }
     });
@@ -3041,6 +3138,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             }
 
             downRaycaster.set(pourPoint, pourDirection);
+            downRaycaster.camera = getHandRayCamera();
 
             // Danh sách các vật thể có thể nhận chất lỏng (cốc, ống nghiệm, hoặc chính khối chất lỏng)
             const fluidVolumes = Array.from(pouringEffect.volumes.values());

@@ -1,7 +1,7 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260617-xr-rotate-held2';
+import { setArmsVisibility } from './interaction.js?v=20260618-xr-sprite-ray1';
 
 function isEditableTarget(event) {
     const target = event?.target;
