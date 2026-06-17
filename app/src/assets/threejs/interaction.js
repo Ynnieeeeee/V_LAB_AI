@@ -103,6 +103,240 @@ function isTableObject(object) {
     return Boolean(table?.isObject3D && isDescendantOf(object, table));
 }
 
+function getTableRoot(object) {
+    let node = object;
+    while (node) {
+        if (node.userData?.isTable) return node;
+        node = node.parent;
+    }
+
+    const tables = Array.isArray(window.labTables)
+        ? window.labTables
+        : [window.tableObject, window.labTable, window.tableMesh].filter(Boolean);
+    return tables.find(table => table?.isObject3D && isDescendantOf(object, table)) || null;
+}
+
+function getLabTables(excludeObject = null) {
+    const rawTables = Array.isArray(window.labTables)
+        ? window.labTables
+        : [window.tableObject, window.labTable, window.tableMesh];
+    const seen = new Set();
+    return rawTables.filter(table => {
+        if (!table?.isObject3D || seen.has(table.uuid)) return false;
+        seen.add(table.uuid);
+        if (table.visible === false || table.userData?.isDeleted === true) return false;
+        if (excludeObject && (table === excludeObject || isDescendantOf(table, excludeObject) || isDescendantOf(excludeObject, table))) return false;
+        return true;
+    });
+}
+
+function getTableSurfaceYForObject(object) {
+    const table = getTableRoot(object) || object;
+    if (!table?.isObject3D) return getTableSurfaceY();
+    table.updateMatrixWorld(true);
+    const box = new three.Box3().setFromObject(table);
+    if (Number.isFinite(box.max.y)) return box.max.y;
+    return Number(table.userData?.tableSurfaceY ?? getTableSurfaceY()) || getTableSurfaceY();
+}
+
+function getTableSurfaceUnderRay(ray, excludeObject = null) {
+    const candidates = [];
+    const plane = new three.Plane(new three.Vector3(0, 1, 0), 0);
+    const point = new three.Vector3();
+
+    getLabTables(excludeObject).forEach(table => {
+        table.updateMatrixWorld(true);
+        const box = new three.Box3().setFromObject(table);
+        if (box.isEmpty() || !Number.isFinite(box.max.y)) return;
+
+        plane.constant = -box.max.y;
+        const hit = ray.intersectPlane(plane, point);
+        if (!hit) return;
+
+        const padding = 0.04;
+        const insideTableFootprint =
+            hit.x >= box.min.x - padding &&
+            hit.x <= box.max.x + padding &&
+            hit.z >= box.min.z - padding &&
+            hit.z <= box.max.z + padding;
+        if (!insideTableFootprint) return;
+
+        candidates.push({
+            table,
+            point: hit.clone(),
+            surfaceY: box.max.y,
+            distanceSq: ray.origin.distanceToSquared(hit)
+        });
+    });
+
+    candidates.sort((a, b) => a.distanceSq - b.distanceSq);
+    return candidates[0] || null;
+}
+
+const MOVABLE_TABLE_PLACEMENT_PADDING = 0.12;
+const ROOM_EDGE_PADDING = 0.18;
+
+function isMovableTableObject(object) {
+    return object?.userData?.isMovableTable === true;
+}
+
+function getRoomBounds() {
+    const bounds = window.labRoomBounds || {};
+    return {
+        minX: Number.isFinite(bounds.minX) ? bounds.minX : -10,
+        maxX: Number.isFinite(bounds.maxX) ? bounds.maxX : 10,
+        minZ: Number.isFinite(bounds.minZ) ? bounds.minZ : -10,
+        maxZ: Number.isFinite(bounds.maxZ) ? bounds.maxZ : 10
+    };
+}
+
+function getObjectWorldBox(object, padding = 0) {
+    object?.updateMatrixWorld?.(true);
+    const box = new three.Box3().setFromObject(object);
+    if (!box.isEmpty() && padding > 0) {
+        box.expandByVector(new three.Vector3(padding, 0, padding));
+    }
+    return box;
+}
+
+function boxesOverlapXZ(boxA, boxB) {
+    if (!boxA || !boxB || boxA.isEmpty() || boxB.isEmpty()) return false;
+    return (
+        boxA.min.x < boxB.max.x &&
+        boxA.max.x > boxB.min.x &&
+        boxA.min.z < boxB.max.z &&
+        boxA.max.z > boxB.min.z
+    );
+}
+
+function isObjectOrAncestor(object, maybeAncestor) {
+    return object === maybeAncestor || isDescendantOf(object, maybeAncestor);
+}
+
+function collectMovableTableBlockers(object) {
+    const blockers = [];
+    const seen = new Set();
+    const addBlocker = (candidate) => {
+        if (!candidate?.isObject3D || seen.has(candidate.uuid)) return;
+        if (candidate === object || isObjectOrAncestor(candidate, object) || isObjectOrAncestor(object, candidate)) return;
+        if (candidate.visible === false || candidate.userData?.isDeleted === true) return;
+        if (candidate.userData?.ignoreInteraction || candidate.userData?.isInternalChemicalVisual) return;
+        seen.add(candidate.uuid);
+        blockers.push(candidate);
+    };
+
+    const knownTables = Array.isArray(window.labTables)
+        ? window.labTables
+        : [window.tableObject, window.labTable, window.tableMesh];
+    knownTables.forEach(addBlocker);
+    addBlocker(window.chemicalCabinet);
+    draggableObjects.forEach(addBlocker);
+
+    return blockers;
+}
+
+function getMovableTablePlacementBlocker(object) {
+    if (!isMovableTableObject(object)) return null;
+
+    const tableBox = getObjectWorldBox(object, MOVABLE_TABLE_PLACEMENT_PADDING);
+    const bounds = getRoomBounds();
+    if (
+        tableBox.min.x < bounds.minX + ROOM_EDGE_PADDING ||
+        tableBox.max.x > bounds.maxX - ROOM_EDGE_PADDING ||
+        tableBox.min.z < bounds.minZ + ROOM_EDGE_PADDING ||
+        tableBox.max.z > bounds.maxZ - ROOM_EDGE_PADDING
+    ) {
+        return { reason: 'room-bounds' };
+    }
+
+    const blockers = collectMovableTableBlockers(object);
+    return blockers.find(blocker => boxesOverlapXZ(tableBox, getObjectWorldBox(blocker))) || null;
+}
+
+function isMovableTablePlacementValid(object) {
+    return !getMovableTablePlacementBlocker(object);
+}
+
+function clampMovableTableToRoom(object) {
+    if (!isMovableTableObject(object)) return;
+    object.updateMatrixWorld(true);
+
+    const bounds = getRoomBounds();
+    const box = getObjectWorldBox(object);
+    let dx = 0;
+    let dz = 0;
+
+    if (box.min.x < bounds.minX + ROOM_EDGE_PADDING) dx = bounds.minX + ROOM_EDGE_PADDING - box.min.x;
+    if (box.max.x > bounds.maxX - ROOM_EDGE_PADDING) dx = bounds.maxX - ROOM_EDGE_PADDING - box.max.x;
+    if (box.min.z < bounds.minZ + ROOM_EDGE_PADDING) dz = bounds.minZ + ROOM_EDGE_PADDING - box.min.z;
+    if (box.max.z > bounds.maxZ - ROOM_EDGE_PADDING) dz = bounds.maxZ - ROOM_EDGE_PADDING - box.max.z;
+
+    if (dx || dz) {
+        object.position.x += dx;
+        object.position.z += dz;
+        object.updateMatrixWorld(true);
+    }
+}
+
+function updateMovableTablePlacementState(object) {
+    if (!isMovableTableObject(object)) return true;
+    clampMovableTableToRoom(object);
+    const isValid = isMovableTablePlacementValid(object);
+    object.userData.placementInvalid = !isValid;
+    if (isValid) object.userData.lastValidFloorPosition = object.position.clone();
+    return isValid;
+}
+
+export function findOpenFloorPositionForObject(object, options = {}) {
+    if (!object?.isObject3D) return null;
+
+    const savedPosition = object.position.clone();
+    object.updateMatrixWorld(true);
+    const box = new three.Box3().setFromObject(object);
+    const offsetToFloor = Number.isFinite(object.userData?.offsetToFloor)
+        ? object.userData.offsetToFloor
+        : object.position.y - box.min.y;
+
+    const preferredPositions = options.preferredPositions || [
+        [-6.5, 4.8], [6.5, 4.8],
+        [-6.5, -4.8], [6.5, -4.8],
+        [-7.4, 0], [7.4, 0],
+        [0, 6.6], [0, -6.6]
+    ];
+
+    const tryPosition = (x, z) => {
+        object.position.set(x, offsetToFloor, z);
+        clampMovableTableToRoom(object);
+        object.updateMatrixWorld(true);
+        return isMovableTablePlacementValid(object) ? object.position.clone() : null;
+    };
+
+    for (const [x, z] of preferredPositions) {
+        const position = tryPosition(x, z);
+        if (position) {
+            object.position.copy(savedPosition);
+            object.updateMatrixWorld(true);
+            return position;
+        }
+    }
+
+    const bounds = getRoomBounds();
+    for (let x = bounds.minX + 2; x <= bounds.maxX - 2; x += 1) {
+        for (let z = bounds.minZ + 2; z <= bounds.maxZ - 2; z += 1) {
+            const position = tryPosition(x, z);
+            if (position) {
+                object.position.copy(savedPosition);
+                object.updateMatrixWorld(true);
+                return position;
+            }
+        }
+    }
+
+    object.position.copy(savedPosition);
+    object.updateMatrixWorld(true);
+    return null;
+}
+
 function liftObjectBottomToSurface(object, surfaceY, clearance = 0.01) {
     if (!object?.isObject3D || !Number.isFinite(surfaceY)) return false;
     object.updateMatrixWorld(true);
@@ -925,6 +1159,10 @@ function removeToolFromCurrentLab(object, scene) {
 
     const draggableIndex = draggableObjects.indexOf(object);
     if (draggableIndex !== -1) draggableObjects.splice(draggableIndex, 1);
+    if (object.userData?.isMovableTable && Array.isArray(window.labTables)) {
+        const tableIndex = window.labTables.indexOf(object);
+        if (tableIndex !== -1) window.labTables.splice(tableIndex, 1);
+    }
 
     object.traverse?.((child) => {
         if (child.userData) {
@@ -1076,6 +1314,7 @@ function snapToMagneticSnapPointIfNear(object) {
 
 function completeAssemblyDrop(object) {
     if (!object?.isObject3D) return false;
+    if (isMovableTableObject(object)) return true;
     const legacySnapped = snapToHeatingSourceIfNear(object);
     if (legacySnapped) {
         window.labAssemblyManager?.detachMagneticBinding?.(object, { preserveWorld: false });
@@ -1784,7 +2023,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                         break;
                     }
                 }
-                dropSurfaceY = isTableObject(bestHit.object) ? getTableSurfaceY() : bestHit.point.y;
+                dropSurfaceY = isTableObject(bestHit.object) ? getTableSurfaceYForObject(bestHit.object) : bestHit.point.y;
                 currentHeld.position.copy(bestHit.point);
             } else {
                 // Nếu không chạm gì, đặt phía trước người chơi 1m
@@ -3714,13 +3953,16 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (intersects.length > 0) {
             draggedObject = resolveDraggableRoot(intersects[0].object);
             if (!draggedObject) return;
+            const isMovableTableDrag = isMovableTableObject(draggedObject);
 
             // Khi bắt đầu kéo một vật mới, vật đó cũng phải trở thành vật đang được chọn.
             // Tránh context menu/rotation còn trỏ tới vật cũ như nguồn nhiệt.
             selectedObjectForMenu = draggedObject;
 
-            window.labAssemblyManager?.beginMagneticDrag?.(draggedObject);
-            releaseHeatingSnapIfNeeded(draggedObject);
+            if (!isMovableTableDrag) {
+                window.labAssemblyManager?.beginMagneticDrag?.(draggedObject);
+                releaseHeatingSnapIfNeeded(draggedObject);
+            }
             const savedScale = getSavedScale(draggedObject);
             attachKeepWorldTransform(scene, draggedObject);
             markChemicalBottleOutOfCabinet(draggedObject);
@@ -3741,6 +3983,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             // Chỉ tính offset nếu chưa có
             updateOffsetToFloor(draggedObject);
+            if (isMovableTableDrag) {
+                draggedObject.userData.dragStartFloorPosition = draggedObject.position.clone();
+                draggedObject.userData.lastValidFloorPosition = draggedObject.position.clone();
+                draggedObject.userData.placementInvalid = false;
+            }
 
             orbit.enabled = false;
 
@@ -3753,12 +4000,27 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         updateRaycaster(e);
 
         // 1. Giả định đang trên mặt bàn (y=1.6)
-        let targetY = 1.6;
+        if (isMovableTableObject(draggedObject)) {
+            movePlane.set(new three.Vector3(0, 1, 0), 0);
+            if (raycaster.ray.intersectPlane(movePlane, planeIntersectPoint)) {
+                draggedObject.position.x = planeIntersectPoint.x;
+                draggedObject.position.z = planeIntersectPoint.z;
+                draggedObject.position.y = draggedObject.userData.offsetToFloor || 0;
+                updateMovableTablePlacementState(draggedObject);
+            }
+            return;
+        }
+
+        const tableSurfaceHit = getTableSurfaceUnderRay(raycaster.ray, draggedObject);
+        let targetY = tableSurfaceHit?.surfaceY ?? getTableSurfaceY();
         movePlane.set(new three.Vector3(0, 1, 0), -targetY);
 
         if (raycaster.ray.intersectPlane(movePlane, planeIntersectPoint)) {
+            if (tableSurfaceHit) {
+                planeIntersectPoint.copy(tableSurfaceHit.point);
+            }
             // Kiểm tra xem vị trí chuột có nằm trong diện tích mặt bàn không (Bàn 8x4)
-            const isOnTable = Math.abs(planeIntersectPoint.x) <= 4 && Math.abs(planeIntersectPoint.z) <= 2;
+            const isOnTable = Boolean(tableSurfaceHit) || (Math.abs(planeIntersectPoint.x) <= 4 && Math.abs(planeIntersectPoint.z) <= 2);
 
             if (!isOnTable) {
                 // Nếu không ở trên bàn, hạ xuống sàn (y=0)
@@ -3791,6 +4053,26 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     window.addEventListener('pointerup', (e) => {
         if (draggedObject) {
             updateRaycaster(e);
+
+            if (isMovableTableObject(draggedObject)) {
+                if (!isMovableTablePlacementValid(draggedObject)) {
+                    const fallbackPosition =
+                        draggedObject.userData.lastValidFloorPosition ||
+                        draggedObject.userData.dragStartFloorPosition;
+                    if (fallbackPosition?.isVector3) {
+                        draggedObject.position.copy(fallbackPosition);
+                        draggedObject.updateMatrixWorld(true);
+                    }
+                    notifyLab?.('Kh\u00f4ng th\u1ec3 \u0111\u1eb7t b\u00e0n \u0111\u00e8 l\u00ean v\u1eadt kh\u00e1c trong ph\u00f2ng.');
+                } else {
+                    draggedObject.userData.lastValidFloorPosition = draggedObject.position.clone();
+                }
+                draggedObject.userData.placementInvalid = false;
+                updateOffsetToFloor(draggedObject);
+                orbit.enabled = true;
+                draggedObject = null;
+                return;
+            }
 
             const originalVisible = draggedObject.visible;
             draggedObject.visible = false;
@@ -3872,6 +4154,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             contextmenu.classList.add('hidden');
 
             if (!objectToDelete) return;
+            if (isMovableTableObject(objectToDelete)) {
+                removeToolFromCurrentLab(objectToDelete, scene);
+                notifyLab?.('\u0110\u00e3 x\u00f3a b\u00e0n kh\u1ecfi ph\u00f2ng.');
+                return;
+            }
 
             deleteToolBtn.disabled = true;
             try {

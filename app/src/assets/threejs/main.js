@@ -7,15 +7,15 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260618-xr-sprite-ray1';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects } from './interaction.js?v=20260618-xr-sprite-ray1';
+import { initControls } from './controls.js?v=20260618-add-table3';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-add-table3';
 import { initChatEvents } from '../js/chatEvents.js?v=20260527-liquid-soft-waves';
 import { initLabLogic } from './lab_logic.js?v=20260609-network-topology';
 import { initLights } from './lights.js';
-import { initEnvironment } from './environment.js';
-import './labNotifier.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-xr-sprite-ray1';
-import { pouringEffect, pouringState } from './interaction.js?v=20260618-xr-sprite-ray1';
+import { initEnvironment, createLabTable } from './environment.js?v=20260618-add-table3';
+import { notifyLab } from './labNotifier.js';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-add-table3';
+import { pouringEffect, pouringState } from './interaction.js?v=20260618-add-table3';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -157,6 +157,7 @@ controlsManager.isXRPresenting = () => renderer.xr.isPresenting || Boolean(rende
 initInteractionEvents(camera, controlsManager, scene);
 initLights(scene, renderer);
 initEnvironment(scene);
+setupAddTableButton();
 const heatingManager = createHeatingManager(scene, { getObjects: () => draggableObjects });
 window.heatingManager = heatingManager;
 const labAssemblyManager = createLabAssemblyManager(scene, { getObjects: () => draggableObjects });
@@ -168,10 +169,69 @@ const loader = new GLTFLoader();
 const modelPath = '/assets/models/';
 let chemicalCabinet = null;
 const frameClock = new three.Clock();
+let movableTableCounter = 0;
+
+function disposeObjectResources(object) {
+    object?.traverse?.((child) => {
+        child.geometry?.dispose?.();
+        const material = child.material;
+        if (Array.isArray(material)) {
+            material.forEach(m => m?.dispose?.());
+        } else {
+            material?.dispose?.();
+        }
+    });
+}
+
+function addMovableLabTable() {
+    movableTableCounter += 1;
+    const table = createLabTable({
+        width: 4.2,
+        depth: 2.4,
+        topColor: 0x334155,
+        legColor: 0x111827,
+        roughness: 0.18,
+        metalness: 0.25,
+        isMovable: true,
+        name: `Movable lab table ${movableTableCounter}`
+    });
+
+    table.userData.instanceId = `movable-table-${movableTableCounter}`;
+    table.updateMatrixWorld(true);
+    const box = new three.Box3().setFromObject(table);
+    table.userData.offsetToFloor = table.position.y - box.min.y;
+
+    const position = findOpenFloorPositionForObject(table);
+    if (!position) {
+        disposeObjectResources(table);
+        notifyLab('Kh\u00f4ng c\u00f2n v\u1ecb tr\u00ed tr\u1ed1ng \u0111\u1ec3 th\u00eam b\u00e0n m\u1edbi.');
+        return null;
+    }
+
+    table.position.copy(position);
+    table.userData.lastValidFloorPosition = position.clone();
+    table.userData.dragStartFloorPosition = position.clone();
+    scene.add(table);
+    registerDraggableObject(table);
+
+    window.labTables ??= [];
+    if (!window.labTables.includes(table)) window.labTables.push(table);
+
+    notifyLab('\u0110\u00e3 th\u00eam b\u00e0n m\u1edbi. K\u00e9o b\u00e0n \u0111\u1ec3 \u0111\u1eb7t v\u00e0o v\u1ecb tr\u00ed tr\u1ed1ng trong ph\u00f2ng.');
+    return table;
+}
+
+function setupAddTableButton() {
+    window.addMovableLabTable = addMovableLabTable;
+    const addTableBtn = document.getElementById('addTableBtn');
+    if (!addTableBtn) return;
+    addTableBtn.addEventListener('click', addMovableLabTable);
+}
 
 export async function loadChemistryCabinet() {
     if (chemicalCabinet) {
         chemicalCabinet.visible = true;
+        window.chemicalCabinet = chemicalCabinet;
         return;
     }
     try {
@@ -181,6 +241,7 @@ export async function loadChemistryCabinet() {
         chemicalCabinet.rotation.y = -Math.PI / 2;
         chemicalCabinet.scale.set(2.0, 2.0, 2.0);
         scene.add(chemicalCabinet);
+        window.chemicalCabinet = chemicalCabinet;
 
         const bottleGltf = await loader.loadAsync(`${modelPath}chemical_bottle_1778830207.glb`);
         const bottleBase = bottleGltf.scene;
@@ -193,6 +254,7 @@ export async function loadChemistryCabinet() {
 export function hideChemistryCabinet() {
     if (chemicalCabinet) {
         chemicalCabinet.visible = false;
+        window.chemicalCabinet = chemicalCabinet;
     }
 }
 
