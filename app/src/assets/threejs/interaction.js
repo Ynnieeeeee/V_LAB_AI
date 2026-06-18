@@ -1272,7 +1272,7 @@ function getToolId(object) {
     return object?.userData?.toolData?.id_tool || object?.userData?.id_tool;
 }
 
-async function persistToolPosition(object) {
+export async function persistToolPosition(object) {
     const idTool = getToolId(object);
     if (!idTool || !object?.isObject3D) return;
 

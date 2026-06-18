@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { registerDraggableObject } from './interaction.js?v=20260618-xbox-look-pour';
+import { registerDraggableObject } from './interaction.js?v=20260618-position-save2';
 
 export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
     try {

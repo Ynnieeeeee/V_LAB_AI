@@ -5,6 +5,7 @@ import { applyAdvancedPBR } from './pbr.js';
 import { applyToolMetadataToObject } from './ToolClassifier.js';
 import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 import { ensureAutoSnapPoints } from './toolAnchors.js?v=20260609-network-topology';
+import { draggableObjects, persistToolPosition } from './interaction.js?v=20260618-position-save2';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh
@@ -58,6 +59,53 @@ function notifyMissingImageFailures(failures = []) {
     document.getElementById('chat-input')?.focus();
 }
 
+function getLoadedToolModels() {
+    return Array.from(loaderModels.values()).filter(model =>
+        model?.isObject3D &&
+        model.userData?.isDeleted !== true &&
+        (model.userData?.toolData?.id_tool || model.userData?.id_tool)
+    );
+}
+
+function persistLoadedToolPositions() {
+    const models = getLoadedToolModels();
+    if (!models.length) return Promise.resolve([]);
+    return Promise.allSettled(models.map(model => persistToolPosition(model)));
+}
+
+function removeFromDraggableObjects(model) {
+    const index = draggableObjects.indexOf(model);
+    if (index !== -1) draggableObjects.splice(index, 1);
+}
+
+function disposeObjectResources(object) {
+    object?.traverse?.((child) => {
+        child.geometry?.dispose?.();
+        const material = child.material;
+        if (Array.isArray(material)) {
+            material.forEach(item => item?.dispose?.());
+        } else {
+            material?.dispose?.();
+        }
+    });
+}
+
+function detachLabModel(model, scene) {
+    if (!model?.isObject3D) return;
+
+    model.userData.isDeleted = true;
+    removeFromDraggableObjects(model);
+    window.labAssemblyManager?.unregisterObject?.(model);
+
+    if (model.parent) {
+        model.parent.remove(model);
+    } else if (scene) {
+        scene.remove(model);
+    }
+
+    disposeObjectResources(model);
+}
+
 /**
  * Khởi tạo môi trường làm việc
  */
@@ -79,17 +127,15 @@ export function initLabLogic(scene, registerDraggable) {
 /**
  * Xóa sạch bàn thí nghiệm và bộ nhớ đệm
  */
-export function clearLab(scene) {
+export function clearLab(scene, options = {}) {
+    if (options.persistPositions !== false) {
+        persistLoadedToolPositions().catch(error => {
+            console.warn('[LabClear] persist positions before clear failed:', error);
+        });
+    }
+
     loaderModels.forEach((model) => {
-        if (scene) scene.remove(model);
-        if (model.geometry) model.geometry.dispose();
-        if (model.material) {
-            if (Array.isArray(model.material)) {
-                model.material.forEach(m => m.dispose());
-            } else {
-                model.material.dispose();
-            }
-        }
+        detachLabModel(model, scene);
     });
     
     loaderModels.clear();
@@ -127,7 +173,8 @@ async function checkBackendStatus(scene) {
     // Nếu người dùng chuyển sang hội thoại khác, tự động dọn bàn
     if (lastConvId !== id_conv) {
         console.log("Phát hiện chuyển đổi hội thoại, đang làm mới bàn thí nghiệm...");
-        clearLab(scene);
+        await persistLoadedToolPositions();
+        clearLab(scene, { persistPositions: false });
         lastConvId = id_conv;
     }
 
