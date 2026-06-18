@@ -2072,12 +2072,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     };
 
     const setHandInteractionRaycaster = () => {
-        if (controlsManager.isXRPresenting?.() && activeXRHandRayController?.isObject3D) {
-            activeXRHandRayController.updateMatrixWorld(true);
-            activeXRHandRayController.getWorldPosition(handRayOrigin);
-            handRayDirection.set(0, 0, -1).transformDirection(activeXRHandRayController.matrixWorld).normalize();
-            raycaster.ray.origin.copy(handRayOrigin);
-            raycaster.ray.direction.copy(handRayDirection);
+        if (controlsManager.isXRPresenting?.()) {
+            const aimRay = controlsManager.getXRAimRay?.(raycaster.ray);
+            if (aimRay?.origin && aimRay?.direction) {
+                raycaster.ray.origin.copy(aimRay.origin);
+                raycaster.ray.direction.copy(aimRay.direction).normalize();
+            } else {
+                raycaster.setFromCamera({ x: 0, y: 0 }, getHandRayCamera());
+            }
             raycaster.camera = getHandRayCamera();
             return;
         }
@@ -2111,21 +2113,35 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return Array.from(linked);
     };
 
+    const getXRAimTargetInfo = (controller, candidates = []) => {
+        if (!controller?.isObject3D) return { hasAimEntry: false, root: null };
+        const aimTargets = controlsManager.xrControllerAimTargets;
+        let hasAimEntry = false;
+
+        for (const linkedController of getXRLinkedAimControllers(controller)) {
+            if (!aimTargets?.has(linkedController)) continue;
+            hasAimEntry = true;
+
+            const target = aimTargets.get(linkedController);
+            if (!target) continue;
+            const root = resolveAimedRoot(target, candidates);
+            if (root) return { hasAimEntry: true, root };
+        }
+
+        return { hasAimEntry, root: null };
+    };
+
     const getXRHandAimResult = (candidates = []) => {
         if (!controlsManager.isXRPresenting?.() || !activeXRHandRayController?.isObject3D) {
-            return { hasTarget: false, root: null };
+            return { hasAimEntry: false, hasTarget: false, root: null };
         }
 
-        for (const controller of getXRLinkedAimControllers(activeXRHandRayController)) {
-            const target = controlsManager.xrControllerAimTargets?.get(controller);
-            if (!target) continue;
-            return {
-                hasTarget: true,
-                root: resolveAimedRoot(target, candidates)
-            };
-        }
-
-        return { hasTarget: false, root: null };
+        const aimInfo = getXRAimTargetInfo(activeXRHandRayController, candidates);
+        return {
+            hasAimEntry: aimInfo.hasAimEntry,
+            hasTarget: Boolean(aimInfo.root),
+            root: aimInfo.root
+        };
     };
 
     const getExactXRAimTargetRoot = (controller, candidates = []) => {
@@ -2154,10 +2170,47 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return null;
     };
 
-    const getHandRayFallbackRoot = (candidates = [], maxDistance = 8) => {
-        if (!controlsManager.isXRPresenting?.() || !activeXRHandRayController?.isObject3D) return null;
+    const getUniqueXRAimTargetRoot = (candidates = []) => {
+        const roots = [];
+        const controllers = [
+            ...(controlsManager.xrControllerSlots || []),
+            ...(controlsManager.xrControllerGripSlots || [])
+        ];
 
+        for (const controller of controllers) {
+            const root = getExactXRAimTargetRoot(controller, candidates);
+            if (root && !roots.includes(root)) roots.push(root);
+            if (roots.length > 1) return null;
+        }
+
+        return roots[0] || null;
+    };
+
+    const isXRToolLikeRoot = (root) =>
+        root?.isObject3D &&
+        !isMovableTableObject(root) &&
+        !isTableObject(root);
+
+    const choosePreferredXRRoot = (roots = []) =>
+        roots.find(isXRToolLikeRoot) || roots[0] || null;
+
+    const getPreferredRootFromRayHits = (hits = []) => {
+        const roots = [];
+        for (const hit of hits) {
+            const root = resolveDraggableRoot(hit.object);
+            if (root && !roots.includes(root)) roots.push(root);
+        }
+        return choosePreferredXRRoot(roots);
+    };
+
+    const getHandRayFallbackRoot = (candidates = [], maxDistance = 8, options = {}) => {
+        if (!controlsManager.isXRPresenting?.()) return null;
+
+        const expandScalar = Number(options.expandScalar ?? 0.38);
+        const rayDistanceThresholdSq = Number(options.rayDistanceThresholdSq ?? 0.42);
+        const tipDistanceThresholdSq = Number(options.tipDistanceThresholdSq ?? 0.42);
         let closest = null;
+        let closestTool = null;
         handRayEnd.copy(raycaster.ray.origin).addScaledVector(raycaster.ray.direction, maxDistance);
 
         candidates.forEach((candidate) => {
@@ -2166,7 +2219,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             const box = new three.Box3().setFromObject(candidate);
             if (box.isEmpty()) return;
 
-            const expandedBox = box.clone().expandByScalar(0.38);
+            const expandedBox = box.clone().expandByScalar(expandScalar);
             const hitPoint = raycaster.ray.intersectBox(expandedBox, new three.Vector3());
             const center = box.getCenter(new three.Vector3());
             const rayDistanceSq = raycaster.ray.distanceSqToPoint(center);
@@ -2175,14 +2228,18 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 ? raycaster.ray.origin.distanceToSquared(hitPoint)
                 : Math.min(rayDistanceSq, tipDistanceSq);
 
-            if (hitPoint || rayDistanceSq < 0.42 || tipDistanceSq < 0.42) {
+            if (hitPoint || rayDistanceSq < rayDistanceThresholdSq || tipDistanceSq < tipDistanceThresholdSq) {
+                const item = { object: candidate, score };
                 if (!closest || score < closest.score) {
-                    closest = { object: candidate, score };
+                    closest = item;
+                }
+                if (isXRToolLikeRoot(candidate) && (!closestTool || score < closestTool.score)) {
+                    closestTool = item;
                 }
             }
         });
 
-        return closest?.object || null;
+        return closestTool?.object || closest?.object || null;
     };
 
     const getXRReachFallbackRoot = (candidates = [], maxDistance = 2.3) => {
@@ -2234,13 +2291,21 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const intersects = raycaster.intersectObjects(candidates, true);
         raycaster.far = oldFar;
 
-        for (const hit of intersects) {
-            const root = resolveDraggableRoot(hit.object);
-            if (root) return root;
-        }
+        const rayHitRoot = getPreferredRootFromRayHits(intersects);
+        if (rayHitRoot) return rayHitRoot;
 
-        const handFallbackRoot = getHandRayFallbackRoot(candidates);
+        const handFallbackRoot = getHandRayFallbackRoot(
+            candidates,
+            8,
+            aimResult.hasAimEntry
+                ? { expandScalar: 0.18, rayDistanceThresholdSq: 0.08, tipDistanceThresholdSq: 0.08 }
+                : undefined
+        );
         if (handFallbackRoot) return handFallbackRoot;
+
+        if (controlsManager.isXRPresenting?.()) {
+            return null;
+        }
 
         const reachFallbackRoot = getXRReachFallbackRoot(candidates);
         if (reachFallbackRoot) return reachFallbackRoot;
@@ -2498,13 +2563,29 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             }
         };
 
-        runHandInteraction(controller);
-
-        let afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
-        if (!controlsManager.isXRPresenting?.() && !beforeHeld && afterHeld === beforeHeld) {
-            runHandInteraction(null);
-            afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
+        const previousForcedAimTarget = activeXRForcedAimTarget;
+        let afterHeld = beforeHeld;
+        if (controlsManager.isXRPresenting?.()) {
+            const candidates = getInteractionCandidates();
+            const aimInfo = getXRAimTargetInfo(controller, candidates);
+            activeXRForcedAimTarget =
+                aimInfo.root ||
+                (!aimInfo.hasAimEntry ? getUniqueXRAimTargetRoot(candidates) : null) ||
+                activeXRForcedAimTarget;
         }
+
+        try {
+            runHandInteraction(controller);
+
+            afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
+            if (!controlsManager.isXRPresenting?.() && !beforeHeld && afterHeld === beforeHeld) {
+                runHandInteraction(null);
+                afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
+            }
+        } finally {
+            activeXRForcedAimTarget = previousForcedAimTarget;
+        }
+
         const toggled = Boolean(beforeHeld) || beforeHeld !== afterHeld;
 
         if (toggled) {
@@ -2936,8 +3017,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const controller = getXRControllerForPointerFallback();
         if (!controller) return;
 
-        if (handleXRPressAsHandInteraction(controller, 'pointer', { markPressed: true })) {
-            window.addEventListener('pointerup', () => releaseXRPress(controller, 'pointer'), { once: true, capture: true });
+        const handled = handleXRPressAsHandInteraction(controller, 'pointer', { markPressed: true });
+        window.addEventListener('pointerup', () => releaseXRPress(controller, 'pointer'), { once: true, capture: true });
+
+        if (handled) {
             event.preventDefault();
             event.stopImmediatePropagation();
         }

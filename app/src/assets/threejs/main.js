@@ -7,15 +7,15 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260618-position-save2';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-position-save2';
+import { initControls } from './controls.js?v=20260618-vr-camera-aim-lower';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-vr-camera-aim-lower';
 import { initChatEvents } from '../js/chatEvents.js?v=20260618-room-tables';
-import { initLabLogic } from './lab_logic.js?v=20260618-position-save2';
+import { initLabLogic } from './lab_logic.js?v=20260618-vr-camera-aim-lower';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260618-add-table3';
 import { notifyLab } from './labNotifier.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-position-save2';
-import { pouringEffect, pouringState } from './interaction.js?v=20260618-position-save2';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-vr-camera-aim-lower';
+import { pouringEffect, pouringState } from './interaction.js?v=20260618-vr-camera-aim-lower';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -125,6 +125,7 @@ const xrControllerSlots = [renderer.xr.getController(0), renderer.xr.getControll
 const xrControllerGripSlots = [renderer.xr.getControllerGrip(0), renderer.xr.getControllerGrip(1)];
 const xrReticle = createXRControllerReticle(scene, xrControllerSlots);
 controlsManager.xrControllerAimTargets = xrReticle.aimTargets;
+controlsManager.getXRAimRay = (targetRay = null) => xrReticle.copyAimRay(targetRay);
 
 xrControllerSlots.forEach((controller, index) => {
     const grip = xrControllerGripSlots[index];
@@ -475,8 +476,26 @@ function createXRControllerReticle(scene, controllers) {
     const aimTargets = new Map();
     const origin = new three.Vector3();
     const direction = new three.Vector3();
+    const cameraUp = new three.Vector3();
+    const vrAimDownOffset = 0.55;
     const fallbackDistance = 1.8;
     const maxDistance = 8;
+
+    const copyGazeRay = (targetRay = null) => {
+        camera.updateMatrixWorld(true);
+        camera.getWorldPosition(origin);
+        camera.getWorldDirection(direction);
+        cameraUp.set(0, 1, 0).transformDirection(camera.matrixWorld).normalize();
+        direction.addScaledVector(cameraUp, -vrAimDownOffset).normalize();
+
+        if (targetRay?.origin && targetRay?.direction) {
+            targetRay.origin.copy(origin);
+            targetRay.direction.copy(direction).normalize();
+            return targetRay;
+        }
+
+        return new three.Ray(origin.clone(), direction.clone().normalize());
+    };
 
     const resolveReticleRoot = (hitObject) => {
         let node = hitObject;
@@ -493,6 +512,7 @@ function createXRControllerReticle(scene, controllers) {
     return {
         object: root,
         aimTargets,
+        copyAimRay: copyGazeRay,
         update(isPresenting) {
             root.visible = isPresenting;
             if (!isPresenting) {
@@ -501,41 +521,45 @@ function createXRControllerReticle(scene, controllers) {
                 return;
             }
 
-            controllers.forEach((controller, index) => {
-                const marker = markers[index];
-                const hasInput = Boolean(controller?.userData?.inputSource);
+            copyGazeRay(raycaster.ray);
+            raycaster.near = 0.02;
+            raycaster.far = maxDistance;
+            const xrCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null;
+            raycaster.camera = xrCamera?.isArrayCamera ? xrCamera.cameras?.[0] || camera : xrCamera || camera;
 
-                if (!controller || !hasInput) {
-                    marker.visible = false;
-                    if (controller) aimTargets.set(controller, null);
-                    return;
-                }
-
-                controller.updateMatrixWorld(true);
-                controller.getWorldPosition(origin);
-                direction.set(0, 0, -1).transformDirection(controller.matrixWorld).normalize();
-
-                raycaster.ray.origin.copy(origin);
-                raycaster.ray.direction.copy(direction);
-                raycaster.near = 0.02;
-                raycaster.far = maxDistance;
-                const xrCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null;
-                raycaster.camera = xrCamera?.isArrayCamera ? xrCamera.cameras?.[0] || camera : xrCamera || camera;
-
-                const hits = raycaster.intersectObjects(draggableObjects, true);
-                let hit = null;
-                let aimedRoot = null;
-                for (const item of hits) {
-                    const root = resolveReticleRoot(item.object);
-                    if (!root) continue;
+            const hits = raycaster.intersectObjects(draggableObjects, true);
+            let hit = null;
+            let aimedRoot = null;
+            let toolHit = null;
+            let toolRoot = null;
+            for (const item of hits) {
+                const root = resolveReticleRoot(item.object);
+                if (!root) continue;
+                if (!hit) {
                     hit = item;
                     aimedRoot = root;
+                }
+                if (!root.userData?.isTable && !root.userData?.isMovableTable && !root.userData?.isFurniture) {
+                    toolHit = item;
+                    toolRoot = root;
                     break;
                 }
-                const distance = hit ? Math.max(hit.distance - 0.02, 0.08) : fallbackDistance;
-                aimTargets.set(controller, aimedRoot);
+            }
+            if (toolRoot) {
+                hit = toolHit;
+                aimedRoot = toolRoot;
+            }
 
-                marker.visible = true;
+            controllers.forEach(controller => {
+                if (controller) aimTargets.set(controller, aimedRoot);
+            });
+
+            const distance = hit
+                ? Math.min(Math.max(hit.distance - 0.02, 0.08), fallbackDistance)
+                : fallbackDistance;
+            markers.forEach((marker, index) => {
+                marker.visible = index === 0;
+                if (!marker.visible) return;
                 marker.position.copy(origin).addScaledVector(direction, distance);
                 marker.scale.setScalar(hit ? 1.35 : 1);
             });
