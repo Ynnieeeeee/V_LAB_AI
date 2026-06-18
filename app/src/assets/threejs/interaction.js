@@ -2057,6 +2057,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     }
 
     let activeXRHandRayController = null;
+    let activeXRForcedAimTarget = null;
     const handRayOrigin = new three.Vector3();
     const handRayDirection = new three.Vector3();
     const handRayEnd = new three.Vector3();
@@ -2127,6 +2128,32 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return { hasTarget: false, root: null };
     };
 
+    const getExactXRAimTargetRoot = (controller, candidates = []) => {
+        if (!controller?.isObject3D) return null;
+
+        for (const linkedController of getXRLinkedAimControllers(controller)) {
+            const target = controlsManager.xrControllerAimTargets?.get(linkedController);
+            const root = resolveAimedRoot(target, candidates);
+            if (root) return root;
+        }
+
+        return null;
+    };
+
+    const getAnyExactXRAimTargetRoot = (candidates = []) => {
+        const controllers = [
+            ...(controlsManager.xrControllerSlots || []),
+            ...(controlsManager.xrControllerGripSlots || [])
+        ];
+
+        for (const controller of controllers) {
+            const root = getExactXRAimTargetRoot(controller, candidates);
+            if (root) return root;
+        }
+
+        return null;
+    };
+
     const getHandRayFallbackRoot = (candidates = [], maxDistance = 8) => {
         if (!controlsManager.isXRPresenting?.() || !activeXRHandRayController?.isObject3D) return null;
 
@@ -2195,6 +2222,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     const getHandInteractionTargetRoot = (candidates = []) => {
         setHandInteractionRaycaster();
+
+        const forcedAimRoot = resolveAimedRoot(activeXRForcedAimTarget, candidates);
+        if (forcedAimRoot) return forcedAimRoot;
 
         const aimResult = getXRHandAimResult(candidates);
         if (aimResult.hasTarget) return aimResult.root;
@@ -2395,6 +2425,17 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     const xrToggleDebounceMs = 140;
     const xrGrabButtonNames = new Set(['trigger', 'grip']);
     const xrPourButtonNames = new Set(['buttonA', 'buttonB', 'buttonX', 'buttonY']);
+    const xboxGamepadIdPattern = /xbox|xinput|360/i;
+    const xboxPourButtons = [
+        { index: 0, name: 'xboxA' },
+        { index: 1, name: 'xboxB' },
+        { index: 2, name: 'xboxX' },
+        { index: 3, name: 'xboxY' }
+    ];
+    const xboxGrabState = {
+        left: { pressed: false, activeInputName: null, lastRetryAt: 0, retryWhenEmpty: false },
+        right: { pressed: false, activeInputName: null, lastRetryAt: 0, retryWhenEmpty: false }
+    };
 
     const getXRControllerHandedness = (controller) => {
         const handedness = controller?.userData?.handedness || controller?.userData?.inputSource?.handedness;
@@ -2487,6 +2528,81 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         });
         if (pressedIndex < 0) return null;
         return names[pressedIndex] || `button${pressedIndex}`;
+    };
+
+    const getGamepadButtonValue = (gamepad, index) => Number(gamepad?.buttons?.[index]?.value || 0);
+
+    const isGamepadButtonActive = (gamepad, index) => {
+        const button = gamepad?.buttons?.[index];
+        return Boolean(button?.pressed || Number(button?.value || 0) > 0.2);
+    };
+
+    const getXboxGrabButton = (gamepad, handedness = 'right') => {
+        const candidates = handedness === 'left'
+            ? [
+                { index: 6, name: 'xboxLT' },
+                { index: 4, name: 'xboxLB' }
+            ]
+            : [
+                { index: 7, name: 'xboxRT' },
+                { index: 5, name: 'xboxRB' }
+            ];
+
+        return candidates.find(candidate => isGamepadButtonActive(gamepad, candidate.index)) || null;
+    };
+
+    const getXboxPourButton = (gamepad) =>
+        xboxPourButtons.find(candidate => isGamepadButtonActive(gamepad, candidate.index)) || null;
+
+    const isXboxLikeGamepad = (gamepad) => Boolean(
+        gamepad &&
+        (
+            xboxGamepadIdPattern.test(gamepad.id || '') ||
+            (gamepad.mapping === 'standard' && (gamepad.buttons?.length || 0) >= 16)
+        )
+    );
+
+    const getGamepadKey = (gamepad) => {
+        if (!gamepad) return null;
+        const index = Number.isFinite(gamepad.index) ? gamepad.index : 'unknown';
+        return `${index}:${gamepad.id || ''}`;
+    };
+
+    const getNavigatorGamepads = () => {
+        if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return [];
+        return Array.from(navigator.getGamepads()).filter(Boolean);
+    };
+
+    const getNavigatorXboxGamepads = () =>
+        getNavigatorGamepads().filter(gamepad => gamepad.connected !== false && isXboxLikeGamepad(gamepad));
+
+    window.vlabGetXboxGamepads = () => getNavigatorXboxGamepads().map(gamepad => ({
+        id: gamepad.id || '',
+        index: gamepad.index,
+        mapping: gamepad.mapping || '',
+        connected: gamepad.connected !== false,
+        axes: Array.from(gamepad.axes || []),
+        buttons: [0, 1, 2, 3, 4, 5, 6, 7].reduce((state, index) => {
+            state[`B${index}`] = getGamepadButtonValue(gamepad, index);
+            return state;
+        }, {})
+    }));
+
+    const updateXboxGamepadDebugState = (gamepad) => {
+        window.vlabXboxGamepadState = gamepad ? {
+            id: gamepad.id || '',
+            index: gamepad.index,
+            mapping: gamepad.mapping || '',
+            connected: gamepad.connected !== false,
+            buttons: [0, 1, 2, 3, 4, 5, 6, 7].reduce((state, index) => {
+                state[`B${index}`] = getGamepadButtonValue(gamepad, index);
+                return state;
+            }, {}),
+            grabLeft: Boolean(getXboxGrabButton(gamepad, 'left')),
+            grabRight: Boolean(getXboxGrabButton(gamepad, 'right')),
+            pour: getXboxPourButton(gamepad)?.name || null,
+            updatedAt: performance.now()
+        } : null;
     };
 
     const getXRControllerForInputSource = (inputSource, fallbackIndex = 0) => {
@@ -2638,12 +2754,125 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         xrButtonState.set(controller, previous);
     };
 
+    const getXRTriggerControllerForXboxHand = (handedness = 'right') => {
+        const xrControllerSlots = controlsManager.xrControllerSlots || [];
+        const desiredSlot = handedness === 'left' ? 1 : 0;
+
+        return xrControllerSlots.find(controller =>
+            controller?.userData?.handedness === handedness ||
+            controller?.userData?.inputSource?.handedness === handedness
+        ) ||
+            xrControllerSlots.find(controller => controller?.userData?.slot === desiredSlot) ||
+            xrControllerSlots[desiredSlot] ||
+            null;
+    };
+
+    const handleXboxTriggerPress = (handedness = 'right') => {
+        const controller = getXRTriggerControllerForXboxHand(handedness);
+        if (!controller) return false;
+
+        const previousForcedAimTarget = activeXRForcedAimTarget;
+        const candidates = getInteractionCandidates();
+        activeXRForcedAimTarget =
+            getExactXRAimTargetRoot(controller, candidates) ||
+            getAnyExactXRAimTargetRoot(candidates);
+
+        try {
+            const toggled = handleXRPressAsHandInteraction(controller, 'trigger', { markPressed: true });
+            window.vlabXboxLastGrabAction = {
+                handedness,
+                toggled,
+                triggerController: controller.name || null,
+                triggerSlot: controller.userData?.slot ?? null,
+                exactAimTarget: activeXRForcedAimTarget?.name ||
+                    activeXRForcedAimTarget?.userData?.name_tool_vi ||
+                    activeXRForcedAimTarget?.userData?.toolData?.name_tool_vi ||
+                    null,
+                at: performance.now()
+            };
+            return toggled;
+        } finally {
+            activeXRForcedAimTarget = previousForcedAimTarget;
+        }
+    };
+
+    window.vlabXboxForceGrabLeft = () => handleXboxTriggerPress('left');
+    window.vlabXboxForceGrabRight = () => handleXboxTriggerPress('right');
+
+    const releaseXboxTriggerPress = (handedness = 'right') => {
+        const controller = getXRTriggerControllerForXboxHand(handedness);
+        if (controller) releaseXRPress(controller, 'trigger');
+    };
+
+    const processXboxGrabButton = (gamepad, handedness = 'right') => {
+        const grabButton = getXboxGrabButton(gamepad, handedness);
+        const pressed = Boolean(grabButton);
+        const state = xboxGrabState[handedness];
+        if (!state) return;
+
+        if (pressed && !state.pressed) {
+            const wasHolding = handedness === 'right' ? heldObjectRight : heldObjectLeft;
+            state.pressed = true;
+            state.activeInputName = grabButton.name;
+            state.lastRetryAt = performance.now();
+            state.retryWhenEmpty = !wasHolding;
+            handleXboxTriggerPress(handedness);
+            return;
+        }
+
+        if (pressed && state.pressed && state.retryWhenEmpty) {
+            const now = performance.now();
+            const isHolding = handedness === 'right' ? heldObjectRight : heldObjectLeft;
+            if (isHolding) {
+                state.retryWhenEmpty = false;
+                return;
+            }
+
+            if (now - (state.lastRetryAt || 0) > 160) {
+                state.lastRetryAt = now;
+                handleXboxTriggerPress(handedness);
+            }
+            return;
+        }
+
+        if (!pressed && state.pressed) {
+            state.pressed = false;
+            state.activeInputName = null;
+            state.retryWhenEmpty = false;
+            releaseXboxTriggerPress(handedness);
+        }
+    };
+
+    const processXboxPourButtons = (gamepad) => {
+        const controller = getXRTriggerControllerForXboxHand('right');
+        if (!controller) return;
+
+        const pourButton = getXboxPourButton(gamepad);
+        processXRPourButton(controller, pourButton?.name || null, Boolean(pourButton));
+    };
+
+    const processXboxGamepadButtons = (gamepad, processedGamepadKeys = null) => {
+        if (!isXboxLikeGamepad(gamepad)) return false;
+
+        const gamepadKey = getGamepadKey(gamepad);
+        if (gamepadKey && processedGamepadKeys?.has(gamepadKey)) return false;
+        if (gamepadKey) processedGamepadKeys?.add(gamepadKey);
+
+        updateXboxGamepadDebugState(gamepad);
+        processXboxPourButtons(gamepad);
+        processXboxGrabButton(gamepad, 'left');
+        processXboxGrabButton(gamepad, 'right');
+        return true;
+    };
+
     const updateXRPressButtons = () => {
         refreshXRPressSessionListeners();
 
         const xrControllerSlots = controlsManager.xrControllerSlots || [];
         const sessionInputSources = Array.from(controlsManager.getXRSession?.()?.inputSources || []);
         const processedControllers = new Set();
+        const processedGamepadKeys = new Set();
+        const navigatorXboxGamepads = getNavigatorXboxGamepads();
 
         sessionInputSources.forEach((inputSource, index) => {
             const controller = getXRControllerForInputSource(inputSource, index);
@@ -2651,16 +2880,22 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             refreshXRControllerInputSource(controller, inputSource);
             processedControllers.add(controller);
+            if (processXboxGamepadButtons(inputSource.gamepad, processedGamepadKeys)) return;
             processXRControllerButtons(controller, inputSource.gamepad?.buttons || []);
         });
 
         xrControllerSlots.forEach((controller) => {
             if (processedControllers.has(controller)) return;
-            const buttons = controller?.userData?.inputSource?.gamepad?.buttons ||
-                controller?.userData?.gamepad?.buttons ||
-                [];
+            const gamepad = controller?.userData?.inputSource?.gamepad || controller?.userData?.gamepad || null;
+            if (processXboxGamepadButtons(gamepad, processedGamepadKeys)) return;
+            const buttons = gamepad?.buttons || [];
             processXRControllerButtons(controller, buttons);
         });
+
+        processXboxGamepadButtons(controlsManager.getExternalXRGamepad?.(), processedGamepadKeys);
+        navigatorXboxGamepads.forEach(gamepad => processXboxGamepadButtons(gamepad, processedGamepadKeys));
+
+        if (!processedGamepadKeys.size && !navigatorXboxGamepads.length) updateXboxGamepadDebugState(null);
     };
 
     const setupXRPressControls = () => {
@@ -2729,6 +2964,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             null;
     };
 
+    const normalizeXRRotationAxes = (axes = {}) => ({
+        x: Math.abs(axes.x || 0) > xrHeldRotateDeadzone ? axes.x : 0,
+        y: Math.abs(axes.y || 0) > xrHeldRotateDeadzone ? axes.y : 0
+    });
+
     const getXRRotationAxes = (controller) => {
         const axes = controller?.userData?.inputSource?.gamepad?.axes || controller?.userData?.gamepad?.axes || [];
         const xPrimary = axes[2] ?? 0;
@@ -2742,10 +2982,10 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             ? yPrimary
             : yFallback;
 
-        return {
-            x: Math.abs(x) > xrHeldRotateDeadzone ? x : 0,
-            y: Math.abs(y) > xrHeldRotateDeadzone ? y : 0
-        };
+        const controllerAxes = normalizeXRRotationAxes({ x, y });
+        if (controllerAxes.x || controllerAxes.y) return controllerAxes;
+
+        return normalizeXRRotationAxes(controlsManager.getExternalXRGamepadAxes?.('right'));
     };
 
     const rotateHeldToolWithXRStick = (object, handedness, delta) => {
@@ -2772,8 +3012,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     const updateXRHeldToolRotation = (delta = 0) => {
         if (!controlsManager.isXRPresenting?.()) return false;
-        const heldTool = heldObjectRight || heldObjectLeft;
-        return rotateHeldToolWithXRStick(heldTool, 'right', delta);
+        return rotateHeldToolWithXRStick(heldObjectRight, 'right', delta);
     };
 
     controlsManager.updateXRHeldToolRotation = updateXRHeldToolRotation;
