@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { registerDraggableObject } from './interaction.js?v=20260618-add-table3';
+import { registerDraggableObject } from './interaction.js?v=20260618-vr-aim-drop-fall';
 
 export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
     try {

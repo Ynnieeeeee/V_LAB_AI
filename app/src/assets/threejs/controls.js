@@ -1,7 +1,7 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260618-add-table3';
+import { setArmsVisibility } from './interaction.js?v=20260618-vr-aim-drop-fall';
 
 function isEditableTarget(event) {
     const target = event?.target;

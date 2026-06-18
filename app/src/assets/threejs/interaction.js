@@ -352,6 +352,130 @@ function liftObjectBottomToSurface(object, surfaceY, clearance = 0.01) {
     return true;
 }
 
+const DROP_SURFACE_CLEARANCE = 0.01;
+const DROP_FLOATING_EPSILON = 0.005;
+const DROP_GRAVITY = 8.5;
+const DROP_MAX_STEP = 0.28;
+
+function isObjectLockedToAssembly(object) {
+    const data = object?.userData;
+    if (!data) return false;
+    return Boolean(
+        data.isOnSupportStand ||
+        data.isSnappedToSupport ||
+        data.isSnappedToHeatingSource ||
+        data.isUnderSupportStand ||
+        data.isAssemblySnapped ||
+        data.isAttached ||
+        data.parentTool ||
+        data.parentToolObject
+    );
+}
+
+function getDropSurfaceBelowObject(object) {
+    if (!object?.isObject3D) return { surfaceY: 0, surface: null, type: 'floor' };
+
+    object.updateMatrixWorld(true);
+    const objectBox = new three.Box3().setFromObject(object);
+    if (objectBox.isEmpty()) return { surfaceY: 0, surface: null, type: 'floor' };
+
+    const objectCenter = objectBox.getCenter(new three.Vector3());
+    let bestSurface = { surfaceY: 0, surface: null, type: 'floor' };
+
+    getLabTables(object).forEach(table => {
+        table.updateMatrixWorld(true);
+        const tableBox = new three.Box3().setFromObject(table);
+        if (tableBox.isEmpty() || !Number.isFinite(tableBox.max.y)) return;
+
+        const paddedTableBox = tableBox.clone().expandByVector(new three.Vector3(0.08, 0, 0.08));
+        const isOverTable =
+            boxesOverlapXZ(objectBox, paddedTableBox) ||
+            (
+                objectCenter.x >= paddedTableBox.min.x &&
+                objectCenter.x <= paddedTableBox.max.x &&
+                objectCenter.z >= paddedTableBox.min.z &&
+                objectCenter.z <= paddedTableBox.max.z
+            );
+
+        if (!isOverTable || tableBox.max.y <= bestSurface.surfaceY) return;
+        bestSurface = { surfaceY: tableBox.max.y, surface: table, type: 'table' };
+    });
+
+    return bestSurface;
+}
+
+function alignObjectBottomToY(object, targetBottomY) {
+    if (!object?.isObject3D || !Number.isFinite(targetBottomY)) return false;
+    object.updateMatrixWorld(true);
+    const box = new three.Box3().setFromObject(object);
+    if (box.isEmpty() || !Number.isFinite(box.min.y)) return false;
+
+    object.position.y += targetBottomY - box.min.y;
+    object.updateMatrixWorld(true);
+    updateOffsetToFloor(object);
+    return true;
+}
+
+function clearDropFallState(object) {
+    if (object?.userData) {
+        delete object.userData.dropFallVelocityY;
+        delete object.userData.dropFallTargetBottomY;
+    }
+    fallingDropObjects.delete(object);
+}
+
+function beginDropFall(object, targetBottomY) {
+    if (!object?.userData || !Number.isFinite(targetBottomY)) return false;
+    object.userData.dropFallVelocityY = 0;
+    object.userData.dropFallTargetBottomY = targetBottomY;
+    fallingDropObjects.add(object);
+    return true;
+}
+
+function settleDroppedObjectOnSurface(object, options = {}) {
+    if (!object?.isObject3D) return false;
+    if (isObjectLockedToAssembly(object)) {
+        clearDropFallState(object);
+        return false;
+    }
+
+    object.updateMatrixWorld(true);
+    const box = new three.Box3().setFromObject(object);
+    if (box.isEmpty() || !Number.isFinite(box.min.y)) return false;
+
+    const surface = getDropSurfaceBelowObject(object);
+    const targetBottomY = surface.surfaceY + (options.clearance ?? DROP_SURFACE_CLEARANCE);
+    const deltaY = targetBottomY - box.min.y;
+    const isFloating = box.min.y > targetBottomY + (options.floatingEpsilon ?? DROP_FLOATING_EPSILON);
+    const isBelowSurface = box.min.y < targetBottomY - 0.001;
+
+    if (!isFloating && !isBelowSurface) {
+        clearDropFallState(object);
+        updateOffsetToFloor(object);
+        return false;
+    }
+
+    if (options.animate && isFloating) {
+        return beginDropFall(object, targetBottomY);
+    }
+
+    object.position.y += deltaY;
+    object.updateMatrixWorld(true);
+    updateOffsetToFloor(object);
+    if (pouringEffect) pouringEffect.invalidateCavity(object);
+    clearDropFallState(object);
+    return true;
+}
+
+function getHorizontalDropSurfaceYFromHit(hit) {
+    if (!hit?.object) return null;
+    if (isTableObject(hit.object)) return getTableSurfaceYForObject(hit.object);
+    if (!hit.face?.normal) return null;
+
+    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    return normal.y > 0.65 ? hit.point.y : null;
+}
+
 function getObjectWorldPositionClone(object) {
     const position = new three.Vector3();
     object?.updateMatrixWorld?.(true);
@@ -1070,6 +1194,52 @@ const movePlane = new three.Plane(new three.Vector3(0, 1, 0), 0);
 const planeIntersectPoint = new three.Vector3();
 let selectedObjectForMenu = null;
 let draggedObject = null;
+const fallingDropObjects = new Set();
+
+export function updateDroppedObjectFalls(delta = 0.016) {
+    const dt = Math.min(0.05, Math.max(0.001, Number(delta) || 0.016));
+
+    fallingDropObjects.forEach(object => {
+        if (
+            !object?.isObject3D ||
+            !object.parent ||
+            object.visible === false ||
+            object.userData?.isDeleted === true ||
+            object === heldObjectRight ||
+            object === heldObjectLeft ||
+            object === draggedObject ||
+            isObjectLockedToAssembly(object)
+        ) {
+            clearDropFallState(object);
+            return;
+        }
+
+        object.updateMatrixWorld(true);
+        const box = new three.Box3().setFromObject(object);
+        if (box.isEmpty() || !Number.isFinite(box.min.y)) {
+            clearDropFallState(object);
+            return;
+        }
+
+        const surface = getDropSurfaceBelowObject(object);
+        const targetBottomY = surface.surfaceY + DROP_SURFACE_CLEARANCE;
+        let velocityY = Number(object.userData.dropFallVelocityY || 0);
+        velocityY -= DROP_GRAVITY * dt;
+        const stepY = Math.max(velocityY * dt, -DROP_MAX_STEP);
+
+        if (box.min.y + stepY <= targetBottomY) {
+            alignObjectBottomToY(object, targetBottomY);
+            clearDropFallState(object);
+            if (pouringEffect) pouringEffect.invalidateCavity(object);
+            return;
+        }
+
+        object.position.y += stepY;
+        object.userData.dropFallVelocityY = velocityY;
+        object.userData.dropFallTargetBottomY = targetBottomY;
+        object.updateMatrixWorld(true);
+    });
+}
 
 async function persistToolRotation(object) {
     const idTool = object?.userData?.toolData?.id_tool || object?.userData?.id_tool;
@@ -1864,10 +2034,47 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         raycaster.setFromCamera({ x: 0, y: 0 }, getHandRayCamera());
     };
 
-    const getXRHandAimedRoot = (candidates = []) => {
-        if (!controlsManager.isXRPresenting?.() || !activeXRHandRayController?.isObject3D) return null;
-        const aimedRoot = resolveDraggableRoot(controlsManager.xrControllerAimTargets?.get(activeXRHandRayController));
+    const resolveAimedRoot = (target, candidates = []) => {
+        const aimedRoot = resolveDraggableRoot(target);
         return aimedRoot && (!candidates.length || candidates.includes(aimedRoot)) ? aimedRoot : null;
+    };
+
+    const getXRLinkedAimControllers = (controller) => {
+        const linked = new Set();
+        const add = (item) => {
+            if (item?.isObject3D) linked.add(item);
+        };
+
+        add(controller);
+        add(controller?.userData?.targetRay);
+        add(controller?.userData?.grip);
+
+        const slot = controller?.userData?.slot;
+        const handedness = controller?.userData?.handedness || controller?.userData?.inputSource?.handedness;
+        [...(controlsManager.xrControllerSlots || []), ...(controlsManager.xrControllerGripSlots || [])].forEach(candidate => {
+            if (!candidate?.isObject3D) return;
+            if (slot !== undefined && candidate.userData?.slot === slot) add(candidate);
+            if (handedness && (candidate.userData?.handedness || candidate.userData?.inputSource?.handedness) === handedness) add(candidate);
+        });
+
+        return Array.from(linked);
+    };
+
+    const getXRHandAimResult = (candidates = []) => {
+        if (!controlsManager.isXRPresenting?.() || !activeXRHandRayController?.isObject3D) {
+            return { hasTarget: false, root: null };
+        }
+
+        for (const controller of getXRLinkedAimControllers(activeXRHandRayController)) {
+            const target = controlsManager.xrControllerAimTargets?.get(controller);
+            if (!target) continue;
+            return {
+                hasTarget: true,
+                root: resolveAimedRoot(target, candidates)
+            };
+        }
+
+        return { hasTarget: false, root: null };
     };
 
     const getHandRayFallbackRoot = (candidates = [], maxDistance = 8) => {
@@ -1939,8 +2146,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     const getHandInteractionTargetRoot = (candidates = []) => {
         setHandInteractionRaycaster();
 
-        const aimedRoot = getXRHandAimedRoot(candidates);
-        if (aimedRoot) return aimedRoot;
+        const aimResult = getXRHandAimResult(candidates);
+        if (aimResult.hasTarget) return aimResult.root;
 
         const oldFar = raycaster.far;
         raycaster.far = controlsManager.isXRPresenting?.() ? 8 : oldFar;
@@ -2012,7 +2219,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
             if (!returnedToCabinet) {
             let dropSurfaceY = null;
-            if (sceneIntersects.length > 0) {
+            const isXRDrop = controlsManager.isXRPresenting?.() === true;
+            if (!isXRDrop && sceneIntersects.length > 0) {
                 // Ưu tiên tìm mặt bàn hoặc sàn nhà
                 let bestHit = sceneIntersects[0];
                 for (let i = 0; i < sceneIntersects.length; i++) {
@@ -2023,9 +2231,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                         break;
                     }
                 }
-                dropSurfaceY = isTableObject(bestHit.object) ? getTableSurfaceYForObject(bestHit.object) : bestHit.point.y;
+                dropSurfaceY = getHorizontalDropSurfaceYFromHit(bestHit);
                 currentHeld.position.copy(bestHit.point);
-            } else {
+            } else if (!isXRDrop) {
                 // Nếu không chạm gì, đặt phía trước người chơi 1m
                 const handCamera = getHandRayCamera();
                 const forward = new three.Vector3();
@@ -2034,6 +2242,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 currentHeld.position.copy(handRayCameraPosition).add(forward.multiplyScalar(1));
                 currentHeld.position.y = 0;
                 dropSurfaceY = 0;
+            } else {
+                dropSurfaceY = getDropSurfaceBelowObject(currentHeld).surfaceY;
             }
 
             // Bảo toàn scale sau khi đổi vị trí đặt xuống.
@@ -2047,13 +2257,14 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             const bottomY = box.min.y;
             // Tính toán khoảng cách chênh lệch để vật thể chạm đất/bàn
             const bottomOffset = currentHeld.position.y - bottomY;
-            currentHeld.position.y += bottomOffset;
+            if (!isXRDrop) currentHeld.position.y += bottomOffset;
             updateOffsetToFloor(currentHeld);
 
             completeAssemblyDrop(currentHeld);
             resolvePlacementOverlapAfterLegacyLogic(currentHeld);
             restoreCustomScale(currentHeld, savedScale);
             liftObjectBottomToSurface(currentHeld, dropSurfaceY);
+            settleDroppedObjectOnSurface(currentHeld, { animate: isXRDrop });
             currentHeld.updateMatrixWorld(true);
             } else {
                 currentHeld.updateMatrixWorld(true);
@@ -2198,7 +2409,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         runHandInteraction(controller);
 
         let afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
-        if (!beforeHeld && afterHeld === beforeHeld) {
+        if (!controlsManager.isXRPresenting?.() && !beforeHeld && afterHeld === beforeHeld) {
             runHandInteraction(null);
             afterHeld = isRightHand ? heldObjectRight : heldObjectLeft;
         }

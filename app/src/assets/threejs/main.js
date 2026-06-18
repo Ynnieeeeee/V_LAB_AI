@@ -7,15 +7,15 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260618-add-table3';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-add-table3';
+import { initControls } from './controls.js?v=20260618-vr-aim-drop-fall';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-vr-aim-drop-fall';
 import { initChatEvents } from '../js/chatEvents.js?v=20260527-liquid-soft-waves';
 import { initLabLogic } from './lab_logic.js?v=20260609-network-topology';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260618-add-table3';
 import { notifyLab } from './labNotifier.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-add-table3';
-import { pouringEffect, pouringState } from './interaction.js?v=20260618-add-table3';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-vr-aim-drop-fall';
+import { pouringEffect, pouringState } from './interaction.js?v=20260618-vr-aim-drop-fall';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -314,6 +314,18 @@ function createXRControllerReticle(scene, controllers) {
     const fallbackDistance = 1.8;
     const maxDistance = 8;
 
+    const resolveReticleRoot = (hitObject) => {
+        let node = hitObject;
+        while (node) {
+            if (draggableObjects.includes(node)) return node;
+            if (node.userData?.root && draggableObjects.includes(node.userData.root)) return node.userData.root;
+            if (node.userData?.container && draggableObjects.includes(node.userData.container)) return node.userData.container;
+            if (node.userData?.ignoreInteraction || node.userData?.isInternalChemicalVisual) return null;
+            node = node.parent;
+        }
+        return null;
+    };
+
     return {
         object: root,
         aimTargets,
@@ -347,9 +359,17 @@ function createXRControllerReticle(scene, controllers) {
                 raycaster.camera = xrCamera?.isArrayCamera ? xrCamera.cameras?.[0] || camera : xrCamera || camera;
 
                 const hits = raycaster.intersectObjects(draggableObjects, true);
-                const hit = hits.find(item => item.object?.userData?.root || item.object?.userData?.isInteractable);
+                let hit = null;
+                let aimedRoot = null;
+                for (const item of hits) {
+                    const root = resolveReticleRoot(item.object);
+                    if (!root) continue;
+                    hit = item;
+                    aimedRoot = root;
+                    break;
+                }
                 const distance = hit ? Math.max(hit.distance - 0.02, 0.08) : fallbackDistance;
-                aimTargets.set(controller, hit?.object || null);
+                aimTargets.set(controller, aimedRoot);
 
                 marker.visible = true;
                 marker.position.copy(origin).addScaledVector(direction, distance);
@@ -373,6 +393,7 @@ function animate() {
             controlsManager.updateXRHeldToolRotation?.(delta);
         }
         if (controlsManager.fps.isLocked || isXRPresenting) updateArmsAnimation(performance.now() / 1000, isMoving);
+        updateDroppedObjectFalls(delta);
         labAssemblyManager.syncObjects();
         assemblyGraphManager.syncObjects();
         assemblyGraphManager.update(delta);
