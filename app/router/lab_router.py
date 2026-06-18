@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 import math
 import time
 import uuid
@@ -106,6 +107,7 @@ async def generate_lab(
             "rotation_x": item.get("rotation_x", 0),
             "rotation_y": item.get("rotation_y", 0),
             "rotation_z": item.get("rotation_z", 0),
+            "positions": item.get("positions", {}),
             "capabilities": item.get("capabilities", []),
             "ports": item.get("ports", {}),
             "attach_points": item.get("attach_points", {}),
@@ -389,6 +391,67 @@ def _coerce_rotation(value, field_name: str) -> float:
     if not math.isfinite(numeric):
         raise HTTPException(status_code=400, detail=f"{field_name} nam ngoai gioi han")
     return numeric
+
+
+def _coerce_position(value, field_name: str) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field_name} khong hop le")
+    if not math.isfinite(numeric) or abs(numeric) > 1000:
+        raise HTTPException(status_code=400, detail=f"{field_name} nam ngoai gioi han")
+    return numeric
+
+
+@router.patch("/tools/{id_tool}/position")
+async def update_tool_position(
+    id_tool: str,
+    payload: dict,
+    session: Session = Depends(get_session),
+    user: Profiles = Depends(get_current_user),
+):
+    try:
+        tool_uuid = uuid.UUID(str(id_tool))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id_tool khong hop le")
+
+    ensure_tools_metadata_columns(session)
+    session.commit()
+
+    tool = session.get(Tools, tool_uuid)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
+
+    conversation = session.get(Conversations, tool.id_conv) if tool.id_conv else None
+    if conversation and conversation.id_profile != user.id_profile:
+        raise HTTPException(status_code=403, detail="Khong co quyen cap nhat dung cu nay")
+
+    instance_id = str(payload.get("instance_id") or "default")
+    raw_positions = tool.positions or {}
+    if isinstance(raw_positions, str):
+        try:
+            raw_positions = json.loads(raw_positions) or {}
+        except json.JSONDecodeError:
+            raw_positions = {}
+    positions = dict(raw_positions)
+    positions[instance_id] = {
+        "x": _coerce_position(payload.get("position_x"), "position_x"),
+        "y": _coerce_position(payload.get("position_y"), "position_y"),
+        "z": _coerce_position(payload.get("position_z"), "position_z"),
+    }
+
+    tool.positions = positions
+    tool.updated_at = datetime.utcnow()
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+    return {
+        "status": "success",
+        "id_tool": tool.id_tool,
+        "instance_id": instance_id,
+        "position": positions[instance_id],
+        "positions": tool.positions,
+    }
 
 
 @router.patch("/tools/{id_tool}/rotation")

@@ -332,6 +332,33 @@ function getPersistedToolScale(tool = {}, fallbackScale = 1) {
     return new three.Vector3(fallbackScale, fallbackScale, fallbackScale);
 }
 
+function getPersistedToolPosition(tool = {}, instanceId = null) {
+    let positions = tool.positions || {};
+    if (typeof positions === 'string') {
+        try {
+            positions = JSON.parse(positions) || {};
+        } catch (_) {
+            positions = {};
+        }
+    }
+
+    const candidates = [
+        instanceId ? positions[instanceId] : null,
+        positions.default
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+        const x = Number(candidate.x ?? candidate.position_x);
+        const y = Number(candidate.y ?? candidate.position_y);
+        const z = Number(candidate.z ?? candidate.position_z);
+        if ([x, y, z].every(Number.isFinite)) {
+            return new three.Vector3(x, y, z);
+        }
+    }
+
+    return null;
+}
+
 export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
     if (!tool.model_3d_url) return;
 
@@ -383,8 +410,10 @@ export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
         const offsetToFloor = naturalOffset * targetScale.y;
         const spawnY = 1.6 + offsetToFloor;
 
+        const persistedPosition = getPersistedToolPosition(tool, instanceId);
+
         model.scale.copy(targetScale);
-        model.position.set(spawnX, spawnY, spawnZ);
+        model.position.copy(persistedPosition || new three.Vector3(spawnX, spawnY, spawnZ));
         
         // Lưu metadata chuẩn
         model.userData.instanceId = instanceId;

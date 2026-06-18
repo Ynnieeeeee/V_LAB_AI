@@ -1231,6 +1231,7 @@ export function updateDroppedObjectFalls(delta = 0.016) {
             alignObjectBottomToY(object, targetBottomY);
             clearDropFallState(object);
             if (pouringEffect) pouringEffect.invalidateCavity(object);
+            persistToolPosition(object);
             return;
         }
 
@@ -1269,6 +1270,55 @@ async function persistToolRotation(object) {
 
 function getToolId(object) {
     return object?.userData?.toolData?.id_tool || object?.userData?.id_tool;
+}
+
+async function persistToolPosition(object) {
+    const idTool = getToolId(object);
+    if (!idTool || !object?.isObject3D) return;
+
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+
+    const instanceId = object.userData?.instanceId || 'default';
+    const position = new three.Vector3();
+    object.updateMatrixWorld?.(true);
+    object.getWorldPosition(position);
+
+    try {
+        const baseUrl = window.API_URL || 'http://127.0.0.1:8000';
+        const res = await fetch(`${baseUrl}/api/lab/tools/${idTool}/position`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                instance_id: instanceId,
+                position_x: position.x,
+                position_y: position.y,
+                position_z: position.z
+            })
+        });
+
+        if (res.ok && object.userData?.toolData) {
+            let positions = object.userData.toolData.positions || {};
+            if (typeof positions === 'string') {
+                try {
+                    positions = JSON.parse(positions) || {};
+                } catch (_) {
+                    positions = {};
+                }
+            }
+            object.userData.toolData.positions = positions;
+            positions[instanceId] = {
+                x: position.x,
+                y: position.y,
+                z: position.z
+            };
+        }
+    } catch (error) {
+        console.warn('[ToolPosition] persist position failed:', error);
+    }
 }
 
 async function persistToolSoftDelete(object) {
@@ -2266,6 +2316,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             liftObjectBottomToSurface(currentHeld, dropSurfaceY);
             settleDroppedObjectOnSurface(currentHeld, { animate: isXRDrop });
             currentHeld.updateMatrixWorld(true);
+            persistToolPosition(currentHeld);
             } else {
                 currentHeld.updateMatrixWorld(true);
             }
@@ -2837,6 +2888,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             e.stopImmediatePropagation();
             selectedObjectForMenu = activeTool;
             toggleManualAssembly(activeTool);
+            persistToolPosition(activeTool);
             return;
         }
 
@@ -2849,6 +2901,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (!isHeld) {
                 resolvePlacementOverlapAfterLegacyLogic(activeTool);
             }
+            persistToolPosition(activeTool);
             return;
         }
 
@@ -4298,6 +4351,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (!returnedToCabinet) {
                 completeAssemblyDrop(draggedObject);
                 resolvePlacementOverlapAfterLegacyLogic(draggedObject);
+                persistToolPosition(draggedObject);
             }
             orbit.enabled = true;
             draggedObject = null;

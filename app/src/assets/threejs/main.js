@@ -8,14 +8,14 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
 import { initControls } from './controls.js?v=20260618-vr-aim-drop-fall';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-room-tables';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-position-save';
 import { initChatEvents } from '../js/chatEvents.js?v=20260618-room-tables';
-import { initLabLogic } from './lab_logic.js?v=20260618-room-tables';
+import { initLabLogic } from './lab_logic.js?v=20260618-position-save';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260618-add-table3';
 import { notifyLab } from './labNotifier.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-vr-aim-drop-fall';
-import { pouringEffect, pouringState } from './interaction.js?v=20260618-room-tables';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-cabinet-restore';
+import { pouringEffect, pouringState } from './interaction.js?v=20260618-position-save';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';

@@ -51,4 +51,5 @@ WHERE lower(name_tool_vi) LIKE '%ống nghiệm%'
 ALTER TABLE public.tools
 ADD COLUMN IF NOT EXISTS rotation_x double precision DEFAULT 0,
 ADD COLUMN IF NOT EXISTS rotation_y double precision DEFAULT 0,
-ADD COLUMN IF NOT EXISTS rotation_z double precision DEFAULT 0;
+ADD COLUMN IF NOT EXISTS rotation_z double precision DEFAULT 0,
+ADD COLUMN IF NOT EXISTS positions jsonb DEFAULT '{}'::jsonb;

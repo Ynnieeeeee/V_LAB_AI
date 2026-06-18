@@ -46,6 +46,7 @@ class Tools (SQLModel, table=True):
     rotation_x: float = Field(default=0)
     rotation_y: float = Field(default=0)
     rotation_z: float = Field(default=0)
+    positions: dict = Field(default_factory=dict, sa_column=Column(JSON, default=dict))
     capabilities: list = Field(default_factory=list, sa_column=Column(JSON, default=list))
     ports: dict = Field(default_factory=dict, sa_column=Column(JSON, default=dict))
     attach_points: dict = Field(default_factory=dict, sa_column=Column(JSON, default=dict))

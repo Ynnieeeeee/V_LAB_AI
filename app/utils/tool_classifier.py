@@ -422,6 +422,7 @@ def ensure_tools_metadata_columns(session, backfill_existing: bool = False) -> N
         "rotation_x": ("double precision", "0"),
         "rotation_y": ("double precision", "0"),
         "rotation_z": ("double precision", "0"),
+        "positions": ("jsonb", "'{}'::jsonb"),
         "capabilities": ("jsonb", "'[]'::jsonb"),
         "ports": ("jsonb", "'{}'::jsonb"),
         "attach_points": ("jsonb", "'{}'::jsonb"),

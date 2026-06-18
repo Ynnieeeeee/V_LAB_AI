@@ -4,6 +4,53 @@ let allConversations = []; // Lưu trữ để tìm kiếm
 
 const getIcon = (s) => ({ chemistry: "🧪", physics: "⚡", biology: "🌿" }[s] || "⚙️");
 
+function isUsableConversationId(value) {
+    return Boolean(value && value !== "null" && value !== "undefined");
+}
+
+function syncSubjectEnvironment(subject, attempt = 0) {
+    const isChemistry = subject === "chemistry";
+    const action = isChemistry ? window.loadChemistryCabinet : window.hideChemistryCabinet;
+
+    if (typeof action === "function") {
+        action();
+        return;
+    }
+
+    if (attempt < 20) {
+        setTimeout(() => syncSubjectEnvironment(subject, attempt + 1), 100);
+    }
+}
+
+function getConversationIdFromPath() {
+    const match = window.location.pathname.match(/^\/chat\/([^/]+)$/);
+    return match?.[1] || null;
+}
+
+function activateConversation(id, subject, options = {}) {
+    if (!isUsableConversationId(id)) return;
+
+    window.currentConvId = id;
+    window.currentSubject = subject;
+    localStorage.setItem('lab_conv_id', id);
+    syncSubjectEnvironment(subject);
+
+    if (options.updateHistory !== false) {
+        window.history.pushState({}, "", `/chat/${id}`);
+    }
+
+    if (window.loadMessages) {
+        window.loadMessages(id);
+    }
+
+    if (window.checkBackendStatus) {
+        window.checkBackendStatus();
+    }
+
+    const subjectOverlay = document.getElementById('subject-overlay');
+    if (subjectOverlay) subjectOverlay.classList.add('hidden');
+}
+
 async function loadConversations() {
     window.loadConversations = loadConversations; // Expose to window
     const token = localStorage.getItem("access_token");
@@ -15,6 +62,13 @@ async function loadConversations() {
         });
         allConversations = await res.json();
         renderConversations(allConversations);
+        const routeConversationId = getConversationIdFromPath();
+        if (routeConversationId && !isUsableConversationId(window.currentConvId)) {
+            const routeConversation = allConversations.find(c => String(c.id) === routeConversationId);
+            if (routeConversation) {
+                activateConversation(routeConversation.id, routeConversation.subject, { updateHistory: false });
+            }
+        }
     } catch (err) { console.error(err); }
 }
 
@@ -63,6 +117,7 @@ document.addEventListener("click", async (e) => {
         const subject = item.dataset.subject;
         window.currentConvId = id;
         window.currentSubject = subject;
+        syncSubjectEnvironment(subject);
         localStorage.setItem('lab_conv_id', id);
         window.history.pushState({}, "", `/chat/${id}`);
         
