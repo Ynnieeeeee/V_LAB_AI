@@ -167,6 +167,7 @@ window.selectSubject = async function(type, name) {
     
     // 1. Thiết lập trạng thái ban đầu
     window.currentSubject = type;
+    window.currentDraftRoomKey = `${type}:${Date.now()}`;
     window.currentConvId = null; 
     localStorage.removeItem('lab_conv_id'); // Xóa ID cũ để tránh bị gộp nhầm hội thoại
     // 2. Hiệu ứng đóng Overlay mượt mà

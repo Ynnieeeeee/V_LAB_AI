@@ -99,6 +99,7 @@ export function clearLab(scene) {
     
     // Reset giao diện danh sách dụng cụ
     const list = document.getElementById('tool-list');
+    window.dispatchEvent(new CustomEvent('lab:clear'));
     if (list) {
         list.innerHTML = '<li class="text-gray-500 text-xs italic py-2">Bàn trống...</li>';
     }

@@ -39,6 +39,7 @@ export function initChatEvents() {
                     window.currentConvId = result.conversation_id;
                     localStorage.setItem('lab_conv_id', result.conversation_id);
                     window.history.pushState({}, "", `/chat/${result.conversation_id}`);
+                    window.claimCurrentMovableTablesForRoom?.(result.conversation_id);
                     
                     // Cập nhật lại danh sách hội thoại ở sidebar (nếu hàm tồn tại)
                     if (typeof window.loadConversations === 'function') {

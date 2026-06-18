@@ -168,6 +168,8 @@ async function confirmDeleteConversation() {
     });
     if (window.currentConvId === deleteConversationId) {
         window.currentConvId = null;
+        window.currentSubject = null;
+        window.currentDraftRoomKey = null;
         localStorage.removeItem('lab_conv_id');
         window.history.pushState({}, "", "/chat");
         window.clearLab();
@@ -185,6 +187,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (newChatBtn) {
         newChatBtn.addEventListener("click", () => {
             window.currentConvId = null;
+            window.currentSubject = null;
+            window.currentDraftRoomKey = null;
             localStorage.removeItem('lab_conv_id');
             window.history.pushState({}, "", "/chat");
             if (window.clearLab) window.clearLab();

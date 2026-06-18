@@ -8,14 +8,14 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
 import { initControls } from './controls.js?v=20260618-vr-aim-drop-fall';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-vr-aim-drop-fall';
-import { initChatEvents } from '../js/chatEvents.js?v=20260527-liquid-soft-waves';
-import { initLabLogic } from './lab_logic.js?v=20260609-network-topology';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260618-room-tables';
+import { initChatEvents } from '../js/chatEvents.js?v=20260618-room-tables';
+import { initLabLogic } from './lab_logic.js?v=20260618-room-tables';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260618-add-table3';
 import { notifyLab } from './labNotifier.js';
 import { setupChemicalCabinet } from './cabinetChemical.js?v=20260618-vr-aim-drop-fall';
-import { pouringEffect, pouringState } from './interaction.js?v=20260618-vr-aim-drop-fall';
+import { pouringEffect, pouringState } from './interaction.js?v=20260618-room-tables';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -170,6 +170,144 @@ const modelPath = '/assets/models/';
 let chemicalCabinet = null;
 const frameClock = new three.Clock();
 let movableTableCounter = 0;
+const MOVABLE_TABLES_STORAGE_KEY = 'vlab_movable_tables_by_room';
+let currentMovableTableRoomKey = null;
+let isRestoringMovableTables = false;
+
+function isUsableRoomId(value) {
+    return Boolean(value && value !== 'null' && value !== 'undefined');
+}
+
+function getActiveMovableTableRoomKey(conversationId = window.currentConvId) {
+    if (isUsableRoomId(conversationId)) return `conv:${conversationId}`;
+    if (window.currentDraftRoomKey) return `draft:${window.currentDraftRoomKey}`;
+    if (window.currentSubject) return `draft:${window.currentSubject}`;
+    return null;
+}
+
+function readMovableTablesState() {
+    try {
+        return JSON.parse(localStorage.getItem(MOVABLE_TABLES_STORAGE_KEY) || '{}') || {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function writeMovableTablesState(state) {
+    localStorage.setItem(MOVABLE_TABLES_STORAGE_KEY, JSON.stringify(state));
+}
+
+function getSceneMovableTables() {
+    return (Array.isArray(window.labTables) ? window.labTables : [])
+        .filter(table => table?.isObject3D && table.userData?.isMovableTable === true && table.userData?.isDeleted !== true);
+}
+
+function serializeMovableTable(table) {
+    return {
+        instanceId: table.userData?.instanceId || null,
+        position: {
+            x: table.position.x,
+            y: table.position.y,
+            z: table.position.z
+        },
+        rotation: {
+            x: table.rotation.x,
+            y: table.rotation.y,
+            z: table.rotation.z
+        }
+    };
+}
+
+function saveMovableTablesForRoom(roomKey = currentMovableTableRoomKey) {
+    if (!roomKey || isRestoringMovableTables) return;
+
+    const state = readMovableTablesState();
+    const tables = getSceneMovableTables();
+    if (tables.length) {
+        state[roomKey] = tables.map(serializeMovableTable);
+    } else {
+        delete state[roomKey];
+    }
+    writeMovableTablesState(state);
+}
+
+function removeMovableTableFromScene(table) {
+    if (!table?.isObject3D) return;
+
+    table.userData.isDeleted = true;
+
+    const draggableIndex = draggableObjects.indexOf(table);
+    if (draggableIndex !== -1) draggableObjects.splice(draggableIndex, 1);
+
+    if (Array.isArray(window.labTables)) {
+        const tableIndex = window.labTables.indexOf(table);
+        if (tableIndex !== -1) window.labTables.splice(tableIndex, 1);
+    }
+
+    window.heatingManager?.unregisterObject?.(table);
+    window.labAssemblyManager?.unregisterObject?.(table);
+
+    if (table.parent) {
+        table.parent.remove(table);
+    } else {
+        scene.remove(table);
+    }
+    disposeObjectResources(table);
+}
+
+function clearMovableTablesFromScene() {
+    [...getSceneMovableTables()].forEach(removeMovableTableFromScene);
+}
+
+function restoreMovableTablesForRoom(roomKey) {
+    if (!roomKey) return;
+
+    const records = readMovableTablesState()[roomKey] || [];
+    if (!records.length) return;
+
+    isRestoringMovableTables = true;
+    records.forEach((record) => {
+        addMovableLabTable({
+            instanceId: record.instanceId,
+            position: record.position,
+            rotation: record.rotation,
+            notify: false,
+            persist: false
+        });
+    });
+    isRestoringMovableTables = false;
+}
+
+function switchMovableTablesToActiveRoom() {
+    saveMovableTablesForRoom(currentMovableTableRoomKey);
+    clearMovableTablesFromScene();
+    currentMovableTableRoomKey = getActiveMovableTableRoomKey();
+    restoreMovableTablesForRoom(currentMovableTableRoomKey);
+}
+
+function claimCurrentMovableTablesForRoom(conversationId) {
+    const nextRoomKey = getActiveMovableTableRoomKey(conversationId);
+    if (!nextRoomKey) return;
+
+    const previousRoomKey = currentMovableTableRoomKey;
+    currentMovableTableRoomKey = nextRoomKey;
+    saveMovableTablesForRoom(nextRoomKey);
+
+    if (previousRoomKey && previousRoomKey !== nextRoomKey && previousRoomKey.startsWith('draft:')) {
+        const state = readMovableTablesState();
+        delete state[previousRoomKey];
+        writeMovableTablesState(state);
+    }
+    window.currentDraftRoomKey = null;
+}
+
+window.persistMovableTablesForCurrentRoom = () => {
+    if (!currentMovableTableRoomKey) currentMovableTableRoomKey = getActiveMovableTableRoomKey();
+    saveMovableTablesForRoom(currentMovableTableRoomKey);
+};
+window.claimCurrentMovableTablesForRoom = claimCurrentMovableTablesForRoom;
+window.addEventListener('lab:clear', switchMovableTablesToActiveRoom);
+window.addEventListener('lab:movable-tables-changed', () => window.persistMovableTablesForCurrentRoom?.());
 
 function disposeObjectResources(object) {
     object?.traverse?.((child) => {
@@ -183,7 +321,16 @@ function disposeObjectResources(object) {
     });
 }
 
-function addMovableLabTable() {
+function addMovableLabTable(options = {}) {
+    if (options?.target) options = {};
+
+    const roomKey = getActiveMovableTableRoomKey();
+    if (!roomKey && options.persist !== false) {
+        notifyLab('H\u00e3y ch\u1ecdn ph\u00f2ng tr\u01b0\u1edbc khi th\u00eam b\u00e0n.');
+        return null;
+    }
+
+    currentMovableTableRoomKey ??= roomKey;
     movableTableCounter += 1;
     const table = createLabTable({
         width: 4.2,
@@ -196,12 +343,19 @@ function addMovableLabTable() {
         name: `Movable lab table ${movableTableCounter}`
     });
 
-    table.userData.instanceId = `movable-table-${movableTableCounter}`;
+    table.userData.instanceId = options.instanceId || `movable-table-${Date.now()}-${movableTableCounter}`;
     table.updateMatrixWorld(true);
     const box = new three.Box3().setFromObject(table);
     table.userData.offsetToFloor = table.position.y - box.min.y;
 
-    const position = findOpenFloorPositionForObject(table);
+    const savedPosition = options.position;
+    const position = savedPosition
+        ? new three.Vector3(
+            Number(savedPosition.x) || 0,
+            Number(savedPosition.y) || table.userData.offsetToFloor || 0,
+            Number(savedPosition.z) || 0
+        )
+        : findOpenFloorPositionForObject(table);
     if (!position) {
         disposeObjectResources(table);
         notifyLab('Kh\u00f4ng c\u00f2n v\u1ecb tr\u00ed tr\u1ed1ng \u0111\u1ec3 th\u00eam b\u00e0n m\u1edbi.');
@@ -209,6 +363,13 @@ function addMovableLabTable() {
     }
 
     table.position.copy(position);
+    if (options.rotation) {
+        table.rotation.set(
+            Number(options.rotation.x) || 0,
+            Number(options.rotation.y) || 0,
+            Number(options.rotation.z) || 0
+        );
+    }
     table.userData.lastValidFloorPosition = position.clone();
     table.userData.dragStartFloorPosition = position.clone();
     scene.add(table);
@@ -217,7 +378,10 @@ function addMovableLabTable() {
     window.labTables ??= [];
     if (!window.labTables.includes(table)) window.labTables.push(table);
 
-    notifyLab('\u0110\u00e3 th\u00eam b\u00e0n m\u1edbi. K\u00e9o b\u00e0n \u0111\u1ec3 \u0111\u1eb7t v\u00e0o v\u1ecb tr\u00ed tr\u1ed1ng trong ph\u00f2ng.');
+    if (options.persist !== false) saveMovableTablesForRoom(currentMovableTableRoomKey || roomKey);
+    if (options.notify !== false) {
+        notifyLab('\u0110\u00e3 th\u00eam b\u00e0n m\u1edbi. K\u00e9o b\u00e0n \u0111\u1ec3 \u0111\u1eb7t v\u00e0o v\u1ecb tr\u00ed tr\u1ed1ng trong ph\u00f2ng.');
+    }
     return table;
 }
 

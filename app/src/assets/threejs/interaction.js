@@ -4280,6 +4280,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 }
                 draggedObject.userData.placementInvalid = false;
                 updateOffsetToFloor(draggedObject);
+                window.dispatchEvent(new CustomEvent('lab:movable-tables-changed'));
                 orbit.enabled = true;
                 draggedObject = null;
                 return;
@@ -4367,6 +4368,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (!objectToDelete) return;
             if (isMovableTableObject(objectToDelete)) {
                 removeToolFromCurrentLab(objectToDelete, scene);
+                window.dispatchEvent(new CustomEvent('lab:movable-tables-changed'));
                 notifyLab?.('\u0110\u00e3 x\u00f3a b\u00e0n kh\u1ecfi ph\u00f2ng.');
                 return;
             }
