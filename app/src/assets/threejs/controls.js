@@ -1,7 +1,7 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260619-vr-tool-stick-rotate';
+import { setArmsVisibility } from './interaction.js?v=20260621-ngrok-same-origin-v1';
 
 function isEditableTarget(event) {
     const target = event?.target;

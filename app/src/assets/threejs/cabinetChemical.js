@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { registerDraggableObject } from './interaction.js?v=20260619-vr-tool-stick-rotate';
+import { registerDraggableObject } from './interaction.js?v=20260621-ngrok-same-origin-v1';
 
 export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
     try {

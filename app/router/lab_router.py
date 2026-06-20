@@ -14,7 +14,8 @@ from app.models.conversations import Conversations
 from app.models.profiles import Profiles
 from app.models.tools import Tools
 from app.services.image_service import SINGLE_IMAGE_FAILURE_MESSAGE
-from app.services.lab_service import LabServices
+from app.services.lab_service import LabServices, find_reusable_model_tool
+from app.services.mesh_service import MeshService
 from app.task.lab_task import get_processing_tool_ids, start_3d_pipeline_task
 from app.utils.get_current_user import get_current_user
 from app.utils.subscription_utils import require_tool_limit, require_active_plan
@@ -24,10 +25,77 @@ from app.utils.tool_classifier import ensure_tools_metadata_columns
 router = APIRouter(prefix="/api/lab", tags=["Laboratory"])
 lab_service = LabServices()
 LAST_PIPELINE_REQUEUE_AT = {}
+LEGACY_FALLBACK_CUTOFF = datetime(2026, 6, 10)
+LEGACY_RECOVERABLE_STATUSES = ("pending", "running", "failed", "failed_public_image_url")
 
 
-def _is_fallback_model(tool: Tools) -> bool:
-    return tool.model_generation_status == "fallback"
+def _restore_legacy_room_models(id_conv, session: Session) -> int:
+    """Restore models erased by the old fallback-to-regeneration migration.
+
+    Before the strict single-image pipeline was introduced, failed generations
+    were represented by a local fallback GLB.  The previous status endpoint
+    cleared those URLs while merely opening a room.  Recover old rows from an
+    existing reusable model first, then from the same local fallback catalogue
+    used by the legacy pipeline.
+    """
+    statement = select(Tools).where(
+        Tools.id_conv == id_conv,
+        Tools.is_deleted == False,
+        Tools.created_at < LEGACY_FALLBACK_CUTOFF,
+        Tools.model_3d_url == None,
+        Tools.model_generation_status.in_(LEGACY_RECOVERABLE_STATUSES),
+    )
+    legacy_tools = session.exec(statement).all()
+    if not legacy_tools:
+        return 0
+
+    processing_ids = get_processing_tool_ids()
+    fallback_service = MeshService()
+    restored = 0
+
+    for tool in legacy_tools:
+        if str(tool.id_tool) in processing_ids:
+            continue
+
+        reusable = find_reusable_model_tool(
+            session,
+            tool.name_tool_vi,
+            tool.subject_type,
+        )
+        if reusable and reusable.id_tool != tool.id_tool:
+            model_url = reusable.model_3d_url
+            model_image_hash = reusable.model_image_hash or reusable.image_hash
+            restored_status = (
+                "fallback"
+                if reusable.model_generation_status == "fallback"
+                else "completed"
+            )
+        else:
+            model_url = fallback_service.get_local_fallback_model_url(
+                name_vi=tool.name_tool_vi,
+                name_en=tool.name_tool_en,
+                tool_type=tool.tool_type,
+            )
+            model_image_hash = tool.image_hash
+            restored_status = "fallback"
+
+        if not model_url:
+            continue
+
+        tool.model_3d_url = model_url
+        tool.model_image_hash = model_image_hash
+        tool.model_generation_status = restored_status
+        tool.model_job_id = None
+        tool.force_regenerate_model = False
+        tool.updated_at = datetime.utcnow()
+        session.add(tool)
+        restored += 1
+
+    if restored:
+        session.commit()
+        print(f"[LabStatus] Restored {restored} legacy tools for room {id_conv}")
+
+    return restored
 
 
 def _model_failure_response(tool: Tools) -> dict:
@@ -138,35 +206,19 @@ def _queue_pending_3d_tools(id_conv, backgroundtask: BackgroundTasks, session: S
                 Tools.model_generation_status != "failed",
             ),
             Tools.force_regenerate_model == True,
-            Tools.model_generation_status == "fallback",
         ),
     )
     pending_tools = session.exec(pending_statement).all()
     processing_ids = get_processing_tool_ids()
     now = time.time()
     requeue_ids = []
-    changed = False
-
     for tool in pending_tools:
-        if _is_fallback_model(tool):
-            print(f"[LabStatus] Reset fallback model for strict single-image pipeline: {tool.name_tool_en} ({tool.id_tool})")
-            tool.model_3d_url = None
-            tool.model_image_hash = None
-            tool.model_generation_status = "pending"
-            tool.force_regenerate_model = True
-            tool.updated_at = datetime.utcnow()
-            session.add(tool)
-            changed = True
-
         key = str(tool.id_tool)
         last_attempt = LAST_PIPELINE_REQUEUE_AT.get(key, 0)
         if key in processing_ids or now - last_attempt < 60:
             continue
         LAST_PIPELINE_REQUEUE_AT[key] = now
         requeue_ids.append(tool.id_tool)
-
-    if changed:
-        session.commit()
 
     if requeue_ids:
         print(f"[LabStatus] Requeue pending 3D tools: {[str(tool_id) for tool_id in requeue_ids]}")
@@ -187,6 +239,7 @@ async def get_tool_status(
 
     ensure_tools_metadata_columns(session)
     session.commit()
+    _restore_legacy_room_models(id_conv, session)
     _queue_pending_3d_tools(id_conv, backgroundtask, session)
 
     statement = select(Tools).where(

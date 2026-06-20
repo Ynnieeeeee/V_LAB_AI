@@ -5,13 +5,11 @@ import { applyAdvancedPBR } from './pbr.js';
 import { applyToolMetadataToObject } from './ToolClassifier.js';
 import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 import { ensureAutoSnapPoints } from './toolAnchors.js?v=20260609-network-topology';
-import { draggableObjects, persistToolPosition } from './interaction.js?v=20260619-vr-tool-stick-rotate';
+import { draggableObjects, persistToolPosition } from './interaction.js?v=20260621-ngrok-same-origin-v1';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh
 const currentlyLoading = new Set();
-const API_URL = 'http://127.0.0.1:8000';
-
 let globalScene = null;
 let globalRegisterDraggable = null;
 let lastConvId = null; // Theo dõi sự thay đổi cuộc hội thoại
@@ -180,7 +178,7 @@ async function checkBackendStatus(scene) {
 
     try {
         // Gửi request kèm tham số id_conv rõ ràng
-        const res = await fetch(`${API_URL}/api/lab/status?id_conv=${encodeURIComponent(id_conv)}&include_failures=true`, {
+        const res = await fetch(`/api/lab/status?id_conv=${encodeURIComponent(id_conv)}&include_failures=true`, {
             headers: {
                 Authorization: `Bearer ${token}`
             }
@@ -246,7 +244,7 @@ async function checkBackendStatus(scene) {
     } catch (err) {
         // Chỉ log cảnh báo thay vì lỗi đỏ nếu không kết nối được backend
         if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
-            console.warn("Không thể kết nối đến Backend (127.0.0.1:8000). Vui lòng kiểm tra server.");
+            console.warn("Không thể kết nối đến backend qua origin hiện tại.");
         } else {
             console.error("Lỗi Polling Lab:", err);
         }
@@ -409,10 +407,13 @@ function getPersistedToolPosition(tool = {}, instanceId = null) {
 export function loadAndPlaceModel(scene, tool, displayIndex, instanceId) {
     if (!tool.model_3d_url) return;
 
-    // Chuẩn hóa URL
-    const modelUrl = tool.model_3d_url.startsWith('http') 
-        ? tool.model_3d_url 
-        : `${API_URL}${tool.model_3d_url}`;
+    // Model cũ có thể còn lưu URL loopback. Khi chạy qua ngrok,
+    // chuyển các URL đó về cùng origin với trang hiện tại.
+    const parsedModelUrl = new URL(tool.model_3d_url, window.location.origin);
+    const loopbackHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
+    const modelUrl = loopbackHosts.has(parsedModelUrl.hostname)
+        ? new URL(`${parsedModelUrl.pathname}${parsedModelUrl.search}${parsedModelUrl.hash}`, window.location.origin).href
+        : parsedModelUrl.href;
 
     loader.load(modelUrl, async (gltf) => {
         const model = gltf.scene;

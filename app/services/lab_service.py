@@ -33,7 +33,7 @@ def _local_static_model_exists(model_url: str = "") -> bool:
     return bool(filename and (STATIC_MODEL_DIR / filename).exists())
 
 
-def _find_reusable_model_tool(session: Session, name_vi: str, subject_code: str) -> Tools | None:
+def find_reusable_model_tool(session: Session, name_vi: str, subject_code: str) -> Tools | None:
     normalized_name = _normalize_tool_vi_name(name_vi)
     if not normalized_name:
         return None
@@ -157,7 +157,7 @@ class LabServices:
                     )
 
                 # luôn tạo mới bản ghi Tool cho cuộc hội thoại này
-                reusable_model_tool = _find_reusable_model_tool(session, item.name_vi, subject_code)
+                reusable_model_tool = find_reusable_model_tool(session, item.name_vi, subject_code)
                 if reusable_model_tool:
                     template_tool = reusable_model_tool
                     print(

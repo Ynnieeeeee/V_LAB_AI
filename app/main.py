@@ -58,7 +58,12 @@ ASSETS_DIR = TEMPLATE_DIR / "assets"
 STATIC_DIR = BASE_DIR / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
-app.add_middleware(SessionMiddleware, secret_key="super-secret-key")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="super-secret-key",
+    same_site="lax",
+    https_only=False
+)
 
 # Mount bằng đường dẫn tuyệt đối để tránh lỗi 500/TemplateNotFound khi chạy uvicorn
 # từ thư mục khác. Chỉ mount /static nếu thư mục thật sự tồn tại.

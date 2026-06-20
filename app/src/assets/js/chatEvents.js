@@ -1,5 +1,3 @@
-const API_URL = 'http://127.0.0.1:8000';
-
 export function initChatEvents() {
     const input = document.getElementById('chat-input');
     const statusText = document.getElementById('status-text');
@@ -16,7 +14,7 @@ export function initChatEvents() {
         statusText.classList.add('text-pulse');
 
         try {
-            const response = await fetch(`${API_URL}/api/lab/generate`, {
+            const response = await fetch('/api/lab/generate', {
                 method: 'POST',
                 headers: {
                     'Content-type': 'application/json',

@@ -11,15 +11,29 @@ import uuid
 
 router = APIRouter()
 
+# URL ngrok hiện tại
+BASE_URL = "https://seraphic-remorseless-dorine.ngrok-free.dev"
+
+
 @router.get("/auth/google")
 async def login_google(request: Request):
+    # Không hard-code callback URL để tránh lỗi state OAuth
     redirect_url = request.url_for("google_callback")
-    return await oauth.google.authorize_redirect(request, redirect_url)
 
-@router.get("/auth/google/callback")
+    print("REDIRECT URL =", redirect_url)
+
+    return await oauth.google.authorize_redirect(
+        request,
+        redirect_url
+    )
+
+
+@router.get("/auth/google/callback", name="google_callback")
 async def google_callback(request: Request):
     token = await oauth.google.authorize_access_token(request)
+
     user = token["userinfo"]
+
     email = user["email"]
     username = user["name"]
     avatar = user["picture"]
@@ -28,7 +42,10 @@ async def google_callback(request: Request):
         ensure_admin_schema(session)
         session.commit()
 
-        stmt = select(Profiles).where(Profiles.email == email)
+        stmt = select(Profiles).where(
+            Profiles.email == email
+        )
+
         db_user = session.exec(stmt).first()
 
         if not db_user:
@@ -39,8 +56,10 @@ async def google_callback(request: Request):
                 email=email,
                 provider="google"
             )
+
             session.add(db_user)
             session.commit()
+            session.refresh(db_user)
 
         access_token = create_access_token({
             "sub": str(db_user.id_profile)
@@ -48,13 +67,16 @@ async def google_callback(request: Request):
 
     if db_user.role == "admin":
         return RedirectResponse(
-            url=f"http://127.0.0.1:8000/dashboard?token={access_token}"
+            url=f"{BASE_URL}/dashboard?token={access_token}"
         )
-    else:
-        return RedirectResponse(
-            url=f"http://127.0.0.1:8000/?token={access_token}"
-        )
-    
+
+    return RedirectResponse(
+        url=f"{BASE_URL}/?token={access_token}"
+    )
+
+
 @router.get("/auth/me")
-def get_me(current_user: Profiles = Depends(get_current_user)):
+def get_me(
+    current_user: Profiles = Depends(get_current_user)
+):
     return current_user

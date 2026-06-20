@@ -7,15 +7,15 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260619-vr-tool-stick-rotate';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260619-vr-tool-stick-rotate';
-import { initChatEvents } from '../js/chatEvents.js?v=20260618-room-tables';
-import { initLabLogic } from './lab_logic.js?v=20260619-vr-tool-stick-rotate';
+import { initControls } from './controls.js?v=20260621-ngrok-same-origin-v1';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject } from './interaction.js?v=20260621-ngrok-same-origin-v1';
+import { initChatEvents } from '../js/chatEvents.js?v=20260621-ngrok-same-origin-v1';
+import { initLabLogic } from './lab_logic.js?v=20260621-ngrok-same-origin-v1';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260618-add-table3';
 import { notifyLab } from './labNotifier.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260619-vr-tool-stick-rotate';
-import { pouringEffect, pouringState } from './interaction.js?v=20260619-vr-tool-stick-rotate';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260621-ngrok-same-origin-v1';
+import { pouringEffect, pouringState } from './interaction.js?v=20260621-ngrok-same-origin-v1';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -441,20 +441,33 @@ function createXRControllerReticle(scene, controllers) {
     root.userData.ignoreRaycast = true;
     scene.add(root);
 
-    const outlineMaterial = new three.MeshBasicMaterial({
-        color: 0x020617,
+    const createReticleMaterial = (color, opacity, size) => new three.ShaderMaterial({
+        uniforms: {
+            reticleColor: { value: new three.Color(color) },
+            reticleOpacity: { value: opacity },
+            reticleSize: { value: size }
+        },
+        vertexShader: `
+            uniform float reticleSize;
+            void main() {
+                gl_Position = vec4(position.xy * reticleSize, 0.0, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 reticleColor;
+            uniform float reticleOpacity;
+            void main() {
+                gl_FragColor = vec4(reticleColor, reticleOpacity);
+            }
+        `,
         transparent: true,
-        opacity: 0.85,
         depthTest: false,
-        depthWrite: false
+        depthWrite: false,
+        toneMapped: false
     });
-    const dotMaterial = new three.MeshBasicMaterial({
-        color: 0x22d3ee,
-        transparent: true,
-        opacity: 0.95,
-        depthTest: false,
-        depthWrite: false
-    });
+
+    const outlineMaterial = createReticleMaterial(0x020617, 0.9, 0.032);
+    const dotMaterial = createReticleMaterial(0x22d3ee, 1, 0.021);
 
     const makeDot = (name) => {
         const group = new three.Group();
@@ -462,8 +475,12 @@ function createXRControllerReticle(scene, controllers) {
         group.visible = false;
         group.userData.ignoreRaycast = true;
 
-        const outline = new three.Mesh(new three.SphereGeometry(0.045, 16, 16), outlineMaterial);
-        const dot = new three.Mesh(new three.SphereGeometry(0.027, 16, 16), dotMaterial);
+        const outline = new three.Mesh(new three.CircleGeometry(1, 32), outlineMaterial);
+        const dot = new three.Mesh(new three.CircleGeometry(1, 32), dotMaterial);
+        outline.frustumCulled = false;
+        dot.frustumCulled = false;
+        outline.raycast = () => {};
+        dot.raycast = () => {};
         outline.renderOrder = 10000;
         dot.renderOrder = 10001;
         group.add(outline, dot);
@@ -471,22 +488,35 @@ function createXRControllerReticle(scene, controllers) {
         return group;
     };
 
-    const markers = controllers.map((_, index) => makeDot(`XR Controller Dot ${index + 1}`));
+    const markers = [makeDot('XR Center Gaze Dot')];
     const raycaster = new three.Raycaster();
     const aimTargets = new Map();
     const origin = new three.Vector3();
     const direction = new three.Vector3();
-    const cameraUp = new three.Vector3();
-    const vrAimDownOffset = 0.55;
-    const fallbackDistance = 1.8;
+    const eyeOrigin = new three.Vector3();
+    const eyeDirection = new three.Vector3();
+    const eyeCenterPoint = new three.Vector3();
     const maxDistance = 8;
 
     const copyGazeRay = (targetRay = null) => {
-        camera.updateMatrixWorld(true);
-        camera.getWorldPosition(origin);
-        camera.getWorldDirection(direction);
-        cameraUp.set(0, 1, 0).transformDirection(camera.matrixWorld).normalize();
-        direction.addScaledVector(cameraUp, -vrAimDownOffset).normalize();
+        const xrCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null;
+        const gazeCameras = xrCamera?.isArrayCamera && xrCamera.cameras?.length
+            ? xrCamera.cameras
+            : [xrCamera || camera];
+
+        origin.set(0, 0, 0);
+        direction.set(0, 0, 0);
+        gazeCameras.forEach((gazeCamera) => {
+            gazeCamera.updateMatrixWorld(true);
+            gazeCamera.getWorldPosition(eyeOrigin);
+            eyeCenterPoint.set(0, 0, 0.5).unproject(gazeCamera);
+            eyeDirection.subVectors(eyeCenterPoint, eyeOrigin).normalize();
+            origin.add(eyeOrigin);
+            direction.add(eyeDirection);
+        });
+
+        origin.multiplyScalar(1 / gazeCameras.length);
+        direction.normalize();
 
         if (targetRay?.origin && targetRay?.direction) {
             targetRay.origin.copy(origin);
@@ -528,41 +558,24 @@ function createXRControllerReticle(scene, controllers) {
             raycaster.camera = xrCamera?.isArrayCamera ? xrCamera.cameras?.[0] || camera : xrCamera || camera;
 
             const hits = raycaster.intersectObjects(draggableObjects, true);
-            let hit = null;
             let aimedRoot = null;
-            let toolHit = null;
             let toolRoot = null;
             for (const item of hits) {
                 const root = resolveReticleRoot(item.object);
                 if (!root) continue;
-                if (!hit) {
-                    hit = item;
-                    aimedRoot = root;
-                }
+                if (!aimedRoot) aimedRoot = root;
                 if (!root.userData?.isTable && !root.userData?.isMovableTable && !root.userData?.isFurniture) {
-                    toolHit = item;
                     toolRoot = root;
                     break;
                 }
             }
-            if (toolRoot) {
-                hit = toolHit;
-                aimedRoot = toolRoot;
-            }
+            if (toolRoot) aimedRoot = toolRoot;
 
             controllers.forEach(controller => {
                 if (controller) aimTargets.set(controller, aimedRoot);
             });
 
-            const distance = hit
-                ? Math.min(Math.max(hit.distance - 0.02, 0.08), fallbackDistance)
-                : fallbackDistance;
-            markers.forEach((marker, index) => {
-                marker.visible = index === 0;
-                if (!marker.visible) return;
-                marker.position.copy(origin).addScaledVector(direction, distance);
-                marker.scale.setScalar(hit ? 1.35 : 1);
-            });
+            markers.forEach(marker => marker.visible = true);
         }
     };
 }
