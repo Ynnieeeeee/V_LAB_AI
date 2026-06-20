@@ -5,7 +5,6 @@ from app.config import HF_TOKEN, PUBLIC_BASE_URL
 
 class VisionService:
     def __init__(self):
-        # Sử dụng model LLaVA mạnh mẽ để phân tích hình ảnh PBR
         self.api_url = "https://api-inference.huggingface.co/models/llava-hf/llava-1.5-7b-hf"
         self.headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 

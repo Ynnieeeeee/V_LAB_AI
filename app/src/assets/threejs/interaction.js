@@ -3071,16 +3071,18 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return normalizeXRRotationAxes(controlsManager.getExternalXRGamepadAxes?.('right'));
     };
 
-    const rotateHeldToolWithXRStick = (object, handedness, delta) => {
+    const getXRHeldToolRotationTarget = () => heldObjectRight || heldObjectLeft || null;
+
+    const rotateHeldToolWithXRStick = (object, delta) => {
         if (!object?.isObject3D) return false;
-        const controller = getXRControllerForHand(handedness);
+        const controller = getXRControllerForHand('right');
         const axes = getXRRotationAxes(controller);
         if (!axes.x && !axes.y) return false;
 
         selectedObjectForMenu = object;
-        const pitch = axes.y * xrHeldRotateSpeed * delta;
-        const roll = axes.x * xrHeldRotateSpeed * delta;
-        const rotated = rotateToolObject(object, pitch, 0, roll, 'vr');
+        const pitch = -axes.y * xrHeldRotateSpeed * delta;
+        const yaw = -axes.x * xrHeldRotateSpeed * delta;
+        const rotated = rotateToolObject(object, pitch, yaw, 0, 'vr');
 
         if (rotated) {
             const now = performance.now();
@@ -3095,7 +3097,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     const updateXRHeldToolRotation = (delta = 0) => {
         if (!controlsManager.isXRPresenting?.()) return false;
-        return rotateHeldToolWithXRStick(heldObjectRight, 'right', delta);
+        return rotateHeldToolWithXRStick(getXRHeldToolRotationTarget(), delta);
     };
 
     controlsManager.updateXRHeldToolRotation = updateXRHeldToolRotation;

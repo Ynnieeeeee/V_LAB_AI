@@ -1,7 +1,7 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260618-vr-camera-aim-lower';
+import { setArmsVisibility } from './interaction.js?v=20260619-vr-tool-stick-rotate';
 
 function isEditableTarget(event) {
     const target = event?.target;
@@ -245,7 +245,8 @@ export function initControls(camera, domElement, cameraGroup) {
             getStickAxes(xrControllers.gamepad, 'left'),
             getExternalXRGamepadAxes('left')
         );
-        const rightAxes = isXRHandHolding('right') ? { x: 0, y: 0 } : getFirstActiveAxes(
+        const shouldReserveRightStick = isXRHandHolding('any') || isXRHandHolding('right');
+        const rightAxes = shouldReserveRightStick ? { x: 0, y: 0 } : getFirstActiveAxes(
             getStickAxes(xrControllers.right),
             getStickAxes(xrControllers.gamepad, 'right'),
             getExternalXRGamepadAxes('right')
