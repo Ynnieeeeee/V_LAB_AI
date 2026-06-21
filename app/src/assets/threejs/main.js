@@ -7,15 +7,16 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
-import { initControls } from './controls.js?v=20260621-xr-input-v23';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject, getCenterAimResultFromCamera } from './interaction.js?v=20260621-xr-input-v23';
+import { initControls } from './controls.js?v=20260621-xr-input-v24';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject, getCenterAimResultFromCamera } from './interaction.js?v=20260621-xr-drop-v25';
 import { initChatEvents } from '../js/chatEvents.js?v=20260621-ngrok-same-origin-v1';
-import { initLabLogic } from './lab_logic.js?v=20260621-xr-input-v23';
+import { initLabLogic } from './lab_logic.js?v=20260621-xr-input-v24';
 import { initLights } from './lights.js';
-import { initEnvironment, createLabTable } from './environment.js?v=20260618-add-table3';
+import { initEnvironment, createLabTable } from './environment.js?v=20260621-xr-input-v24';
 import { notifyLab } from './labNotifier.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260621-xr-input-v23';
-import { pouringEffect, pouringState } from './interaction.js?v=20260621-xr-input-v23';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260621-xr-input-v24';
+import { pouringEffect, pouringState } from './interaction.js?v=20260621-xr-drop-v25';
+import { isXRNonPickupSurface, isXRPickupTarget } from './xrPickupPolicy.js?v=20260621-xr-input-v24';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';
 import { createAssemblyGraphManager } from './AssemblyGraphManager.js?v=20260609-network-topology';
@@ -602,12 +603,7 @@ function createXRControllerReticle(scene, controllers) {
         return new three.Ray(origin.clone(), direction.clone().normalize());
     };
 
-    const isToolReticleRoot = (object) => Boolean(
-        object &&
-        !object.userData?.isTable &&
-        !object.userData?.isMovableTable &&
-        !object.userData?.isFurniture
-    );
+    const isToolReticleRoot = (object) => isXRPickupTarget(object);
 
     const isProjectedAimCandidate = (object) => {
         if (!isToolReticleRoot(object) || object.visible === false) return false;
@@ -620,6 +616,68 @@ function createXRControllerReticle(scene, controllers) {
             parent = parent.parent;
         }
         return true;
+    };
+
+    const sceneAimRaycaster = new three.Raycaster();
+
+    const hasIgnoredRaycastAncestor = (object) => {
+        let node = object;
+        while (node) {
+            if (node === root || node.userData?.ignoreRaycast === true) return true;
+            node = node.parent;
+        }
+        return false;
+    };
+
+    const resolveReticleToolRoot = (object) => {
+        let node = object;
+        while (node) {
+            if (draggableObjects.includes(node)) return isToolReticleRoot(node) ? node : null;
+            const explicitRoot = node.userData?.root;
+            if (draggableObjects.includes(explicitRoot)) {
+                return isToolReticleRoot(explicitRoot) ? explicitRoot : null;
+            }
+            node = node.parent;
+        }
+        return null;
+    };
+
+    // A projected bounding-box fallback is useful for thin GLTF tools, but it
+    // must not turn the table/floor behind a missed tool into a green target.
+    // Prefer actual geometry; a directly visible room surface blocks fallback.
+    const getDirectReticleHit = (aimRay) => {
+        if (!aimRay?.origin || !aimRay?.direction) {
+            return { toolRoot: null, toolHit: null, surfaceHit: null };
+        }
+
+        sceneAimRaycaster.near = 0.02;
+        sceneAimRaycaster.far = maxDistance;
+        sceneAimRaycaster.ray.copy(aimRay);
+
+        let toolRoot = null;
+        let toolHit = null;
+        let surfaceHit = null;
+        const hits = sceneAimRaycaster.intersectObjects(scene.children, true);
+
+        for (const hit of hits) {
+            if (hasIgnoredRaycastAncestor(hit.object)) continue;
+
+            if (!toolHit) {
+                const candidateRoot = resolveReticleToolRoot(hit.object);
+                if (candidateRoot) {
+                    toolRoot = candidateRoot;
+                    toolHit = hit;
+                }
+            }
+
+            if (!surfaceHit && isXRNonPickupSurface(hit.object)) {
+                surfaceHit = hit;
+            }
+
+            if (toolHit && surfaceHit) break;
+        }
+
+        return { toolRoot, toolHit, surfaceHit };
     };
 
     // Some GLTF tools contain holes or very thin triangles. The center dot can
@@ -706,6 +764,25 @@ function createXRControllerReticle(scene, controllers) {
         const gazeCameras = getGazeCameras();
         const results = gazeCameras.map((gazeCamera) => {
             const eyeRay = getCameraCenterRay(gazeCamera);
+            const directResult = getDirectReticleHit(eyeRay);
+            const toolIsVisible = directResult.toolHit && (
+                !directResult.surfaceHit ||
+                directResult.toolHit.distance < directResult.surfaceHit.distance - 0.002
+            );
+
+            if (toolIsVisible) {
+                return {
+                    root: directResult.toolRoot,
+                    hit: directResult.toolHit,
+                    ray: eyeRay,
+                    mode: 'ray-mesh'
+                };
+            }
+
+            if (directResult.surfaceHit) {
+                return { root: null, hit: directResult.surfaceHit, ray: eyeRay, mode: 'surface' };
+            }
+
             const projectedResult = getProjectedReticleTarget(gazeCamera, eyeRay);
 
             if (projectedResult?.root) {
@@ -752,6 +829,15 @@ function createXRControllerReticle(scene, controllers) {
 
     const getStableAimTarget = (nextTarget) => {
         const now = performance.now();
+        // A table/floor hit is authoritative. Do not keep the previous tool
+        // alive during the switch-delay window after the gaze reaches scenery.
+        if (!nextTarget) {
+            lockedAimTarget = null;
+            pendingAimTarget = null;
+            pendingAimStartedAt = 0;
+            return null;
+        }
+
         if (nextTarget === lockedAimTarget) {
             pendingAimTarget = null;
             pendingAimStartedAt = 0;
@@ -829,9 +915,10 @@ function createXRControllerReticle(scene, controllers) {
         copyAimRay: copyGazeRay,
         getAimTarget() {
             if (!renderer.xr.isPresenting && !renderer.xr.getSession()) return null;
-            if (lockedAimTarget) return lockedAimTarget;
-            lockedAimTarget = getPerEyeReticleTarget().toolRoot;
-            return lockedAimTarget;
+            // Re-check the current ray on input events. Returning a previously
+            // locked tool here allowed a quick press over the table/floor to
+            // grab the tool that had just been looked at.
+            return getStableAimTarget(getPerEyeReticleTarget().toolRoot);
         },
         update(isPresenting) {
             root.visible = isPresenting;

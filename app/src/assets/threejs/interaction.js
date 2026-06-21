@@ -5,7 +5,8 @@ import {
     hasXboxButtonLayout,
     isExternalGrabGamepad,
     isGamepadButtonActive
-} from './xrGamepad.js?v=20260621-xr-input-v23';
+} from './xrGamepad.js?v=20260621-xr-input-v24';
+import { isXRPickupTarget } from './xrPickupPolicy.js?v=20260621-xr-input-v24';
 import { notifyLab } from './labNotifier.js';
 import { PouringEffect, getToolLocalMeshBox } from './pouringEffect.js?v=20260527-liquid-soft-waves';
 import { detectReaction } from './reactionRules.js?v=20260527-liquid-soft-waves';
@@ -1096,6 +1097,10 @@ function getInteractionCandidates() {
     );
 }
 
+function getXRPickupCandidates() {
+    return getInteractionCandidates().filter(isXRPickupTarget);
+}
+
 const centerAimRaycaster = new three.Raycaster();
 const centerAimNdc = new three.Vector2(0, 0);
 
@@ -2123,6 +2128,19 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         raycaster.setFromCamera({ x: 0, y: 0 }, getHandRayCamera());
     };
 
+    const isIgnoredDropHit = (hitObject, heldObject) => {
+        if (!hitObject?.isObject3D) return true;
+        if (isDescendantOf(hitObject, heldObject) || isDescendantOf(hitObject, cameraGroup)) return true;
+
+        let node = hitObject;
+        while (node) {
+            if (node.userData?.ignoreRaycast === true) return true;
+            node = node.parent;
+        }
+
+        return false;
+    };
+
     const resolveAimedRoot = (target, candidates = []) => {
         const aimedRoot = resolveDraggableRoot(target);
         return aimedRoot && (!candidates.length || candidates.includes(aimedRoot)) ? aimedRoot : null;
@@ -2234,10 +2252,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         return roots[0] || null;
     };
 
-    const isXRToolLikeRoot = (root) =>
-        root?.isObject3D &&
-        !isMovableTableObject(root) &&
-        !isTableObject(root);
+    const isXRToolLikeRoot = (root) => isXRPickupTarget(root);
 
     const choosePreferredXRRoot = (roots = []) =>
         roots.find(isXRToolLikeRoot) || roots[0] || null;
@@ -2405,7 +2420,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             currentHeld.visible = false;
             cameraGroup.visible = false;
 
-            const sceneIntersects = raycaster.intersectObjects(scene.children, true);
+            const sceneIntersects = raycaster
+                .intersectObjects(scene.children, true)
+                .filter(hit => !isIgnoredDropHit(hit.object, currentHeld));
 
             currentHeld.visible = originalVisible;
             cameraGroup.visible = originalCameraVisible;
@@ -2416,7 +2433,15 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (!returnedToCabinet) {
             let dropSurfaceY = null;
             const isXRDrop = controlsManager.isXRPresenting?.() === true;
-            if (!isXRDrop && sceneIntersects.length > 0) {
+            let hasAimedHorizontalSurface = false;
+            if (isXRDrop && sceneIntersects.length > 0) {
+                // The XR reticle and this raycaster share the same center-gaze ray.
+                // Put the object at the first visible point under the green dot.
+                const aimedHit = sceneIntersects[0];
+                currentHeld.position.copy(scene.worldToLocal(aimedHit.point.clone()));
+                dropSurfaceY = getHorizontalDropSurfaceYFromHit(aimedHit);
+                hasAimedHorizontalSurface = Number.isFinite(dropSurfaceY);
+            } else if (!isXRDrop && sceneIntersects.length > 0) {
                 // Ưu tiên tìm mặt bàn hoặc sàn nhà
                 let bestHit = sceneIntersects[0];
                 for (let i = 0; i < sceneIntersects.length; i++) {
@@ -2439,6 +2464,12 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                 currentHeld.position.y = 0;
                 dropSurfaceY = 0;
             } else {
+                // No geometry under the dot: keep the same gaze direction and use
+                // a predictable point two metres away instead of the old hand slot.
+                const fallbackPoint = raycaster.ray
+                    .at(2, new three.Vector3());
+                currentHeld.position.copy(scene.worldToLocal(fallbackPoint));
+                currentHeld.updateMatrixWorld(true);
                 dropSurfaceY = getDropSurfaceBelowObject(currentHeld).surfaceY;
             }
 
@@ -2456,11 +2487,25 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             if (!isXRDrop) currentHeld.position.y += bottomOffset;
             updateOffsetToFloor(currentHeld);
 
+            // Lift before overlap resolution so an object aimed at a tabletop (or
+            // another horizontal surface) keeps the dot's exact X/Z coordinate.
+            if (hasAimedHorizontalSurface) {
+                alignObjectBottomToY(currentHeld, dropSurfaceY + DROP_SURFACE_CLEARANCE);
+            }
+
             completeAssemblyDrop(currentHeld);
             resolvePlacementOverlapAfterLegacyLogic(currentHeld);
             restoreCustomScale(currentHeld, savedScale);
-            liftObjectBottomToSurface(currentHeld, dropSurfaceY);
-            settleDroppedObjectOnSurface(currentHeld, { animate: isXRDrop });
+            if (hasAimedHorizontalSurface && !isObjectLockedToAssembly(currentHeld)) {
+                alignObjectBottomToY(currentHeld, dropSurfaceY + DROP_SURFACE_CLEARANCE);
+            } else {
+                liftObjectBottomToSurface(currentHeld, dropSurfaceY);
+            }
+            // A horizontal hit already defines the final support surface. Only
+            // apply gravity when the gaze hit had no usable horizontal surface.
+            if (!isXRDrop || !hasAimedHorizontalSurface) {
+                settleDroppedObjectOnSurface(currentHeld, { animate: isXRDrop });
+            }
             currentHeld.updateMatrixWorld(true);
             persistToolPosition(currentHeld);
             } else {
@@ -2483,7 +2528,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         } else {
             // NHẶT VẬT THỂ
-            const candidates = getInteractionCandidates();
+            const candidates = controlsManager.isXRPresenting?.()
+                ? getXRPickupCandidates()
+                : getInteractionCandidates();
             const root = resolveAimedRoot(preferredTarget, candidates) ||
                 getHandInteractionTargetRoot(candidates);
 
@@ -2620,7 +2667,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const previousForcedAimTarget = activeXRForcedAimTarget;
         let afterHeld = beforeHeld;
         if (controlsManager.isXRPresenting?.()) {
-            const candidates = getInteractionCandidates();
+            const candidates = getXRPickupCandidates();
             const aimInfo = getXRAimTargetInfo(controller, candidates);
             activeXRForcedAimTarget =
                 aimInfo.root ||
@@ -2928,7 +2975,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const isRightHand = handedness !== 'left';
         const beforeHeld = isRightHand ? heldObjectRight : heldObjectLeft;
         const previousForcedAimTarget = activeXRForcedAimTarget;
-        const candidates = getInteractionCandidates();
+        const candidates = getXRPickupCandidates();
         activeXRForcedAimTarget =
             getLiveXRCenterAimRoot(candidates) ||
             (controller ? getExactXRAimTargetRoot(controller, candidates) : null) ||

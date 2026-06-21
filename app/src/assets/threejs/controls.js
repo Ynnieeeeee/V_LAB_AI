@@ -1,8 +1,8 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260621-xr-input-v23';
-import { isExternalGrabGamepad } from './xrGamepad.js?v=20260621-xr-input-v23';
+import { setArmsVisibility } from './interaction.js?v=20260621-xr-drop-v25';
+import { isExternalGrabGamepad } from './xrGamepad.js?v=20260621-xr-input-v24';
 
 function isEditableTarget(event) {
     const target = event?.target;

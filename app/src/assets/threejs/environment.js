@@ -82,6 +82,9 @@ export function initEnvironment(scene) {
     const room = new three.Mesh(roomGeometry, roomMaterial);
     room.position.y = 4.9;
     room.receiveShadow = true;
+    // The inside of this box is also the visible floor/walls/ceiling. Mark it
+    // explicitly so XR gaze selection treats it as scenery, never as a tool.
+    room.userData.isRoomSurface = true;
     scene.add(room);
 
     const loader = new three.CubeTextureLoader();

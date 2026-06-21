@@ -1,7 +1,7 @@
 {
   "scripts": {
     "build": "tailwindcss -i ./app/src/assets/css/input.css -o ./app/src/assets/css/output.css --minify",
-    "test:xr": "node --test app/test/xr_gamepad.test.mjs"
+    "test:xr": "node --test app/test/xr_gamepad.test.mjs app/test/xr_pickup_policy.test.mjs"
   },
   "devDependencies": {
     "tailwindcss": "^3.4.19"
