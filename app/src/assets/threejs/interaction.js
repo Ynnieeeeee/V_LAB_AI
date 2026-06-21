@@ -1661,6 +1661,7 @@ export let pouringEffect;
 let lastPouredTarget = null;
 let isPouringAction = false;
 let activePourSource = null;
+let activePourRequiresPoseGate = false;
 let selectedDirectPourSource = null;
 export const pouringState = { currentPourTargetPos: null }; // Sử dụng object state chuẩn
 
@@ -1669,15 +1670,342 @@ const leftArmGroup = new three.Group();
 const rightArmGroup = new three.Group();
 const xrHoldSlotLeft = new three.Group();
 const xrHoldSlotRight = new three.Group();
+const xrHoldRestPositionLeft = new three.Vector3(-0.32, -0.34, -0.78);
+const xrHoldRestPositionRight = new three.Vector3(0.32, -0.34, -0.78);
+const xrPourPositionLeft = new three.Vector3(-0.1, -0.08, -0.72);
+const xrPourPositionRight = new three.Vector3(0.1, -0.08, -0.72);
+const xrReceivePositionLeft = new three.Vector3(-0.14, -0.36, -0.82);
+const xrReceivePositionRight = new three.Vector3(0.14, -0.36, -0.82);
+const XR_POUR_MOUTH_CLEARANCE = 0.2;
+const XR_POUR_EDGE_GAP = 0.06;
+const xrPourGeometryCache = new WeakMap();
+const xrSourceMouthWorld = new three.Vector3();
+const xrReceiverMouthWorld = new three.Vector3();
+const xrReceiverStreamTargetWorld = new three.Vector3();
+const xrSourceMouthInView = new three.Vector3();
+const xrDesiredMouthInView = new three.Vector3();
+const xrDesiredSlotPosition = new three.Vector3();
+const xrSourceWorldScale = new three.Vector3();
+const xrReceiverWorldScale = new three.Vector3();
+const xrViewWorldScale = new three.Vector3();
+const xrViewInverseMatrix = new three.Matrix4();
+const xrPourTargetEuler = new three.Euler(0, 0, 0, 'YXZ');
+const xrPourTargetQuaternion = new three.Quaternion();
+const xrPourWorldQuaternion = new three.Quaternion();
+const xrPourWorldEuler = new three.Euler(0, 0, 0, 'YXZ');
+const xrSourceViewBox = new three.Box3();
+const xrReceiverViewBox = new three.Box3();
+const xrSourceToViewMatrix = new three.Matrix4();
+const xrReceiverToViewMatrix = new three.Matrix4();
+const xrBoundsCorner = new three.Vector3();
+const xrSlotMoveDelta = new three.Vector3();
+const XR_TOOL_CLEARANCE = 0.035;
 
 xrHoldSlotLeft.name = 'XR Left Hold Slot';
 xrHoldSlotRight.name = 'XR Right Hold Slot';
-xrHoldSlotLeft.position.set(-0.32, -0.34, -0.78);
-xrHoldSlotRight.position.set(0.32, -0.34, -0.78);
+xrHoldSlotLeft.position.copy(xrHoldRestPositionLeft);
+xrHoldSlotRight.position.copy(xrHoldRestPositionRight);
 [xrHoldSlotLeft, xrHoldSlotRight].forEach(slot => {
     slot.userData.ignoreRaycast = true;
     slot.userData.ignoreInteraction = true;
 });
+
+function getXRToolPourGeometry(object, preferPourAnchor = false) {
+    if (!object?.isObject3D) return null;
+
+    const rawCavityPoints = object.userData?.cavityPoints || [];
+    const pourAnchor = preferPourAnchor ? object.userData?.pourAnchor : null;
+    const signature = pourAnchor
+        ? `anchor:${pourAnchor.x}:${pourAnchor.y}:${pourAnchor.z}`
+        : `cavity:${rawCavityPoints.length}:${object.userData?.cavitySource || ''}`;
+    const cacheKey = preferPourAnchor ? 'source' : 'receiver';
+    let objectCache = xrPourGeometryCache.get(object);
+    if (objectCache?.[cacheKey]?.signature === signature) return objectCache[cacheKey];
+
+    const localBox = objectCache?.localBox || getToolLocalMeshBox(object);
+    objectCache ||= {};
+    if (localBox && !localBox.isEmpty()) objectCache.localBox = localBox;
+
+    let localMouth = null;
+    let openingRadius = 0.08;
+    let interiorDepth = 0.06;
+
+    if (pourAnchor) {
+        localMouth = pourAnchor.clone();
+    }
+
+    let cavityPoints = rawCavityPoints.filter(point =>
+        Number.isFinite(point?.lx) &&
+        Number.isFinite(point?.lz) &&
+        Number.isFinite(point?.lyTop) &&
+        Number.isFinite(point?.lyBottom) &&
+        point.lyTop > point.lyBottom
+    );
+    if (!localMouth && (object.userData?.cavitySource === 'csg_scaled_model' || object.userData?.cavityCSG)) {
+        cavityPoints = selectDominantCavityPoints(cavityPoints);
+    }
+
+    if (!localMouth && cavityPoints.length) {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        let topY = -Infinity;
+        let bottomY = Infinity;
+        cavityPoints.forEach(point => {
+            minX = Math.min(minX, point.lx);
+            maxX = Math.max(maxX, point.lx);
+            minZ = Math.min(minZ, point.lz);
+            maxZ = Math.max(maxZ, point.lz);
+            topY = Math.max(topY, point.lyTop);
+            bottomY = Math.min(bottomY, point.lyBottom);
+        });
+        if ([minX, maxX, minZ, maxZ, topY, bottomY].every(Number.isFinite)) {
+            localMouth = new three.Vector3((minX + maxX) / 2, topY, (minZ + maxZ) / 2);
+            openingRadius = Math.max(maxX - minX, maxZ - minZ) * 0.5;
+            interiorDepth = three.MathUtils.clamp((topY - bottomY) * 0.22, 0.035, 0.12);
+        }
+    }
+
+    if (!localMouth) {
+        if (!localBox || localBox.isEmpty()) return null;
+        localMouth = new three.Vector3(
+            (localBox.min.x + localBox.max.x) / 2,
+            localBox.max.y,
+            (localBox.min.z + localBox.max.z) / 2
+        );
+        openingRadius = Math.max(
+            localBox.max.x - localBox.min.x,
+            localBox.max.z - localBox.min.z
+        ) * 0.25;
+        interiorDepth = three.MathUtils.clamp(
+            (localBox.max.y - localBox.min.y) * 0.14,
+            0.035,
+            0.1
+        );
+    }
+
+    const geometry = { signature, localMouth, openingRadius, interiorDepth, localBox };
+    objectCache[cacheKey] = geometry;
+    xrPourGeometryCache.set(object, objectCache);
+    return geometry;
+}
+
+function getPourStreamTargetWorldPosition(container, target = new three.Vector3()) {
+    const geometry = getXRToolPourGeometry(container, false);
+    if (!geometry || !container?.isObject3D) return null;
+    container.updateWorldMatrix(true, false);
+    target.copy(geometry.localMouth);
+    target.y -= geometry.interiorDepth;
+    return target.applyMatrix4(container.matrixWorld);
+}
+
+function setViewBoxFromLocalBox(targetBox, localBox, objectToViewMatrix) {
+    targetBox.makeEmpty();
+    for (let corner = 0; corner < 8; corner += 1) {
+        xrBoundsCorner.set(
+            corner & 1 ? localBox.max.x : localBox.min.x,
+            corner & 2 ? localBox.max.y : localBox.min.y,
+            corner & 4 ? localBox.max.z : localBox.min.z
+        ).applyMatrix4(objectToViewMatrix);
+        targetBox.expandByPoint(xrBoundsCorner);
+    }
+    return targetBox;
+}
+
+function keepXRSourceOutsideReceiver(source, receiver, sourceSlot, desiredSlotPosition, isRightSource) {
+    const sourceGeometry = getXRToolPourGeometry(source, true);
+    const receiverGeometry = getXRToolPourGeometry(receiver, false);
+    const slotParent = sourceSlot?.parent;
+    if (!sourceGeometry?.localBox || !receiverGeometry?.localBox || !slotParent) return false;
+
+    source.updateWorldMatrix(true, false);
+    receiver.updateWorldMatrix(true, false);
+    slotParent.updateWorldMatrix(true, false);
+    xrViewInverseMatrix.copy(slotParent.matrixWorld).invert();
+    xrSourceToViewMatrix.multiplyMatrices(xrViewInverseMatrix, source.matrixWorld);
+    xrReceiverToViewMatrix.multiplyMatrices(xrViewInverseMatrix, receiver.matrixWorld);
+    setViewBoxFromLocalBox(xrSourceViewBox, sourceGeometry.localBox, xrSourceToViewMatrix);
+    setViewBoxFromLocalBox(xrReceiverViewBox, receiverGeometry.localBox, xrReceiverToViewMatrix);
+
+    xrSlotMoveDelta.copy(desiredSlotPosition).sub(sourceSlot.position);
+    xrSourceViewBox.translate(xrSlotMoveDelta);
+    const overlapsX =
+        xrSourceViewBox.max.x > xrReceiverViewBox.min.x - XR_TOOL_CLEARANCE &&
+        xrSourceViewBox.min.x < xrReceiverViewBox.max.x + XR_TOOL_CLEARANCE;
+    const overlapsZ =
+        xrSourceViewBox.max.z > xrReceiverViewBox.min.z - XR_TOOL_CLEARANCE &&
+        xrSourceViewBox.min.z < xrReceiverViewBox.max.z + XR_TOOL_CLEARANCE;
+    const overlapsY =
+        xrSourceViewBox.max.y > xrReceiverViewBox.min.y &&
+        xrSourceViewBox.min.y < xrReceiverViewBox.max.y + XR_TOOL_CLEARANCE;
+    if (!overlapsX || !overlapsZ || !overlapsY) return false;
+
+    const lift = xrReceiverViewBox.max.y + XR_TOOL_CLEARANCE - xrSourceViewBox.min.y;
+    if (lift > 0) desiredSlotPosition.y += lift;
+
+    // Very tall receivers can require more lift than is comfortable. In that
+    // case also move the bottle body outward, while keeping its mouth near the rim.
+    if (desiredSlotPosition.y > 0.52) {
+        desiredSlotPosition.y = 0.52;
+        if (isRightSource) {
+            desiredSlotPosition.x += Math.max(
+                0,
+                xrReceiverViewBox.max.x + XR_TOOL_CLEARANCE - xrSourceViewBox.min.x
+            );
+        } else {
+            desiredSlotPosition.x += Math.min(
+                0,
+                xrReceiverViewBox.min.x - XR_TOOL_CLEARANCE - xrSourceViewBox.max.x
+            );
+        }
+    }
+    return true;
+}
+
+function alignXRSourceMouthAboveReceiver(source, receiver, sourceSlot, isRightSource) {
+    const sourceGeometry = getXRToolPourGeometry(source, true);
+    const receiverGeometry = getXRToolPourGeometry(receiver, false);
+    const slotParent = sourceSlot?.parent;
+    if (!sourceGeometry || !receiverGeometry || !slotParent) return false;
+
+    source.updateWorldMatrix(true, false);
+    receiver.updateWorldMatrix(true, false);
+    slotParent.updateWorldMatrix(true, false);
+    xrSourceMouthWorld.copy(sourceGeometry.localMouth).applyMatrix4(source.matrixWorld);
+    xrReceiverMouthWorld.copy(receiverGeometry.localMouth).applyMatrix4(receiver.matrixWorld);
+    xrViewInverseMatrix.copy(slotParent.matrixWorld).invert();
+    xrSourceMouthInView.copy(xrSourceMouthWorld).applyMatrix4(xrViewInverseMatrix);
+    xrDesiredMouthInView.copy(xrReceiverMouthWorld).applyMatrix4(xrViewInverseMatrix);
+
+    receiver.getWorldScale(xrReceiverWorldScale);
+    slotParent.getWorldScale(xrViewWorldScale);
+    const receiverRadiusInView = receiverGeometry.openingRadius * Math.max(
+        Math.abs(xrReceiverWorldScale.x),
+        Math.abs(xrReceiverWorldScale.z)
+    ) / Math.max(Math.abs(xrViewWorldScale.x), 0.0001);
+    const sideOffset = three.MathUtils.clamp(
+        receiverRadiusInView * 0.65 + XR_POUR_EDGE_GAP,
+        0.09,
+        0.22
+    );
+
+    // Pour over the near edge instead of the centre. The bottle body remains
+    // outside the receiver while its mouth and stream stay above the opening.
+    xrDesiredMouthInView.x += isRightSource ? sideOffset : -sideOffset;
+    xrDesiredMouthInView.y += XR_POUR_MOUTH_CLEARANCE /
+        Math.max(Math.abs(xrViewWorldScale.y), 0.0001);
+    xrDesiredSlotPosition.copy(sourceSlot.position).add(
+        xrDesiredMouthInView.sub(xrSourceMouthInView)
+    );
+
+    // Keep the bottle inside the comfortable VR viewing area even for models
+    // whose origin or bounding box is unusually far from the visible vessel.
+    xrDesiredSlotPosition.x = three.MathUtils.clamp(xrDesiredSlotPosition.x, -0.46, 0.46);
+    xrDesiredSlotPosition.y = three.MathUtils.clamp(xrDesiredSlotPosition.y, -0.22, 0.52);
+    xrDesiredSlotPosition.z = three.MathUtils.clamp(xrDesiredSlotPosition.z, -1.05, -0.45);
+    keepXRSourceOutsideReceiver(
+        source,
+        receiver,
+        sourceSlot,
+        xrDesiredSlotPosition,
+        isRightSource
+    );
+    xrDesiredSlotPosition.x = three.MathUtils.clamp(xrDesiredSlotPosition.x, -0.58, 0.58);
+    if (sourceSlot.position.distanceToSquared(xrDesiredSlotPosition) > 0.000004) {
+        sourceSlot.position.lerp(xrDesiredSlotPosition, 0.14);
+    }
+
+    // Resolve any overlap on the current interpolated frame immediately. This
+    // prevents a large bottle from briefly passing through the receiver.
+    keepXRSourceOutsideReceiver(source, receiver, sourceSlot, sourceSlot.position, isRightSource);
+    return true;
+}
+
+function isHeldPourPoseReady(source, receiver) {
+    const sourceGeometry = getXRToolPourGeometry(source, true);
+    const receiverGeometry = getXRToolPourGeometry(receiver, false);
+    if (!sourceGeometry || !receiverGeometry) return false;
+
+    source.updateWorldMatrix(true, false);
+    receiver.updateWorldMatrix(true, false);
+    xrSourceMouthWorld.copy(sourceGeometry.localMouth).applyMatrix4(source.matrixWorld);
+    xrReceiverMouthWorld.copy(receiverGeometry.localMouth).applyMatrix4(receiver.matrixWorld);
+    source.getWorldScale(xrSourceWorldScale);
+    receiver.getWorldScale(xrReceiverWorldScale);
+
+    const dx = xrSourceMouthWorld.x - xrReceiverMouthWorld.x;
+    const dz = xrSourceMouthWorld.z - xrReceiverMouthWorld.z;
+    const horizontalDistance = Math.hypot(dx, dz);
+    const verticalDistance = xrSourceMouthWorld.y - xrReceiverMouthWorld.y;
+    const receiverRadius = receiverGeometry.openingRadius * Math.max(
+        Math.abs(xrReceiverWorldScale.x),
+        Math.abs(xrReceiverWorldScale.z)
+    );
+    const sourceBox = sourceGeometry.localBox;
+    const sourceReach = sourceBox && !sourceBox.isEmpty()
+        ? Math.max(
+            (sourceBox.max.x - sourceBox.min.x) * Math.abs(xrSourceWorldScale.x),
+            (sourceBox.max.y - sourceBox.min.y) * Math.abs(xrSourceWorldScale.y),
+            (sourceBox.max.z - sourceBox.min.z) * Math.abs(xrSourceWorldScale.z)
+        )
+        : 0.2;
+    const isAlreadyFlowing = pouringEffect?.isPouring === true;
+    const horizontalTolerance = three.MathUtils.clamp(
+        receiverRadius * 1.1 + sourceReach * 0.55 + (isAlreadyFlowing ? 0.12 : 0.08),
+        isAlreadyFlowing ? 0.22 : 0.18,
+        isAlreadyFlowing ? 0.75 : 0.68
+    );
+
+    const restQuaternion = source.userData?.xrPourRestQuaternion;
+    let tiltAmount;
+    if (restQuaternion?.isQuaternion && (source.parent === xrHoldSlotLeft || source.parent === xrHoldSlotRight)) {
+        tiltAmount = source.quaternion.angleTo(restQuaternion);
+    } else {
+        source.getWorldQuaternion(xrPourWorldQuaternion);
+        xrPourWorldEuler.setFromQuaternion(xrPourWorldQuaternion, 'YXZ');
+        tiltAmount = Math.max(Math.abs(xrPourWorldEuler.x), Math.abs(xrPourWorldEuler.z));
+    }
+
+    const minimumTilt = isAlreadyFlowing ? Math.PI * 0.3 : Math.PI * 0.35;
+    const minimumHeight = isAlreadyFlowing ? 0.06 : 0.1;
+    return (
+        tiltAmount >= minimumTilt &&
+        horizontalDistance <= horizontalTolerance &&
+        verticalDistance >= minimumHeight
+    );
+}
+
+function syncPoseGatedPourFlow(source, receiver) {
+    const poseReady = Boolean(
+        isPouringAction &&
+        source?.isObject3D &&
+        receiver?.isObject3D &&
+        isPourReceiver(receiver) &&
+        isHeldPourPoseReady(source, receiver)
+    );
+
+    if (!poseReady) {
+        if (pouringEffect?.isPouring) pouringEffect.stop();
+        pouringState.currentPourTargetPos = null;
+        return false;
+    }
+
+    if (!pouringEffect.isPouring) {
+        pouringEffect.startPouring(
+            xrSourceMouthWorld,
+            getChemicalColor(source),
+            getChemicalName(source),
+            getChemicalType(source),
+            getPhysicalState(source)
+        );
+    }
+    pouringEffect.emit(xrSourceMouthWorld);
+    pouringState.currentPourTargetPos ||= new three.Vector3();
+    getPourStreamTargetWorldPosition(receiver, xrReceiverStreamTargetWorld);
+    pouringState.currentPourTargetPos.copy(xrReceiverStreamTargetWorld);
+    return true;
+}
 
 function createArm(isRight = true) {
     const armGroup = new three.Group();
@@ -2013,9 +2341,9 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     async function pourDirectlyIntoTarget(sourceObj, targetObj) {
         if (!isPourSource(sourceObj) || !isPourReceiver(targetObj) || sourceObj === targetObj) return false;
 
-        const targetMouthPos = getContainerEffectPosition(targetObj);
-        previewDirectPour(sourceObj, targetObj, targetMouthPos);
-        await handlePourSuccess(sourceObj, targetObj, targetMouthPos, { direct: true });
+        const targetStreamPos = getPourStreamTargetWorldPosition(targetObj) || getContainerEffectPosition(targetObj);
+        previewDirectPour(sourceObj, targetObj, targetStreamPos);
+        await handlePourSuccess(sourceObj, targetObj, targetStreamPos, { direct: true });
         return true;
     }
 
@@ -2074,15 +2402,27 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         isPouringAction = true;
         activePourSource = sourceObj;
+        const heldReceiver = sourceObj === heldObjectRight ? heldObjectLeft :
+            sourceObj === heldObjectLeft ? heldObjectRight : null;
+        activePourRequiresPoseGate = Boolean(heldReceiver && isPourReceiver(heldReceiver));
 
-        const pourPoint = getPourSourceWorldPoint(sourceObj);
-        pouringEffect.startPouring(
-            pourPoint,
-            getChemicalColor(sourceObj),
-            getChemicalName(sourceObj),
-            getChemicalType(sourceObj),
-            getPhysicalState(sourceObj)
-        );
+        if (sourceObj.parent === xrHoldSlotLeft || sourceObj.parent === xrHoldSlotRight) {
+            sourceObj.userData.xrPourRestQuaternion ??= sourceObj.quaternion.clone();
+        }
+
+        if (activePourRequiresPoseGate) {
+            pouringEffect.stop();
+            pouringState.currentPourTargetPos = null;
+        } else {
+            const pourPoint = getPourSourceWorldPoint(sourceObj);
+            pouringEffect.startPouring(
+                pourPoint,
+                getChemicalColor(sourceObj),
+                getChemicalName(sourceObj),
+                getChemicalType(sourceObj),
+                getPhysicalState(sourceObj)
+            );
+        }
         return true;
     }
 
@@ -2090,6 +2430,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         const sourceObj = activePourSource || heldObjectRight || heldObjectLeft || draggedObject;
         isPouringAction = false;
         activePourSource = null;
+        activePourRequiresPoseGate = false;
         if (options.resetRotation && sourceObj?.rotation) sourceObj.rotation.z = 0;
         pouringEffect?.stop();
         pouringState.currentPourTargetPos = null;
@@ -4162,7 +4503,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             const explicitTarget = getPreferredPourTargetForSource(sourceObj);
 
             if (explicitTarget) {
-                streamEnd = getContainerEffectPosition(explicitTarget);
+                streamEnd = getPourStreamTargetWorldPosition(explicitTarget) || getContainerEffectPosition(explicitTarget);
                 targetHit = { object: explicitTarget, point: streamEnd };
             }
 
@@ -4174,16 +4515,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     resolveDraggableRoot(targetHit.object) ||
                     targetHit.object;
 
-                const targetBox = new three.Box3().setFromObject(targetObj);
-                const targetCenter = new three.Vector3();
-                targetBox.getCenter(targetCenter);
-
-                // Luôn hút vào miệng cốc (kết thúc ở miệng thay vì center sâu bên dưới)
-                streamEnd = new three.Vector3(
-                    targetCenter.x,
-                    targetBox.max.y + 0.05, // Cao hơn miệng 1 chút để tạo tia đâm vào
-                    targetCenter.z
-                );
+                // Kéo đích dòng chảy qua miệng và vào trong khoang chứa.
+                streamEnd = getPourStreamTargetWorldPosition(targetObj) || targetHit.point.clone();
             } else if (!targetHit) {
                 // --- CƠ CHẾ TỰ ĐỘNG HÚT (MAGNETIC SNAP) CẢI TIẾN ---
                 // Tăng bán kính tìm kiếm lên 0.55m để dễ đổ trúng hơn
@@ -4200,8 +4533,8 @@ export function initInteractionEvents(camera, controlsManager, scene) {
                     // Kiểm tra: Trong bán kính 0.55m và miệng lọ phải cao hơn thân dụng cụ
                     if (distXZ < bestDist && (targetBox.max.y - 0.1) < pourPoint.y) {
                         bestDist = distXZ;
-                        // Điểm rơi sẽ là miệng của dụng cụ
-                        streamEnd = new three.Vector3(targetCenter.x, targetBox.max.y + 0.05, targetCenter.z);
+                        // Điểm rơi nằm trong lòng dụng cụ, thấp hơn miệng một đoạn.
+                        streamEnd = getPourStreamTargetWorldPosition(target) || targetCenter.clone();
                         targetHit = { object: target, point: streamEnd };
                     }
                 });
@@ -4324,6 +4657,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
     function stopPouringForAutoStop(source) {
         isPouringAction = false;
         activePourSource = null;
+        activePourRequiresPoseGate = false;
         if (source) source.rotation.z = 0;
         pouringEffect.stop();
         lastPouredTarget = null;
@@ -5004,6 +5338,9 @@ export function updateArmsAnimation(time, isMoving) {
     const bob = Math.sin(time * speed) * amplitude;
     const sway = Math.cos(time * speed * 0.5) * amplitude * 0.5;
 
+    if (!heldObjectLeft) xrHoldSlotLeft.position.lerp(xrHoldRestPositionLeft, 0.16);
+    if (!heldObjectRight) xrHoldSlotRight.position.lerp(xrHoldRestPositionRight, 0.16);
+
     // --- LOGIC DI CHUYỂN TAY KHI ĐỔ (POURING ANIMATION) ---
     const isPouringHandToHand = isPouringAction && heldObjectRight && heldObjectLeft;
 
@@ -5065,13 +5402,66 @@ export function updateArmsAnimation(time, isMoving) {
 
     // --- FORCE BOTTLE TILT DURING POURING ---
     const hands = [
-        { held: heldObjectRight, isRight: true },
-        { held: heldObjectLeft, isRight: false }
+        {
+            held: heldObjectRight,
+            isRight: true,
+            xrSlot: xrHoldSlotRight,
+            xrRestPosition: xrHoldRestPositionRight,
+            xrPourPosition: xrPourPositionRight,
+            xrReceivePosition: xrReceivePositionRight
+        },
+        {
+            held: heldObjectLeft,
+            isRight: false,
+            xrSlot: xrHoldSlotLeft,
+            xrRestPosition: xrHoldRestPositionLeft,
+            xrPourPosition: xrPourPositionLeft,
+            xrReceivePosition: xrReceivePositionLeft
+        }
     ];
 
     hands.forEach(h => {
         if (h.held) {
             const isSource = h.held === activePourSource;
+            const isXRHeld = h.held.parent === h.xrSlot;
+
+            if (isXRHeld) {
+                const receiver = isPouringHandToHand && isSource
+                    ? (h.isRight ? heldObjectLeft : heldObjectRight)
+                    : null;
+                const canAlignToReceiver = Boolean(
+                    receiver?.isObject3D &&
+                    isPourReceiver(receiver) &&
+                    (receiver.parent === xrHoldSlotLeft || receiver.parent === xrHoldSlotRight)
+                );
+                let slotTarget = h.xrRestPosition;
+                if (isPouringAction && isSource) {
+                    slotTarget = canAlignToReceiver ? h.xrSlot.position : h.xrPourPosition;
+                } else if (isPouringHandToHand) {
+                    slotTarget = h.xrReceivePosition;
+                }
+                h.xrSlot.position.lerp(slotTarget, 0.12);
+
+                const restQuaternion = h.held.userData.xrPourRestQuaternion;
+                if (isPouringAction && isSource && restQuaternion?.isQuaternion) {
+                    xrPourTargetEuler.setFromQuaternion(restQuaternion, 'YXZ');
+                    xrPourTargetEuler.x += Math.PI * 0.62;
+                    xrPourTargetEuler.z += h.isRight ? -0.25 : 0.25;
+                    xrPourTargetQuaternion.setFromEuler(xrPourTargetEuler);
+                    h.held.quaternion.slerp(xrPourTargetQuaternion, 0.14);
+                    if (canAlignToReceiver) {
+                        alignXRSourceMouthAboveReceiver(h.held, receiver, h.xrSlot, h.isRight);
+                    }
+                } else if (restQuaternion?.isQuaternion) {
+                    h.held.quaternion.slerp(restQuaternion, 0.16);
+                    if (h.held.quaternion.angleTo(restQuaternion) < 0.002) {
+                        h.held.quaternion.copy(restQuaternion);
+                        delete h.held.userData.xrPourRestQuaternion;
+                    }
+                }
+
+                return;
+            }
 
             if (isPouringAction && isSource) {
                 // Chỉ bắt đầu nghiêng lọ khi tay đã đưa vào đủ gần vị trí trung tâm
@@ -5099,6 +5489,12 @@ export function updateArmsAnimation(time, isMoving) {
             }
         }
     });
+
+    if (activePourRequiresPoseGate && activePourSource) {
+        const receiver = activePourSource === heldObjectRight ? heldObjectLeft :
+            activePourSource === heldObjectLeft ? heldObjectRight : null;
+        syncPoseGatedPourFlow(activePourSource, receiver);
+    }
 
     animateFingers(rightArm, !!heldObjectRight);
 }
