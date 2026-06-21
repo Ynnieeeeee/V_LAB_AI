@@ -2027,7 +2027,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (!selectedDirectPourSource || !selectedDirectPourSource.parent) {
             if (isPourSource(aimedTool)) {
                 setDirectPourSource(aimedTool);
-                notifyLab?.(`Đã chọn nguồn rót: ${getChemicalName(aimedTool)}. Nhắm vào cốc/bình/ống nghiệm muốn nhận rồi bấm P hoặc Space.`);
+                notifyLab?.(`Đã chọn nguồn rót: ${getChemicalName(aimedTool)}. Nhắm vào cốc/bình/ống nghiệm muốn nhận rồi bấm P, B hoặc Space.`);
                 return true;
             }
 
@@ -2037,13 +2037,13 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
         if (aimedTool && aimedTool !== selectedDirectPourSource && isPourSource(aimedTool) && !isPourReceiver(aimedTool)) {
             setDirectPourSource(aimedTool);
-            notifyLab?.(`Đã đổi nguồn rót sang: ${getChemicalName(aimedTool)}. Nhắm vào dụng cụ nhận rồi bấm P hoặc Space.`);
+            notifyLab?.(`Đã đổi nguồn rót sang: ${getChemicalName(aimedTool)}. Nhắm vào dụng cụ nhận rồi bấm P, B hoặc Space.`);
             return true;
         }
 
         const target = getPreferredPourTargetForSource(selectedDirectPourSource);
         if (!target) {
-            notifyLab?.(`Đang chọn nguồn rót ${getChemicalName(selectedDirectPourSource)}. Hãy nhắm đúng vào dụng cụ nhận rồi bấm P hoặc Space.`);
+            notifyLab?.(`Đang chọn nguồn rót ${getChemicalName(selectedDirectPourSource)}. Hãy nhắm đúng vào dụng cụ nhận rồi bấm P, B hoặc Space.`);
             return false;
         }
 
@@ -3365,6 +3365,11 @@ export function initInteractionEvents(camera, controlsManager, scene) {
         if (!draggedObject && !fps.isLocked) orbit.enabled = true;
     };
 
+    const isKeyboardPourShortcut = (event) => (
+        event.code === 'Space' ||
+        (event.code === 'KeyB' && (fps.isLocked || controlsManager.isXRPresenting?.()))
+    );
+
     window.addEventListener('keydown', (e) => {
         if (isEditableTarget(e)) return;
         const key = e.key.toLowerCase();
@@ -3424,7 +3429,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
             b: ['z', -toolRotateState.step],
             n: ['z', toolRotateState.step]
         };
-        if (stepMap[key] && activeTool) {
+        if (stepMap[key] && activeTool && !isKeyboardPourShortcut(e)) {
             e.preventDefault();
             e.stopImmediatePropagation();
             const [stepAxis, amount] = stepMap[key];
@@ -3498,7 +3503,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     window.addEventListener('keydown', (e) => {
         if (isEditableTarget(e)) return;
-        if (e.code === 'Space') {
+        if (isKeyboardPourShortcut(e)) {
             const heldObj = heldObjectRight || heldObjectLeft || draggedObject; // Kiểm tra cả tay và chuột
             if (!heldObj) {
                 if (e.repeat) return;
@@ -3552,7 +3557,7 @@ export function initInteractionEvents(camera, controlsManager, scene) {
 
     window.addEventListener('keyup', (e) => {
         if (isEditableTarget(e)) return;
-        if (e.code === 'Space') {
+        if (isKeyboardPourShortcut(e)) {
             const heldObj = heldObjectRight || heldObjectLeft || draggedObject;
             if (heldObj) {
                 isPouringAction = false;

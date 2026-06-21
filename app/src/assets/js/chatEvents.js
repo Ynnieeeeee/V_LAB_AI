@@ -3,6 +3,15 @@ export function initChatEvents() {
     const statusText = document.getElementById('status-text');
     const btn = document.getElementById('send-btn');
 
+    if (!input || !btn) {
+        console.warn('Không thể khởi tạo chat: thiếu #chat-input hoặc #send-btn.');
+        return;
+    }
+
+    const setStatus = (message) => {
+        if (statusText) statusText.textContent = message;
+    };
+
     const handleSend = async () => {
         const text = input.value.trim();
 
@@ -10,8 +19,8 @@ export function initChatEvents() {
 
         btn.disabled = true;
         btn.classList.add('opacity-50', 'cursor-not-allowed');
-        statusText.innerText = "AI đang phân tích và chuẩn bị dụng cụ...";
-        statusText.classList.add('text-pulse');
+        setStatus("AI đang phân tích và chuẩn bị dụng cụ...");
+        statusText?.classList.add('text-pulse');
 
         try {
             const response = await fetch('/api/lab/generate', {
@@ -46,15 +55,15 @@ export function initChatEvents() {
                 }
 
                 input.value = '';
-                statusText.innerText = waitingForModels
+                setStatus(waitingForModels
                     ? "Đang tạo mô hình 3D cho dụng cụ..."
-                    : "Đang đưa dụng cụ lên bàn...";
+                    : "Đang đưa dụng cụ lên bàn...");
                 window.checkBackendStatus?.();
             } else {
-                statusText.innerText = "Lỗi: Server báo lỗi " + response.status;
+                setStatus("Lỗi: Server báo lỗi " + response.status);
             }
         } catch (err){
-            statusText.innerText = "Lỗi: Mất kết nối server";
+            setStatus("Lỗi: Mất kết nối server");
         } finally {
             btn.disabled = false;
             btn.classList.remove('opacity-50', 'cursor-not-allowed');

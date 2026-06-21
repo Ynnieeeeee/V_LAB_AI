@@ -9,7 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
 import { initControls } from './controls.js?v=20260621-xr-input-v24';
 import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject, getCenterAimResultFromCamera } from './interaction.js?v=20260621-xr-drop-v25';
-import { initChatEvents } from '../js/chatEvents.js?v=20260621-ngrok-same-origin-v1';
+import { initChatEvents } from '../js/chatEvents.js?v=20260621-ngrok-same-origin-v2';
 import { initLabLogic } from './lab_logic.js?v=20260621-xr-input-v24';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260621-xr-input-v24';
@@ -645,7 +645,7 @@ function createXRControllerReticle(scene, controllers) {
     // A projected bounding-box fallback is useful for thin GLTF tools, but it
     // must not turn the table/floor behind a missed tool into a green target.
     // Prefer actual geometry; a directly visible room surface blocks fallback.
-    const getDirectReticleHit = (aimRay) => {
+    const getDirectReticleHit = (aimRay, aimCamera = camera) => {
         if (!aimRay?.origin || !aimRay?.direction) {
             return { toolRoot: null, toolHit: null, surfaceHit: null };
         }
@@ -653,6 +653,10 @@ function createXRControllerReticle(scene, controllers) {
         sceneAimRaycaster.near = 0.02;
         sceneAimRaycaster.far = maxDistance;
         sceneAimRaycaster.ray.copy(aimRay);
+        // Sprite.raycast() needs the active camera to billboard the sprite before
+        // testing it. Assigning Raycaster.ray directly does not populate camera
+        // (unlike setFromCamera), so labels in the scene used to crash this pass.
+        sceneAimRaycaster.camera = aimCamera?.isCamera ? aimCamera : camera;
 
         let toolRoot = null;
         let toolHit = null;
@@ -764,7 +768,7 @@ function createXRControllerReticle(scene, controllers) {
         const gazeCameras = getGazeCameras();
         const results = gazeCameras.map((gazeCamera) => {
             const eyeRay = getCameraCenterRay(gazeCamera);
-            const directResult = getDirectReticleHit(eyeRay);
+            const directResult = getDirectReticleHit(eyeRay, gazeCamera);
             const toolIsVisible = directResult.toolHit && (
                 !directResult.surfaceHit ||
                 directResult.toolHit.distance < directResult.surfaceHit.distance - 0.002
