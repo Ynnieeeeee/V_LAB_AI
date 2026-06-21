@@ -1,7 +1,8 @@
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import * as three from 'three';
-import { setArmsVisibility } from './interaction.js?v=20260621-ngrok-same-origin-v1';
+import { setArmsVisibility } from './interaction.js?v=20260621-xr-input-v23';
+import { isExternalGrabGamepad } from './xrGamepad.js?v=20260621-xr-input-v23';
 
 function isEditableTarget(event) {
     const target = event?.target;
@@ -28,7 +29,6 @@ export function initControls(camera, domElement, cameraGroup) {
     const xrDeadzone = 0.15;
     const xrEyeHeight = 2.8;
     const xrControllers = { left: null, right: null, gamepad: null };
-    const xboxGamepadIdPattern = /xbox|xinput|360/i;
     const direction = new three.Vector3();
     const rightDirection = new three.Vector3();
     const upDirection = new three.Vector3(0, 1, 0);
@@ -36,6 +36,7 @@ export function initControls(camera, domElement, cameraGroup) {
     let wasXRPresenting = false;
     let xrLookPitch = 0;
     let isXRHandHolding = () => false;
+    const connectedGamepads = new Map();
 
     // Lắng nghe sự kiện bàn phím
     const onKeyDown = (event) => {
@@ -92,12 +93,16 @@ export function initControls(camera, domElement, cameraGroup) {
 
         velocity.set(0, 0, 0);
         let isMoving = false;
+        const xbox360Gamepad = getXbox360Gamepad();
+        const xboxMoveAxes = getGamepadStickAxes(xbox360Gamepad, 'left');
 
         // Tính toán hướng tiến/lùi dựa trên hướng nhìn của camera (phẳng trên mặt đất)
         if (keys.forward) { velocity.z -= moveSpeed; isMoving = true; }
         if (keys.backward) { velocity.z += moveSpeed; isMoving = true; }
         if (keys.left) { velocity.x -= moveSpeed; isMoving = true; }
         if (keys.right) { velocity.x += moveSpeed; isMoving = true; }
+        if (Math.abs(xboxMoveAxes.y) > xrDeadzone) { velocity.z += xboxMoveAxes.y * moveSpeed; isMoving = true; }
+        if (Math.abs(xboxMoveAxes.x) > xrDeadzone) { velocity.x += xboxMoveAxes.x * moveSpeed; isMoving = true; }
 
         // Di chuyển cameraGroup dựa trên hướng nhìn cục bộ của camera
         fps.moveForward(-velocity.z);
@@ -118,18 +123,25 @@ export function initControls(camera, domElement, cameraGroup) {
         Math.abs(axes?.x || 0) > xrDeadzone ||
         Math.abs(axes?.y || 0) > xrDeadzone;
 
-    const getBrowserGamepads = () => {
-        if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') return [];
-        return Array.from(navigator.getGamepads()).filter(Boolean);
+    const rememberGamepad = (gamepad) => {
+        if (!gamepad) return;
+        const key = Number.isFinite(gamepad.index) ? gamepad.index : gamepad;
+        connectedGamepads.set(key, gamepad);
     };
 
-    const isXboxLikeGamepad = (gamepad) => Boolean(
-        gamepad &&
-        (
-            xboxGamepadIdPattern.test(gamepad.id || '') ||
-            (gamepad.mapping === 'standard' && (gamepad.buttons?.length || 0) >= 16)
-        )
-    );
+    window.addEventListener('gamepadconnected', event => rememberGamepad(event.gamepad));
+    window.addEventListener('gamepaddisconnected', event => {
+        const gamepad = event.gamepad;
+        const key = Number.isFinite(gamepad?.index) ? gamepad.index : gamepad;
+        connectedGamepads.delete(key);
+    });
+
+    const getBrowserGamepads = () => {
+        if (typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function') {
+            Array.from(navigator.getGamepads()).filter(Boolean).forEach(rememberGamepad);
+        }
+        return Array.from(connectedGamepads.values()).filter(gamepad => gamepad?.connected !== false);
+    };
 
     const getExternalXRGamepad = () => {
         const gamepads = getBrowserGamepads().filter(gamepad =>
@@ -137,14 +149,34 @@ export function initControls(camera, domElement, cameraGroup) {
             ((gamepad.axes?.length || 0) >= 2 || (gamepad.buttons?.length || 0) > 0)
         );
 
-        return gamepads.find(isXboxLikeGamepad) ||
-            gamepads.find(gamepad => gamepad.mapping === 'standard') ||
-            gamepads[0] ||
-            null;
+        return gamepads.find(gamepad =>
+            isExternalGrabGamepad(gamepad, null, { allowLayoutFallback: true })
+        ) || null;
+    };
+
+    const getXbox360Gamepad = () => {
+        const externalGamepad = getExternalXRGamepad();
+        const candidates = [
+            externalGamepad,
+            getControllerGamepad(xrControllers.gamepad),
+            getControllerGamepad(xrControllers.left),
+            getControllerGamepad(xrControllers.right)
+        ].filter((gamepad, index, items) => gamepad && items.indexOf(gamepad) === index);
+
+        return candidates.find(gamepad => {
+            const controller = [xrControllers.gamepad, xrControllers.left, xrControllers.right]
+                .find(item => getControllerGamepad(item) === gamepad);
+            return isExternalGrabGamepad(
+                gamepad,
+                controller?.userData?.inputSource || null,
+                { allowLayoutFallback: true }
+            );
+        }) || null;
     };
 
     const isGamepadButtonPressed = (gamepad, index) => {
         const button = gamepad?.buttons?.[index];
+        if (typeof button === 'number') return button > 0.2;
         return Boolean(button?.pressed || Number(button?.value || 0) > 0.2);
     };
 
@@ -203,20 +235,33 @@ export function initControls(camera, domElement, cameraGroup) {
 
     const connectXRController = (controller, inputSource) => {
         const rawHandedness = inputSource?.handedness;
+        const inputGamepad = inputSource?.gamepad || null;
         const handedness = rawHandedness === 'left' || rawHandedness === 'right'
             ? rawHandedness
             : (controller?.userData?.slot === 1 ? 'left' : 'right');
+        // Cardboard/phone gaze inputs normally report handedness "none". They
+        // still emit valid select events and must not be mistaken for an Xbox
+        // pad. Only full-size gamepads use the separate polling path.
+        const isGenericGamepadInput = isExternalGrabGamepad(
+            inputGamepad,
+            inputSource,
+            { allowLayoutFallback: false }
+        );
 
         controller.name = handedness === 'left' ? 'Left Controller' : 'Right Controller';
         controller.userData.handedness = handedness;
         controller.userData.inputSource = inputSource;
-        controller.userData.gamepad = inputSource?.gamepad || null;
-        controller.userData.isGenericGamepadInput = rawHandedness !== 'left' && rawHandedness !== 'right';
+        controller.userData.gamepad = inputGamepad;
+        controller.userData.isGenericGamepadInput = isGenericGamepadInput;
+        controller.userData.isGazeSelectInput =
+            !isGenericGamepadInput &&
+            (inputSource?.targetRayMode === 'gaze' || rawHandedness === 'none');
         if (controller.userData.grip?.userData) {
             controller.userData.grip.userData.handedness = handedness;
             controller.userData.grip.userData.inputSource = inputSource;
-            controller.userData.grip.userData.gamepad = inputSource?.gamepad || null;
+            controller.userData.grip.userData.gamepad = inputGamepad;
             controller.userData.grip.userData.isGenericGamepadInput = controller.userData.isGenericGamepadInput;
+            controller.userData.grip.userData.isGazeSelectInput = controller.userData.isGazeSelectInput;
         }
         xrControllers[handedness] = controller;
         if (controller.userData.isGenericGamepadInput) xrControllers.gamepad = controller;
@@ -231,25 +276,29 @@ export function initControls(camera, domElement, cameraGroup) {
         controller.userData.inputSource = null;
         controller.userData.gamepad = null;
         controller.userData.isGenericGamepadInput = false;
+        controller.userData.isGazeSelectInput = false;
         if (controller.userData.grip?.userData) {
             controller.userData.grip.userData.handedness = null;
             controller.userData.grip.userData.inputSource = null;
             controller.userData.grip.userData.gamepad = null;
             controller.userData.grip.userData.isGenericGamepadInput = false;
+            controller.userData.grip.userData.isGazeSelectInput = false;
         }
     };
 
     const updateXRMovement = (delta) => {
+        const xbox360Gamepad = getXbox360Gamepad();
+
         const leftAxes = getFirstActiveAxes(
+            getGamepadStickAxes(xbox360Gamepad, 'left'),
             getStickAxes(xrControllers.left),
-            getStickAxes(xrControllers.gamepad, 'left'),
-            getExternalXRGamepadAxes('left')
+            getStickAxes(xrControllers.gamepad, 'left')
         );
         const shouldReserveRightStick = isXRHandHolding('any') || isXRHandHolding('right');
         const rightAxes = shouldReserveRightStick ? { x: 0, y: 0 } : getFirstActiveAxes(
+            getGamepadStickAxes(xbox360Gamepad, 'right'),
             getStickAxes(xrControllers.right),
-            getStickAxes(xrControllers.gamepad, 'right'),
-            getExternalXRGamepadAxes('right')
+            getStickAxes(xrControllers.gamepad, 'right')
         );
         const moveX = applyDeadzone(leftAxes.x);
         const moveY = applyDeadzone(leftAxes.y);
@@ -304,6 +353,7 @@ export function initControls(camera, domElement, cameraGroup) {
         updateXRMovement,
         getExternalXRGamepad,
         getExternalXRGamepadAxes,
-        setXRHandHoldingProvider
+        setXRHandHoldingProvider,
+        isXRHandHolding: (handedness = 'any') => isXRHandHolding(handedness)
     };
 }

@@ -5,7 +5,7 @@ import { applyAdvancedPBR } from './pbr.js';
 import { applyToolMetadataToObject } from './ToolClassifier.js';
 import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 import { ensureAutoSnapPoints } from './toolAnchors.js?v=20260609-network-topology';
-import { draggableObjects, persistToolPosition } from './interaction.js?v=20260621-ngrok-same-origin-v1';
+import { draggableObjects, persistToolPosition } from './interaction.js?v=20260621-xr-input-v23';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh
