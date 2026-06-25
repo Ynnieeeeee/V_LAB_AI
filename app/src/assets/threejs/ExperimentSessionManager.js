@@ -2,13 +2,11 @@ const DEFAULT_LIQUID_AMOUNT = 5;
 const DEFAULT_SOLID_AMOUNT = 0.5;
 const LIQUID_FLOW_PER_TICK = 0.5;
 const SOLID_FLOW_PER_TICK = 0.05;
-const STEP_SYNC_THROTTLE_MS = 250;
 
 let currentExperimentPlan = window.currentExperimentPlan || null;
 let currentExperimentSteps = window.currentExperimentSteps || [];
 let currentStep = null;
 let actionStep = 0;
-const lastStepSyncAt = new Map();
 
 function norm(value) {
     return String(value || '')
@@ -293,19 +291,8 @@ export function setCurrentExperimentSteps(steps = []) {
     return currentExperimentSteps;
 }
 
-export async function fetchExperimentSteps(idConversation = window.currentConvId || localStorage.getItem('lab_conv_id')) {
-    if (!idConversation) return [];
-    const token = localStorage.getItem('access_token');
-    if (!token) return [];
-    const response = await fetch(`/api/experiment-steps/${idConversation}`, {
-        headers: { Authorization: `Bearer ${token}` }
-    });
-    if (!response.ok) {
-        console.error('Experiment steps fetch failed:', response.status, await response.text().catch(() => ''));
-        return [];
-    }
-    const data = await response.json();
-    return setCurrentExperimentSteps(data.steps || []);
+export async function fetchExperimentSteps() {
+    return currentExperimentSteps;
 }
 
 export function getCurrentExperimentPlan() {
@@ -343,34 +330,13 @@ function flowIncrementFor(source, step = null) {
     return unit === 'g' ? SOLID_FLOW_PER_TICK : LIQUID_FLOW_PER_TICK;
 }
 
-function syncStepActualAmount(step, force = false) {
+function syncStepActualAmount(step) {
     if (!step?.id_step) return;
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
-    const now = performance.now();
-    const last = lastStepSyncAt.get(step.id_step) || 0;
-    if (!force && now - last < STEP_SYNC_THROTTLE_MS) return;
-    lastStepSyncAt.set(step.id_step, now);
-    fetch(`/api/experiment-steps/${step.id_step}`, {
-        method: 'PATCH',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-            actual_amount: step.actual_amount,
-            is_completed: step.is_completed
-        })
-    })
-        .then(response => response.ok ? response.json() : Promise.reject(response))
-        .then(updated => {
-            const index = currentExperimentSteps.findIndex(item => item.id_step === updated.id_step);
-            if (index >= 0) {
-                currentExperimentSteps[index] = { ...currentExperimentSteps[index], ...updated };
-                setCurrentExperimentSteps(currentExperimentSteps);
-            }
-        })
-        .catch(error => console.error('Experiment step sync failed:', error));
+    const index = currentExperimentSteps.findIndex(item => item.id_step === step.id_step);
+    if (index >= 0) {
+        currentExperimentSteps[index] = { ...currentExperimentSteps[index], ...step };
+        setCurrentExperimentSteps(currentExperimentSteps);
+    }
 }
 
 export function ensureContainerExperimentState(container) {

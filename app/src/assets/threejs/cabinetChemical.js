@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { registerDraggableObject } from './interaction.js?v=20260621-xr-pour-v32';
+import { drawFittedTextBlock } from './canvasTextLayout.js?v=20260622-label-fit-v1';
 
 export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
     try {
@@ -143,12 +144,21 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
             canvas.width = 512;
             canvas.height = 128;
             context.fillStyle = 'rgba(0, 0, 0, 0.75)'; // Nền đen đậm rõ nét hơn
-            context.roundRect ? context.roundRect(0, 0, 512, 128, 20) : context.fillRect(0, 0, 512, 128);
-            context.fill();
-            context.font = 'bold 60px Arial'; // Font chữ to hơn, sắc nét
+            context.beginPath();
+            if (context.roundRect) {
+                context.roundRect(0, 0, 512, 128, 20);
+                context.fill();
+            } else {
+                context.fillRect(0, 0, 512, 128);
+            }
             context.fillStyle = 'white';
-            context.textAlign = 'center';
-            context.fillText(chem.name_vi || 'Hóa chất', 256, 82);
+            drawFittedTextBlock(context, chem.name_vi || 'Hóa chất', {
+                x: 256,
+                y: 10,
+                maxWidth: 472,
+                maxHeight: 108,
+                maxFontSize: 60,
+            });
 
             const labelTexture = new THREE.CanvasTexture(canvas);
             const spriteMaterial = new THREE.SpriteMaterial({ map: labelTexture, depthTest: false });
@@ -172,12 +182,20 @@ export async function setupChemicalCabinet(scene, bottleModel, bookcaseModel) {
 
             // Ghi tên và công thức
             decalCtx.fillStyle = 'black';
-            decalCtx.textAlign = 'center';
-            decalCtx.font = 'bold 55px Arial'; // Công thức hóa học to và đậm hơn
-            decalCtx.fillText(chem.formula || '', 128, 100);
-            decalCtx.font = 'bold 28px Arial'; // Tên phụ đề đậm nét
-            const wrappedName = (chem.name_vi || '').length > 15 ? (chem.name_vi || '').substring(0, 15) + '...' : (chem.name_vi || '');
-            decalCtx.fillText(wrappedName, 128, 175);
+            drawFittedTextBlock(decalCtx, chem.formula || '', {
+                x: 128,
+                y: 28,
+                maxWidth: 208,
+                maxHeight: 76,
+                maxFontSize: 55,
+            });
+            drawFittedTextBlock(decalCtx, chem.name_vi || 'Hóa chất', {
+                x: 128,
+                y: 116,
+                maxWidth: 208,
+                maxHeight: 112,
+                maxFontSize: 28,
+            });
 
             const decalTex = new THREE.CanvasTexture(decalCanvas);
             const decalMat = new THREE.MeshStandardMaterial({ map: decalTex, side: THREE.DoubleSide });

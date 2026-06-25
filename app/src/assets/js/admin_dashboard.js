@@ -4,7 +4,6 @@ const state = {
     currentView: "overview",
     user: null,
     users: [],
-    documents: [],
     tools: [],
     revenue: [],
     overview: null,
@@ -13,15 +12,13 @@ const state = {
 const viewTitles = {
     overview: "Tổng quan",
     users: "Quản lý người dùng",
-    documents: "Quản lý tài liệu hệ thống",
     tools: "Quản lý dụng cụ phòng thí nghiệm",
     revenue: "Thống kê, báo cáo doanh thu",
 };
 
 const viewCopies = {
-    overview: "Theo dõi nhanh người dùng, tài liệu hệ thống, dụng cụ và doanh thu của hệ thống.",
+    overview: "Theo dõi nhanh người dùng, dụng cụ và doanh thu của hệ thống.",
     users: "Thêm, sửa, xóa mềm và phân quyền tài khoản sử dụng Virtual Lab AI.",
-    documents: "Tải PDF lên, cập nhật metadata và đưa tài liệu vào pipeline vector hóa.",
     tools: "Quản lý danh sách dụng cụ, trạng thái tạo mô hình 3D và xóa mềm.",
     revenue: "Xem giao dịch, thống kê tổng quan và xuất báo cáo doanh thu CSV.",
 };
@@ -196,7 +193,6 @@ async function loadCurrentView() {
     try {
         if (state.currentView === "overview") await loadOverview();
         if (state.currentView === "users") await loadUsers();
-        if (state.currentView === "documents") await loadDocuments();
         if (state.currentView === "tools") await loadTools();
         if (state.currentView === "revenue") await loadRevenue();
     } catch (error) {
@@ -208,7 +204,6 @@ async function loadOverview() {
     state.overview = await api("/api/admin/overview");
     const totals = state.overview.totals || {};
     $("totalUsers").textContent = totals.users || 0;
-    $("totalDocuments").textContent = totals.documents || 0;
     $("totalTools").textContent = totals.tools || 0;
     $("totalRevenue").textContent = formatMoney(totals.revenue || 0);
     renderMonthlyChart(state.overview.revenue_by_month || []);
@@ -344,103 +339,6 @@ async function saveUser(event) {
     showToast("Đã lưu người dùng");
     await loadUsers();
     await loadOverview();
-}
-
-async function loadDocuments() {
-    const query = new URLSearchParams({
-        q: $("docSearch").value.trim(),
-        subject: $("docSubjectFilter").value,
-        include_deleted: $("includeDeletedDocs").checked ? "true" : "false",
-    });
-    state.documents = await api(`/api/admin/documents?${query}`);
-    renderDocuments();
-}
-
-function renderDocuments() {
-    const table = $("docsTable");
-    if (!state.documents.length) {
-        table.innerHTML = emptyRow(6, "Không có tài liệu");
-        return;
-    }
-    table.innerHTML = state.documents.map((doc) => {
-        const vectorStatus = doc.vector_status || "unknown";
-        return `
-            <tr>
-                <td>
-                    <strong>${escapeHtml(doc.title || "-")}</strong>
-                    <small>${escapeHtml(doc.source || "")}</small>
-                </td>
-                <td>${subjectLabel(doc.subject)}</td>
-                <td>${badge(vectorStatus, vectorStatus)}</td>
-                <td>${Number(doc.chunk_count || 0)}</td>
-                <td>${formatDate(doc.created_at)}</td>
-                <td>
-                    <div class="action-group">
-                        <button class="row-action" data-action="edit-doc" data-id="${doc.id_doc}" title="Sửa" type="button">
-                            <i class="fa-solid fa-pen"></i>
-                        </button>
-                        <button class="row-action" data-action="vectorize-doc" data-id="${doc.id_doc}" title="Tạo vector" type="button">
-                            <i class="fa-solid fa-arrows-rotate"></i>
-                        </button>
-                        ${doc.is_deleted ? `
-                        <button class="row-action" data-action="restore-doc" data-id="${doc.id_doc}" title="Khôi phục" type="button">
-                            <i class="fa-solid fa-rotate-left"></i>
-                        </button>` : `
-                        <button class="row-action danger" data-action="delete-doc" data-id="${doc.id_doc}" title="Xóa" type="button">
-                            <i class="fa-solid fa-trash"></i>
-                        </button>`}
-                    </div>
-                </td>
-            </tr>
-        `;
-    }).join("");
-}
-
-async function uploadDocument(event) {
-    event.preventDefault();
-    const file = $("docFile").files[0];
-    if (!file) {
-        showToast("Chọn file PDF", "error");
-        return;
-    }
-    const formData = new FormData();
-    formData.append("title", $("docTitle").value.trim());
-    formData.append("subject", $("docSubject").value);
-    formData.append("file", file);
-
-    await api("/api/admin/documents", {
-        method: "POST",
-        body: formData,
-    });
-    $("docUploadForm").reset();
-    $("docSubject").value = "chemistry";
-    showToast("Đã tải lên tài liệu");
-    await loadDocuments();
-    await loadOverview();
-}
-
-function openDocumentModal(doc) {
-    $("documentId").value = doc.id_doc;
-    $("documentTitle").value = doc.title || "";
-    $("documentSubject").value = doc.subject || "general";
-    $("documentReindex").checked = false;
-    openModal("documentModal");
-}
-
-async function saveDocument(event) {
-    event.preventDefault();
-    const id = $("documentId").value;
-    await api(`/api/admin/documents/${id}`, {
-        method: "PUT",
-        body: JSON.stringify({
-            title: $("documentTitle").value.trim(),
-            subject: $("documentSubject").value,
-            reindex: $("documentReindex").checked,
-        }),
-    });
-    closeModal("documentModal");
-    showToast("Đã lưu tài liệu");
-    await loadDocuments();
 }
 
 async function loadTools() {
@@ -630,28 +528,6 @@ async function handleRowAction(event) {
             await loadOverview();
         }
 
-        if (action === "edit-doc") openDocumentModal(findById(state.documents, id, "id_doc"));
-        if (action === "vectorize-doc") {
-            await api(`/api/admin/documents/${id}/vectorize`, { method: "POST" });
-            showToast("Đã đưa tài liệu vào hàng đợi vector");
-            await loadDocuments();
-        }
-        if (action === "delete-doc" && confirm("Xóa tài liệu này?")) {
-            await api(`/api/admin/documents/${id}`, { method: "DELETE" });
-            showToast("Đã xóa tài liệu");
-            await loadDocuments();
-            await loadOverview();
-        }
-        if (action === "restore-doc") {
-            await api(`/api/admin/documents/${id}`, {
-                method: "PUT",
-                body: JSON.stringify({ is_deleted: false }),
-            });
-            showToast("Đã khôi phục tài liệu");
-            await loadDocuments();
-            await loadOverview();
-        }
-
         if (action === "edit-tool") openToolModal(findById(state.tools, id, "id_tool"));
         if (action === "generate-tool-model" && confirm("Tạo lại mô hình 3D từ image_2d_url của dụng cụ này?")) {
             await api(`/api/admin/tools/${id}`, {
@@ -703,17 +579,13 @@ function bindEvents() {
     $("addUserBtn").addEventListener("click", () => openUserModal());
     $("addToolBtn").addEventListener("click", () => openToolModal());
     $("userForm").addEventListener("submit", (event) => saveUser(event).catch((error) => showToast(error.message, "error")));
-    $("documentForm").addEventListener("submit", (event) => saveDocument(event).catch((error) => showToast(error.message, "error")));
     $("toolForm").addEventListener("submit", (event) => saveTool(event).catch((error) => showToast(error.message, "error")));
-    $("docUploadForm").addEventListener("submit", (event) => uploadDocument(event).catch((error) => showToast(error.message, "error")));
     $("exportRevenueBtn").addEventListener("click", () => exportRevenue().catch((error) => showToast(error.message, "error")));
 
     $("usersTable").addEventListener("click", handleRowAction);
-    $("docsTable").addEventListener("click", handleRowAction);
     $("toolsTable").addEventListener("click", handleRowAction);
 
     ["userSearch", "includeDeletedUsers"].forEach((id) => $(id).addEventListener("input", () => loadUsers().catch((error) => showToast(error.message, "error"))));
-    ["docSearch", "docSubjectFilter", "includeDeletedDocs"].forEach((id) => $(id).addEventListener("input", () => loadDocuments().catch((error) => showToast(error.message, "error"))));
     ["toolSearch", "toolSubjectFilter", "includeDeletedTools"].forEach((id) => $(id).addEventListener("input", () => loadTools().catch((error) => showToast(error.message, "error"))));
 }
 

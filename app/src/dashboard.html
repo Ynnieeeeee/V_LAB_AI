@@ -33,10 +33,6 @@
                     <i class="fa-solid fa-user-group"></i>
                     Người dùng
                 </button>
-                <button class="admin-nav-btn" data-view="documents" type="button">
-                    <i class="fa-solid fa-book-open-reader"></i>
-                    Tài liệu hệ thống
-                </button>
                 <button class="admin-nav-btn" data-view="tools" type="button">
                     <i class="fa-solid fa-flask-vial"></i>
                     Dụng cụ lab
@@ -80,13 +76,6 @@
                                 <strong id="totalUsers">0</strong>
                             </div>
                             <i class="fa-solid fa-users"></i>
-                        </article>
-                        <article class="metric-card card-pink">
-                            <div>
-                                <span>Tài liệu hệ thống</span>
-                                <strong id="totalDocuments">0</strong>
-                            </div>
-                            <i class="fa-solid fa-file-pdf"></i>
                         </article>
                         <article class="metric-card card-green">
                             <div>
@@ -151,57 +140,6 @@
                                 </tr>
                             </thead>
                             <tbody id="usersTable"></tbody>
-                        </table>
-                    </div>
-                </section>
-
-                <section id="panel-documents" class="admin-panel hidden">
-                    <form id="docUploadForm" class="upload-card">
-                        <input id="docTitle" placeholder="Tên tài liệu" type="text">
-                        <select id="docSubject">
-                            <option value="chemistry">Hóa học</option>
-                            <option value="physics">Vật lý</option>
-                            <option value="biology">Sinh học</option>
-                            <option value="general">Chung</option>
-                        </select>
-                        <input id="docFile" accept="application/pdf" type="file" required>
-                        <button class="primary-action" type="submit">
-                            <i class="fa-solid fa-upload"></i>
-                            Tải lên
-                        </button>
-                    </form>
-
-                    <div class="panel-toolbar">
-                        <label class="input-shell">
-                            <i class="fa-solid fa-magnifying-glass"></i>
-                            <input id="docSearch" placeholder="Tìm tài liệu" type="search">
-                        </label>
-                        <select id="docSubjectFilter" class="select-shell">
-                            <option value="all">Tất cả môn</option>
-                            <option value="chemistry">Hóa học</option>
-                            <option value="physics">Vật lý</option>
-                            <option value="biology">Sinh học</option>
-                            <option value="general">Chung</option>
-                        </select>
-                        <label class="switch-shell">
-                            <input id="includeDeletedDocs" type="checkbox">
-                            Đã xóa
-                        </label>
-                    </div>
-
-                    <div class="table-card">
-                        <table class="admin-table">
-                            <thead>
-                                <tr>
-                                    <th>Tài liệu</th>
-                                    <th>Môn</th>
-                                    <th>Vector</th>
-                                    <th>Chunks</th>
-                                    <th>Ngày tạo</th>
-                                    <th class="text-right">Thao tác</th>
-                                </tr>
-                            </thead>
-                            <tbody id="docsTable"></tbody>
                         </table>
                     </div>
                 </section>
@@ -297,27 +235,6 @@
         </form>
     </div>
 
-    <div id="documentModal" class="modal-backdrop hidden">
-        <form id="documentForm" class="modal-card">
-            <div class="modal-head">
-                <h2>Tài liệu</h2>
-                <button class="close-modal icon-btn" data-modal="documentModal" type="button">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
-            </div>
-            <input id="documentId" type="hidden">
-            <div class="modal-grid">
-                <label class="span-2">Tên tài liệu<input id="documentTitle" type="text"></label>
-                <label>Môn<select id="documentSubject"><option value="chemistry">Hóa học</option><option value="physics">Vật lý</option><option value="biology">Sinh học</option><option value="general">Chung</option></select></label>
-                <label class="checkbox-label"><input id="documentReindex" type="checkbox">Tạo vector lại</label>
-            </div>
-            <div class="modal-actions">
-                <button class="secondary-action close-modal" data-modal="documentModal" type="button">Hủy</button>
-                <button class="primary-action" type="submit"><i class="fa-solid fa-floppy-disk"></i>Lưu</button>
-            </div>
-        </form>
-    </div>
-
     <div id="toolModal" class="modal-backdrop hidden">
         <form id="toolForm" class="modal-card">
             <div class="modal-head">
@@ -347,7 +264,7 @@
 
     <div id="toast" class="toast hidden"></div>
 
-    <script src="/assets/js/admin_dashboard.js?v=20260612-conversation-tool"></script>
+    <script src="/assets/js/admin_dashboard.js?v=20260623-remove-documents"></script>
 </body>
 
 </html>

@@ -14,7 +14,7 @@ import { initLabLogic } from './lab_logic.js?v=20260621-xr-input-v24';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260621-xr-input-v24';
 import { notifyLab } from './labNotifier.js';
-import { setupChemicalCabinet } from './cabinetChemical.js?v=20260621-xr-input-v24';
+import { setupChemicalCabinet } from './cabinetChemical.js?v=20260622-label-fit-v1';
 import { pouringEffect, pouringState } from './interaction.js?v=20260621-xr-pour-v32';
 import { isXRNonPickupSurface, isXRPickupTarget } from './xrPickupPolicy.js?v=20260621-xr-input-v24';
 import { createHeatingManager } from './HeatingManager.js';
