@@ -21,6 +21,7 @@ from app.router.subscription_router import router as subscription_router
 from app.router.payment_router import router as payment_router
 from app.router.admin_router import router as admin_router
 from app.utils.admin_schema import ensure_admin_schema
+from app.utils.subscription_utils import ensure_default_subscription_plans
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,6 +31,7 @@ async def lifespan(app: FastAPI):
     try:
         with Session(engine) as session:
             ensure_admin_schema(session)
+            ensure_default_subscription_plans(session)
             session.commit()
     except Exception as exc:
         print(f"Admin schema migration failed: {exc}")

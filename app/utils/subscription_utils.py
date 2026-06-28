@@ -14,6 +14,7 @@ from app.models.tools import Tools
 
 DEFAULT_DURATION_DAYS = 30
 UNLIMITED_VALUES = {-1, 999999, 999999999}
+DEFAULT_FREE_TOOL_LIMIT_PER_DAY = 10
 
 
 def _now() -> datetime:
@@ -50,6 +51,26 @@ def get_free_plan(session: Session):
         func.lower(SubscriptionPlans.plan_name) == "free"
     )
     return session.exec(stmt).first()
+
+
+def ensure_default_subscription_plans(session: Session) -> None:
+    """Create a usable Free plan for fresh databases.
+
+    Without this seed, new users have no plan row to fall back to and
+    /api/lab/generate returns 403 before the 3D pipeline can start.
+    Existing plans are left untouched so production pricing stays under
+    admin control.
+    """
+    if get_free_plan(session):
+        return
+
+    session.add(SubscriptionPlans(
+        plan_name="Free",
+        tool_limit_per_day=DEFAULT_FREE_TOOL_LIMIT_PER_DAY,
+        duration_days=DEFAULT_DURATION_DAYS,
+        price=0,
+    ))
+    session.commit()
 
 
 def _admin_plan_info(session: Session, id_profile: str | UUID) -> dict | None:
@@ -112,6 +133,9 @@ def get_user_plan_info(session: Session, id_profile: str | UUID) -> dict:
 
     subscription = get_active_subscription(session, id_profile)
     plan = session.get(SubscriptionPlans, subscription.id_plan) if subscription else get_free_plan(session)
+    if not plan:
+        ensure_default_subscription_plans(session)
+        plan = get_free_plan(session)
 
     if not plan:
         return {

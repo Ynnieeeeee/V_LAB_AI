@@ -31,15 +31,15 @@
                 </button>
                 <button class="admin-nav-btn" data-view="users" type="button">
                     <i class="fa-solid fa-user-group"></i>
-                    Người dùng
+                    Users
                 </button>
                 <button class="admin-nav-btn" data-view="tools" type="button">
                     <i class="fa-solid fa-flask-vial"></i>
-                    Dụng cụ lab
+                    Tools
                 </button>
                 <button class="admin-nav-btn" data-view="revenue" type="button">
                     <i class="fa-solid fa-chart-pie"></i>
-                    Doanh thu
+                    Revenue
                 </button>
 
                 <p class="nav-group-label tools-label">Tools</p>
@@ -49,7 +49,7 @@
                 </a>
                 <button id="logoutBtn" class="admin-nav-link logout-link" type="button">
                     <i class="fa-solid fa-arrow-right-from-bracket"></i>
-                    Đăng xuất
+                    Log out
                 </button>
             </nav>
         </aside>
@@ -58,8 +58,8 @@
             <section class="hero-row">
                 <div>
                     <p class="eyebrow">Virtual Lab AI</p>
-                    <h1 id="viewTitle">Tổng quan</h1>
-                    <p id="adminGreeting" class="hero-copy">Chào mừng admin quay lại. Hệ thống đã sẵn sàng để quản trị dữ liệu, dụng cụ và doanh thu.</p>
+                    <h1 id="viewTitle">Overview</h1>
+                    <p id="adminGreeting" class="hero-copy">Welcome back, admin. The system is now ready for managing data, tools, and revenue.</p>
                 </div>
                 <div class="hero-user">
                     <span id="adminName">Admin</span>
@@ -72,21 +72,21 @@
                     <div class="metric-grid">
                         <article class="metric-card card-yellow">
                             <div>
-                                <span>Người dùng</span>
+                                <span>Users</span>
                                 <strong id="totalUsers">0</strong>
                             </div>
                             <i class="fa-solid fa-users"></i>
                         </article>
                         <article class="metric-card card-green">
                             <div>
-                                <span>Dụng cụ</span>
+                                <span>Tools</span>
                                 <strong id="totalTools">0</strong>
                             </div>
                             <i class="fa-solid fa-microscope"></i>
                         </article>
                         <article class="metric-card card-blue">
                             <div>
-                                <span>Doanh thu</span>
+                                <span>Revenue</span>
                                 <strong id="totalRevenue">0 ₫</strong>
                             </div>
                             <i class="fa-solid fa-coins"></i>
@@ -96,7 +96,7 @@
                     <div class="dashboard-split">
                         <section class="summary-card visits-card">
                             <div class="section-heading">
-                                <h2>Doanh thu theo tháng</h2>
+                                <h2>Monthly revenue</h2>
                                 <button type="button">Show all</button>
                             </div>
                             <div id="monthlyChart" class="line-chart-host"></div>
@@ -104,7 +104,7 @@
 
                         <section class="summary-card status-card">
                             <div class="section-heading">
-                                <h2>Trạng thái thanh toán</h2>
+                                <h2>Payment status</h2>
                                 <i class="fa-solid fa-receipt"></i>
                             </div>
                             <div id="paymentStatus" class="status-list"></div>
@@ -120,11 +120,11 @@
                         </label>
                         <label class="switch-shell">
                             <input id="includeDeletedUsers" type="checkbox">
-                            Đã xóa
+                            Deleted
                         </label>
                         <button id="addUserBtn" class="primary-action" type="button">
                             <i class="fa-solid fa-user-plus"></i>
-                            Thêm
+                            Add
                         </button>
                     </div>
                     <div class="table-card">
@@ -159,11 +159,11 @@
                         </select>
                         <label class="switch-shell">
                             <input id="includeDeletedTools" type="checkbox" checked>
-                            Đã xóa
+                            Deleted
                         </label>
                         <button id="addToolBtn" class="primary-action" type="button">
                             <i class="fa-solid fa-plus"></i>
-                            Thêm dụng cụ
+                            Add tools
                         </button>
                     </div>
                     <div class="table-card">

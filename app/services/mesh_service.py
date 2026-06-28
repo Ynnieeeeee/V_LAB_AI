@@ -2,6 +2,8 @@ import requests
 import time
 import os
 import re
+import io
+import mimetypes
 import unicodedata
 import numpy as np
 import trimesh
@@ -13,6 +15,7 @@ from app.config import PUBLIC_BASE_URL, TRIPO_API_KEY
 from app.models.tools import Tools
 from app.services.image_service import (
     SINGLE_IMAGE_FAILURE_MESSAGE,
+    clean_tool_image_for_3d,
     compute_image_hash,
     search_tool_image,
     validate_single_object_image,
@@ -37,7 +40,21 @@ def _env_int(name, default):
 
 
 MAX_MODEL_DOWNLOAD_BYTES = _env_int("MAX_MODEL_DOWNLOAD_BYTES", 80 * 1024 * 1024)
-TRIPO_FACE_LIMIT = _env_int("TRIPO_FACE_LIMIT", 3000)
+MAX_TRIPO_IMAGE_UPLOAD_BYTES = _env_int("MAX_TRIPO_IMAGE_UPLOAD_BYTES", 20 * 1024 * 1024)
+TRIPO_FACE_LIMIT = _env_int("TRIPO_FACE_LIMIT", 0)
+TRIPO_API_BASE_URL = (
+    os.getenv("TRIPO_API_BASE_URL")
+    or os.getenv("TRIPO_BASE_URL")
+    or "https://openapi.tripo3d.ai/v3"
+)
+TRIPO_MODEL_VERSION = os.getenv("TRIPO_MODEL_VERSION", "v3.1-20260211")
+TRIPO_TEXTURE_QUALITY = os.getenv("TRIPO_TEXTURE_QUALITY", "detailed")
+TRIPO_GEOMETRY_QUALITY = os.getenv("TRIPO_GEOMETRY_QUALITY", "").strip()
+TRIPO_IMAGE_INPUT_MODE = os.getenv("TRIPO_IMAGE_INPUT_MODE", "upload").strip().lower()
+TRIPO_ENABLE_IMAGE_AUTOFIX = (
+    os.getenv("TRIPO_ENABLE_IMAGE_AUTOFIX", "true").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 ENABLE_HEAVY_MODEL_VALIDATION = (
     os.getenv("ENABLE_HEAVY_MODEL_VALIDATION", "false").strip().lower()
     in {"1", "true", "yes", "on"}
@@ -66,11 +83,13 @@ SLENDER_TOOL_HINTS = (
 
 class MeshService:
     def __init__(self):
+        self.api_key = TRIPO_API_KEY
         self.headers = {
-            "Authorization": f"Bearer {TRIPO_API_KEY}",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        self.base_url = "https://api.tripo3d.ai/v2/openapi"
+        self.auth_headers = {"Authorization": f"Bearer {self.api_key}"}
+        self.base_url = TRIPO_API_BASE_URL.rstrip("/")
         self.model_dir = str(STATIC_MODEL_DIR.resolve())
         self.last_image_url_error = None
         if not os.path.exists(self.model_dir):
@@ -162,6 +181,153 @@ class MeshService:
             return f"{public_base_url.rstrip('/')}{image_url}"
         return image_url
 
+    def _static_image_path_from_url(self, image_url: str = ""):
+        if not image_url or not str(image_url).startswith("/static/"):
+            return None
+        relative_path = str(image_url).lstrip("/").replace("/", os.sep)
+        local_path = (APP_DIR / relative_path).resolve()
+        app_root = APP_DIR.resolve()
+        try:
+            local_path.relative_to(app_root)
+        except ValueError:
+            return None
+        return str(local_path)
+
+    def _safe_image_filename(self, image_url: str = "", tool_name_en: str = "", tool_id=None):
+        parsed_name = os.path.basename(urlparse(str(image_url or "")).path)
+        extension = os.path.splitext(parsed_name)[1].lower()
+        if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+            extension = ".png"
+        safe_tool = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(tool_name_en or "tool").lower()).strip("_")
+        safe_tool = safe_tool[:60] or "tool"
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(tool_id or int(time.time())))[:24]
+        return f"{safe_tool}_{safe_id}{extension}"
+
+    def _read_image_bytes_for_upload(self, image_url: str, tool_name_en: str = "", tool_id=None):
+        if not image_url:
+            self.last_image_url_error = "missing_image_url"
+            return None, None, None
+
+        filename = self._safe_image_filename(image_url, tool_name_en, tool_id)
+        local_path = self._static_image_path_from_url(image_url)
+        try:
+            if local_path:
+                if not os.path.exists(local_path):
+                    self.last_image_url_error = "local_image_file_missing"
+                    return None, None, None
+                with open(local_path, "rb") as file:
+                    data = file.read()
+                filename = os.path.basename(local_path) or filename
+            elif os.path.exists(str(image_url)):
+                with open(str(image_url), "rb") as file:
+                    data = file.read()
+                filename = os.path.basename(str(image_url)) or filename
+            else:
+                response = requests.get(
+                    image_url,
+                    timeout=(10, 30),
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                response.raise_for_status()
+                data = response.content
+                remote_name = os.path.basename(urlparse(str(image_url)).path)
+                if remote_name:
+                    filename = remote_name
+        except Exception as exc:
+            self.last_image_url_error = f"image_read_failed={type(exc).__name__}"
+            print(f"[Image2Model] Cannot read image bytes for Tripo upload: {exc}")
+            return None, None, None
+
+        if not data:
+            self.last_image_url_error = "empty_image_file"
+            return None, None, None
+        if len(data) > MAX_TRIPO_IMAGE_UPLOAD_BYTES:
+            self.last_image_url_error = "image_too_large_for_tripo_upload"
+            print(
+                "[Image2Model] Image is too large for Tripo upload: "
+                f"{len(data)} bytes > {MAX_TRIPO_IMAGE_UPLOAD_BYTES}"
+            )
+            return None, None, None
+
+        mime_type = mimetypes.guess_type(filename)[0] or "image/png"
+        return data, filename, mime_type
+
+    def upload_image_and_get_file_token(self, image_url: str, tool_name_en: str = "", tool_id=None):
+        if not self.api_key:
+            self.last_image_url_error = "missing_tripo_api_key"
+            print("[Image2Model] ERROR: TRIPO_API_KEY is missing; cannot upload image.")
+            return None
+
+        data, filename, mime_type = self._read_image_bytes_for_upload(image_url, tool_name_en, tool_id)
+        if not data:
+            return None
+
+        files = {"file": (filename, io.BytesIO(data), mime_type)}
+        try:
+            print(f"[Image2Model] uploading image to Tripo files API: {filename}")
+            response = requests.post(
+                f"{self.base_url}/files",
+                headers=self.auth_headers,
+                files=files,
+                timeout=(15, 120),
+            )
+            try:
+                result = response.json()
+            except ValueError:
+                print(
+                    "[3DPipeline] Tripo file upload returned non-JSON response: "
+                    f"status={response.status_code}"
+                )
+                return None
+
+            if response.status_code >= 400:
+                print(
+                    "[3DPipeline] Tripo file upload HTTP error: "
+                    f"status={response.status_code} raw={result}"
+                )
+                return None
+
+            if result.get("code") == 0:
+                file_token = result.get("data", {}).get("file_token")
+                if file_token:
+                    print(f"[Image2Model] Tripo file_token ready: {file_token}")
+                    self.last_image_url_error = None
+                    return file_token
+
+            print(f"[3DPipeline] Tripo file upload API Error: raw={result}")
+            return None
+        except Exception as exc:
+            self.last_image_url_error = f"tripo_file_upload_failed={type(exc).__name__}"
+            print(f"[3DPipeline] Tripo file upload failed: {exc}")
+            return None
+
+    def _prepare_tripo_image_input(self, image_url, tool_name_en="", tool_id=None, fallback_public_url=None):
+        should_upload = TRIPO_IMAGE_INPUT_MODE != "url"
+        if should_upload:
+            file_token = self.upload_image_and_get_file_token(image_url, tool_name_en, tool_id)
+            if file_token:
+                return file_token
+            print("[Image2Model] Tripo upload failed; trying public image URL fallback.")
+
+        public_image_url = self._to_public_image_url(image_url)
+        if public_image_url:
+            return public_image_url
+
+        if fallback_public_url and fallback_public_url.startswith(("http://", "https://")):
+            print(
+                "[Image2Model] Input image is local/private; "
+                f"falling back to original public URL: {fallback_public_url}"
+            )
+            self.last_image_url_error = None
+            return fallback_public_url
+
+        if not should_upload:
+            file_token = self.upload_image_and_get_file_token(image_url, tool_name_en, tool_id)
+            if file_token:
+                return file_token
+
+        return None
+
     def _is_non_public_base_url(self, public_base_url):
         parsed = urlparse(public_base_url)
         host = (parsed.hostname or "").lower()
@@ -203,52 +369,108 @@ class MeshService:
     def create_3d_task(self, image_url, tool_name_en="", name_vi="", tool_type="", attempt=1, fallback_public_url=None):
         """Tạo task image-to-3d"""
         self.last_image_url_error = None
-        public_image_url = self._to_public_image_url(image_url)
-        if not public_image_url:
-            if fallback_public_url and (fallback_public_url.startswith("http://") or fallback_public_url.startswith("https://")):
-                print(
-                    f"[Image2Model] Input image is local/private and PUBLIC_BASE_URL is missing/private. "
-                    f"Falling back to original public URL: {fallback_public_url}"
-                )
-                public_image_url = fallback_public_url
-                self.last_image_url_error = None
-            else:
-                return None
-        file_type = "png" if public_image_url.lower().split("?")[0].endswith(".png") else "jpg"
+        if not self.api_key:
+            self.last_image_url_error = "missing_tripo_api_key"
+            print("[Image2Model] ERROR: TRIPO_API_KEY is missing; cannot call 3D API.")
+            return None
+
+        source_image_url = clean_tool_image_for_3d(image_url, tool_name_en, None, tool_type) or image_url
+        tripo_input = self._prepare_tripo_image_input(
+            source_image_url,
+            tool_name_en,
+            None,
+            fallback_public_url=(
+                fallback_public_url
+                or (image_url if image_url and image_url.startswith(("http://", "https://")) else None)
+            ),
+        )
+        if not tripo_input:
+            return None
         prompt = self.build_image_to_model_prompt(tool_name_en, name_vi, tool_type, attempt)
         print(f"[Image2Model] input image: {image_url}")
-        print(f"[Image2Model] public image_url used: {public_image_url}")
+        print(f"[Image2Model] Tripo input used: {tripo_input}")
         print(f"[Image2Model] tool name: {name_vi or tool_name_en}")
         print(f"[Image2Model] prompt: {prompt}")
         payload = {
-            "type": "image_to_model",
-            "model_version": "P1-20260311", 
-            "file": {
-                "type": file_type, 
-                "url": public_image_url
-            },
-            "prompt": prompt,
-            "negative_prompt": MODEL_NEGATIVE_PROMPT,
-            "face_limit": TRIPO_FACE_LIMIT,
+            "input": tripo_input,
+            "model": TRIPO_MODEL_VERSION,
             "texture": True,
-            "pbr": True
+            "pbr": True,
+            "texture_quality": TRIPO_TEXTURE_QUALITY,
+            "enable_image_autofix": TRIPO_ENABLE_IMAGE_AUTOFIX,
+            "orientation": "align_image",
+            "texture_alignment": "original_image",
         }
+        if TRIPO_FACE_LIMIT > 0:
+            payload["face_limit"] = TRIPO_FACE_LIMIT
+        if TRIPO_GEOMETRY_QUALITY:
+            payload["geometry_quality"] = TRIPO_GEOMETRY_QUALITY
         try:
             print("[Image2Model] calling 3D API now...")
-            response = requests.post(f"{self.base_url}/task", headers=self.headers, json=payload, timeout=60)
-            result = response.json()
+            response = requests.post(
+                f"{self.base_url}/generation/image-to-model",
+                headers=self.headers,
+                json=payload,
+                timeout=60,
+            )
+            try:
+                result = response.json()
+            except ValueError:
+                print(
+                    "[3DPipeline] Tripo create task returned non-JSON response: "
+                    f"status={response.status_code}"
+                )
+                return None
             if result.get("code") == 0:
                 return result.get("data", {}).get("task_id")
-            print(f"[3DPipeline] Tripo create task API Error: {result.get('message')} | raw={result}")
+            print(
+                "[3DPipeline] Tripo create task API Error: "
+                f"status={response.status_code} message={result.get('message')} raw={result}"
+            )
             return None
         except Exception as e:
             print(f"Lỗi kết nối khi tạo Task: {e}")
             return None
         
+    def _extract_model_url_from_task_data(self, data):
+        if not isinstance(data, dict):
+            return None
+
+        output = data.get("output")
+        if isinstance(output, dict):
+            model_url = output.get("model_url")
+            if isinstance(model_url, str) and model_url.startswith(("http://", "https://")):
+                return model_url
+
+            pbr_model = output.get("pbr_model")
+            if isinstance(pbr_model, str) and pbr_model.startswith(("http://", "https://")):
+                return pbr_model
+            if isinstance(pbr_model, dict):
+                url = pbr_model.get("url")
+                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                    return url
+
+            model_files = output.get("model_files", [])
+            if isinstance(model_files, list):
+                for file_info in model_files:
+                    if isinstance(file_info, dict):
+                        url = file_info.get("url")
+                        if isinstance(url, str) and url.startswith(("http://", "https://")):
+                            return url
+
+        result = data.get("result")
+        if isinstance(result, dict):
+            pbr_model = result.get("pbr_model")
+            if isinstance(pbr_model, dict):
+                url = pbr_model.get("url")
+                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                    return url
+        return None
+
     def check_task_status(self, task_id):
         """Kiểm tra trạng thái và lấy link GLB từ cấu trúc result.pbr_model"""
         try:
-            response = requests.get(f"{self.base_url}/task/{task_id}", headers=self.headers, timeout=60)
+            response = requests.get(f"{self.base_url}/tasks/{task_id}", headers=self.headers, timeout=60)
             result = response.json()
             
             if result.get("code") == 0:
@@ -257,6 +479,10 @@ class MeshService:
                 progress = data.get("progress", 0)
                 output = data.get("output", {})
                 res_dict = data.get("result", {})
+
+                model_url = self._extract_model_url_from_task_data(data)
+                if model_url:
+                    return model_url
 
                 if isinstance(res_dict, dict) and "pbr_model" in res_dict:
                     model_url = res_dict["pbr_model"].get("url")
@@ -272,9 +498,9 @@ class MeshService:
                             return f.get("url")
 
                 if status == "success":
-                    return "ERROR_SUCCESS_BUT_LINK_HIDDEN"
+                    return "ERROR_SUCCESS_BUT_MODEL_URL_MISSING"
 
-                if status in ["queued", "running"]:
+                if status in ["queued", "running", "pending"]:
                     return f"{status} ({progress}%)"
 
                 return f"ERROR_{status.upper()}"

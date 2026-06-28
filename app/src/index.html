@@ -63,7 +63,7 @@
                         class="px-4 py-2 text-xs md:text-base rounded-full hover:bg-black/50 transition-colors duration-300 ease-linear text-white cursor-pointer">
                         <i class="fa-solid fa-square-plus"></i>
                         <span>
-                            Tạo đoạn chat mới
+                            Create a new laboratory
                         </span>
                     </div>
 
@@ -72,14 +72,14 @@
                         class="px-4 py-2 text-xs md:text-base rounded-full hover:bg-black/50 transition-colors duration-300 ease-linear text-white">
                         <i class="fa-solid fa-magnifying-glass"></i>
                         <span>
-                            Tìm kiếm lịch sử
+                            Search history
                         </span>
                     </div>
                 </div>
 
                 <div class="space-y-3 flex flex-col flex-1 min-h-0">
                     <p class="text-sm text-white">
-                        Các đoạn chat của bạn
+                        Your laboratories
                     </p>
 
                     <div id="conversation-list" class="space-y-2 flex-1 pr-1 text-white"></div>
@@ -95,7 +95,7 @@
         <div class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
             <div class="bg-white w-[500px] rounded-xl shadow-lg p-6">
                 <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-lg font-semibold">Tìm kiếm lịch sử</h2>
+                    <h2 class="text-lg font-semibold">Search history</h2>
                     <i id="closeSearchModal" class="fa-solid fa-xmark cursor-pointer text-xl"></i>
                 </div>
                 <input id="searchInput" type="text" placeholder="Nhập nội dung cần tìm..."
@@ -137,15 +137,15 @@
         class="hidden fixed bg-slate-900 text-white rounded-lg shadow-2xl border border-white/20 p-1 z-[9999] min-w-[140px]">
         <button id="zoom-in-btn"
             class="flex items-center w-full text-left px-4 py-2 hover:bg-blue-600 rounded-md transition-colors">
-            Phóng to
+            Zoom in
         </button>
         <button id="zoom-out-btn"
             class="flex items-center w-full text-left px-4 py-2 hover:bg-blue-600 rounded-md transition-colors border-t border-white/10">
-            Thu nhỏ
+            Miniaturized
         </button>
         <button id="delete-tool-btn"
             class="flex items-center w-full text-left px-4 py-2 hover:bg-red-600 rounded-md transition-colors border-t border-white/10">
-            Xóa dụng cụ
+            Delete tool
         </button>
         <button id="removeChemicalBtn"
             class="hidden flex items-center w-full text-left px-4 py-2 rounded-md transition-colors border-t border-white/10">
@@ -159,22 +159,22 @@
 
     <div id="subject-overlay" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
         <div class="text-center">
-            <h1 class="text-3xl font-bold text-white mb-8">CHỌN PHÒNG THÍ NGHIỆM</h1>
+            <h1 class="text-3xl font-bold text-white mb-8">SELECT A LABORATORY</h1>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <button onclick="selectSubject('chemistry', 'Hóa học')"
                     class="p-6 bg-blue-600 hover:bg-blue-500 rounded-2xl transition-all group">
                     <div class="text-4xl mb-2 group-hover:scale-110 transition-transform">🧪</div>
-                    <div class="text-white font-bold">Hóa học</div>
+                    <div class="text-white font-bold">Chemistry</div>
                 </button>
                 <button onclick="selectSubject('physics', 'Vật lý')"
                     class="p-6 bg-red-600 hover:bg-red-500 rounded-2xl transition-all group">
                     <div class="text-4xl mb-2 group-hover:scale-110 transition-transform">⚡</div>
-                    <div class="text-white font-bold">Vật lý</div>
+                    <div class="text-white font-bold">Physics</div>
                 </button>
                 <button onclick="selectSubject('biology', 'Sinh học')"
                     class="p-6 bg-green-600 hover:bg-green-500 rounded-2xl transition-all group">
                     <div class="text-4xl mb-2 group-hover:scale-110 transition-transform">🌿</div>
-                    <div class="text-white font-bold">Sinh học</div>
+                    <div class="text-white font-bold">Biology</div>
                 </button>
             </div>
         </div>
@@ -189,19 +189,18 @@
                 <div class="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mb-6">
                     <i class="fa-solid fa-triangle-exclamation text-red-500 text-2xl"></i>
                 </div>
-                <h3 class="text-2xl font-bold text-white mb-3">Xóa cuộc hội thoại?</h3>
+                <h3 class="text-2xl font-bold text-white mb-3">Should we shut down this lab?</h3>
                 <p class="text-gray-400 text-sm leading-relaxed mb-8">
-                    Hành động này <span class="text-red-400 font-bold">không thể hoàn tác</span>. Mọi dụng cụ và lịch sử
-                    trò chuyện trong phòng Lab này sẽ bị xóa vĩnh viễn.
+                    This action <span class="text-red-400 font-bold">Cannot be undone</span>. All tools and chat history in this Lab will be permanently deleted.
                 </p>
                 <div class="flex flex-col w-full gap-3">
                     <button onclick="confirmDeleteConversation()"
                         class="w-full bg-red-600 hover:bg-red-500 text-white py-3 rounded-2xl font-bold shadow-lg shadow-red-900/20 transition-all active:scale-[0.98]">
-                        Xác nhận xóa
+                        Confirm deletion
                     </button>
                     <button onclick="document.getElementById('deleteModal').classList.add('hidden')"
                         class="w-full bg-white/5 hover:bg-white/10 text-gray-300 py-3 rounded-2xl font-bold transition-all">
-                        Để tôi suy nghĩ lại
+                        Let me think about it again.
                     </button>
                 </div>
             </div>

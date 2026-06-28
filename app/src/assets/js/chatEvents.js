@@ -60,7 +60,12 @@ export function initChatEvents() {
                     : "Đang đưa dụng cụ lên bàn...");
                 window.checkBackendStatus?.();
             } else {
-                setStatus("Lỗi: Server báo lỗi " + response.status);
+                let detail = `Server báo lỗi ${response.status}`;
+                try {
+                    const payload = await response.json();
+                    detail = payload?.detail || payload?.error || detail;
+                } catch (_) {}
+                setStatus("Lỗi: " + detail);
             }
         } catch (err){
             setStatus("Lỗi: Mất kết nối server");
