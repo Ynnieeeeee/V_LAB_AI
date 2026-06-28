@@ -237,8 +237,6 @@ async def get_tool_status(
     if not conversation or conversation.id_profile != user.id_profile or conversation.is_deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    ensure_tools_metadata_columns(session)
-    session.commit()
     _restore_legacy_room_models(id_conv, session)
     _queue_pending_3d_tools(id_conv, backgroundtask, session)
 
@@ -361,9 +359,6 @@ async def soft_delete_tool(
     except ValueError:
         raise HTTPException(status_code=400, detail="id_tool khong hop le")
 
-    ensure_tools_metadata_columns(session)
-    session.commit()
-
     tool = session.get(Tools, tool_uuid)
     if not tool:
         raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
@@ -406,9 +401,6 @@ async def update_tool_scale(
         tool_uuid = uuid.UUID(str(id_tool))
     except ValueError:
         raise HTTPException(status_code=400, detail="id_tool khong hop le")
-
-    ensure_tools_metadata_columns(session)
-    session.commit()
 
     tool = session.get(Tools, tool_uuid)
     if not tool:
@@ -468,9 +460,6 @@ async def update_tool_position(
     except ValueError:
         raise HTTPException(status_code=400, detail="id_tool khong hop le")
 
-    ensure_tools_metadata_columns(session)
-    session.commit()
-
     tool = session.get(Tools, tool_uuid)
     if not tool:
         raise HTTPException(status_code=404, detail="Khong tim thay dung cu")
@@ -518,9 +507,6 @@ async def update_tool_rotation(
         tool_uuid = uuid.UUID(str(id_tool))
     except ValueError:
         raise HTTPException(status_code=400, detail="id_tool khong hop le")
-
-    ensure_tools_metadata_columns(session)
-    session.commit()
 
     tool = session.get(Tools, tool_uuid)
     if not tool:

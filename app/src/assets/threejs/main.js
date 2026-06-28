@@ -8,14 +8,14 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
 import { initControls } from './controls.js?v=20260621-xr-input-v24';
-import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject, getCenterAimResultFromCamera } from './interaction.js?v=20260621-xr-pour-v32';
+import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject, getCenterAimResultFromCamera } from './interaction.js?v=20260628-smooth-save-v1';
 import { initChatEvents } from '../js/chatEvents.js?v=20260621-ngrok-same-origin-v2';
-import { initLabLogic } from './lab_logic.js?v=20260621-xr-input-v24';
+import { initLabLogic } from './lab_logic.js?v=20260628-smooth-save-v1';
 import { initLights } from './lights.js';
 import { initEnvironment, createLabTable } from './environment.js?v=20260621-xr-input-v24';
 import { notifyLab } from './labNotifier.js';
 import { setupChemicalCabinet } from './cabinetChemical.js?v=20260622-label-fit-v1';
-import { pouringEffect, pouringState } from './interaction.js?v=20260621-xr-pour-v32';
+import { pouringEffect, pouringState } from './interaction.js?v=20260628-smooth-save-v1';
 import { isXRNonPickupSurface, isXRPickupTarget } from './xrPickupPolicy.js?v=20260621-xr-input-v24';
 import { createHeatingManager } from './HeatingManager.js';
 import { createLabAssemblyManager } from './LabAssemblyManager.js?v=20260609-network-topology';

@@ -1,11 +1,26 @@
+import os
+
 from sqlmodel import SQLModel, create_engine, text, Session
 from app.config import DATABASE_URL
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 engine = create_engine(
     DATABASE_URL,
-    echo=True,
-    connect_args={"prepare_threshold": None},
-    pool_pre_ping=True
+    echo=_env_bool("SQL_ECHO", False),
+    connect_args={
+        "prepare_threshold": None,
+        "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10")),
+    },
+    pool_pre_ping=True,
+    pool_timeout=int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "10")),
+    pool_recycle=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
 )
 
 def check_db_connection():

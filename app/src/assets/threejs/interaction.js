@@ -58,6 +58,136 @@ import {
 } from './toolAnchors.js?v=20260609-network-topology';
 const THREE = three;
 const DEFAULT_REACTION_HEAT_TEMPERATURE = 45;
+const TOOL_PERSIST_DEBOUNCE_MS = 300;
+const TOOL_PERSIST_TIMEOUT_MS = 8000;
+const TOOL_PERSIST_FAILURE_NOTIFY_MS = 8000;
+const toolPersistState = new Map();
+let lastToolPersistFailureNotifiedAt = 0;
+
+function fetchWithTimeout(url, options = {}, timeoutMs = TOOL_PERSIST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: controller.signal })
+        .finally(() => window.clearTimeout(timeoutId));
+}
+
+async function readResponseDetail(response, fallback) {
+    try {
+        const payload = await response.json();
+        return payload?.detail || payload?.error || fallback;
+    } catch (_) {
+        return fallback;
+    }
+}
+
+function notifyToolPersistFailure(error) {
+    const now = Date.now();
+    if (now - lastToolPersistFailureNotifiedAt < TOOL_PERSIST_FAILURE_NOTIFY_MS) return;
+    lastToolPersistFailureNotifiedAt = now;
+
+    const message = error?.name === 'AbortError'
+        ? 'Lưu thao tác hơi chậm. Hệ thống sẽ thử lại ở lần thao tác tiếp theo.'
+        : 'Không thể lưu thao tác vừa rồi. Kiểm tra kết nối hoặc đăng nhập lại nếu tình trạng lặp lại.';
+    notifyLab?.(message, { timeoutMs: 3500 });
+}
+
+async function persistToolPatch(idTool, endpoint, payload, label) {
+    const token = localStorage.getItem('access_token');
+    if (!token) return { ok: false, skipped: true };
+
+    try {
+        const response = await fetchWithTimeout(`/api/lab/tools/${idTool}/${endpoint}`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const detail = await readResponseDetail(response, `HTTP ${response.status}`);
+            throw new Error(detail);
+        }
+
+        return { ok: true, response };
+    } catch (error) {
+        console.warn(`[${label}] failed to persist:`, error);
+        notifyToolPersistFailure(error);
+        return { ok: false, error };
+    }
+}
+
+function settleResolvers(resolvers, result) {
+    resolvers.forEach(resolve => {
+        try {
+            resolve(result);
+        } catch (_) {}
+    });
+}
+
+async function flushToolPersist(key) {
+    const state = toolPersistState.get(key);
+    if (!state || state.inFlight) return;
+
+    if (state.timerId) {
+        window.clearTimeout(state.timerId);
+        state.timerId = null;
+    }
+
+    const run = state.nextRun;
+    if (!run) {
+        if (!state.resolvers.length) toolPersistState.delete(key);
+        return;
+    }
+
+    const resolvers = state.resolvers.splice(0);
+    state.nextRun = null;
+    state.inFlight = true;
+    let result;
+    try {
+        result = await run();
+    } catch (error) {
+        result = { ok: false, error };
+    } finally {
+        state.inFlight = false;
+    }
+
+    settleResolvers(resolvers, result);
+
+    if (state.nextRun) {
+        state.timerId = window.setTimeout(() => flushToolPersist(key), 0);
+        return;
+    }
+
+    if (!state.resolvers.length) toolPersistState.delete(key);
+}
+
+function scheduleToolPersist(key, run, options = {}) {
+    let state = toolPersistState.get(key);
+    if (!state) {
+        state = {
+            timerId: null,
+            inFlight: false,
+            nextRun: null,
+            resolvers: []
+        };
+        toolPersistState.set(key, state);
+    }
+
+    state.nextRun = run;
+    return new Promise(resolve => {
+        state.resolvers.push(resolve);
+        if (state.timerId) window.clearTimeout(state.timerId);
+
+        if (options.immediate) {
+            state.timerId = window.setTimeout(() => flushToolPersist(key), 0);
+            return;
+        }
+
+        state.timerId = window.setTimeout(() => flushToolPersist(key), TOOL_PERSIST_DEBOUNCE_MS);
+    });
+}
 
 function isEditableTarget(event) {
     const target = event?.target;
@@ -1193,29 +1323,30 @@ function attachKeepWorldTransform(parent, child) {
     console.log('[Scale] after move:', child.scale);
 }
 
-async function persistToolScale(object) {
+async function persistToolScale(object, options = {}) {
     const idTool = object?.userData?.toolData?.id_tool || object?.userData?.id_tool;
     if (!idTool || !object?.scale) return;
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
 
     const scale = object.scale;
-    try {
-        await fetch(`/api/lab/tools/${idTool}/scale`, {
-            method: 'PATCH',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                scale_x: scale.x,
-                scale_y: scale.y,
-                scale_z: scale.z
-            })
-        });
-    } catch (error) {
-        console.warn('[Scale] failed to persist scale:', error);
+    const payload = {
+        scale_x: scale.x,
+        scale_y: scale.y,
+        scale_z: scale.z
+    };
+    const result = await scheduleToolPersist(
+        `scale:${idTool}`,
+        () => persistToolPatch(idTool, 'scale', payload, 'Scale'),
+        options
+    );
+
+    if (result?.ok && object.userData?.toolData) {
+        object.userData.toolData.scale_x = payload.scale_x;
+        object.userData.toolData.scale_y = payload.scale_y;
+        object.userData.toolData.scale_z = payload.scale_z;
+        object.userData.toolData.has_custom_scale = true;
     }
+
+    return result;
 }
 
 export const draggableObjects = [];
@@ -1278,28 +1409,28 @@ export function updateDroppedObjectFalls(delta = 0.016) {
     });
 }
 
-async function persistToolRotation(object) {
+async function persistToolRotation(object, options = {}) {
     const idTool = object?.userData?.toolData?.id_tool || object?.userData?.id_tool;
     if (!idTool || !object?.rotation) return;
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
 
-    try {
-        await fetch(`/api/lab/tools/${idTool}/rotation`, {
-            method: 'PATCH',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                rotation_x: object.rotation.x,
-                rotation_y: object.rotation.y,
-                rotation_z: object.rotation.z
-            })
-        });
-    } catch (error) {
-        console.warn('[ToolRotate] persist rotation failed:', error);
+    const payload = {
+        rotation_x: object.rotation.x,
+        rotation_y: object.rotation.y,
+        rotation_z: object.rotation.z
+    };
+    const result = await scheduleToolPersist(
+        `rotation:${idTool}`,
+        () => persistToolPatch(idTool, 'rotation', payload, 'ToolRotate'),
+        options
+    );
+
+    if (result?.ok && object.userData?.toolData) {
+        object.userData.toolData.rotation_x = payload.rotation_x;
+        object.userData.toolData.rotation_y = payload.rotation_y;
+        object.userData.toolData.rotation_z = payload.rotation_z;
     }
+
+    return result;
 }
 
 
@@ -1307,52 +1438,45 @@ function getToolId(object) {
     return object?.userData?.toolData?.id_tool || object?.userData?.id_tool;
 }
 
-export async function persistToolPosition(object) {
+export async function persistToolPosition(object, options = {}) {
     const idTool = getToolId(object);
     if (!idTool || !object?.isObject3D) return;
-
-    const token = localStorage.getItem('access_token');
-    if (!token) return;
 
     const instanceId = object.userData?.instanceId || 'default';
     const position = new three.Vector3();
     object.updateMatrixWorld?.(true);
     object.getWorldPosition(position);
+    const payload = {
+        instance_id: instanceId,
+        position_x: position.x,
+        position_y: position.y,
+        position_z: position.z
+    };
 
-    try {
-        const res = await fetch(`/api/lab/tools/${idTool}/position`, {
-            method: 'PATCH',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                instance_id: instanceId,
-                position_x: position.x,
-                position_y: position.y,
-                position_z: position.z
-            })
-        });
+    const result = await scheduleToolPersist(
+        `position:${idTool}:${instanceId}`,
+        () => persistToolPatch(idTool, 'position', payload, 'ToolPosition'),
+        options
+    );
 
-        if (res.ok && object.userData?.toolData) {
-            let positions = object.userData.toolData.positions || {};
-            if (typeof positions === 'string') {
-                try {
-                    positions = JSON.parse(positions) || {};
-                } catch (_) {
-                    positions = {};
-                }
+    if (result?.ok && object.userData?.toolData) {
+        let positions = object.userData.toolData.positions || {};
+        if (typeof positions === 'string') {
+            try {
+                positions = JSON.parse(positions) || {};
+            } catch (_) {
+                positions = {};
             }
-            object.userData.toolData.positions = positions;
-            positions[instanceId] = {
-                x: position.x,
-                y: position.y,
-                z: position.z
-            };
         }
-    } catch (error) {
-        console.warn('[ToolPosition] persist position failed:', error);
+        object.userData.toolData.positions = positions;
+        positions[instanceId] = {
+            x: payload.position_x,
+            y: payload.position_y,
+            z: payload.position_z
+        };
     }
+
+    return result;
 }
 
 async function persistToolSoftDelete(object) {

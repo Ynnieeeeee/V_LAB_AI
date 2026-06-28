@@ -5,7 +5,7 @@ import { applyAdvancedPBR } from './pbr.js';
 import { applyToolMetadataToObject } from './ToolClassifier.js';
 import { buildContainerCavityCSG } from './CavityCSG.js?v=20260527-liquid-soft-waves';
 import { ensureAutoSnapPoints } from './toolAnchors.js?v=20260609-network-topology';
-import { draggableObjects, persistToolPosition } from './interaction.js?v=20260621-xr-pour-v32';
+import { draggableObjects, persistToolPosition } from './interaction.js?v=20260628-smooth-save-v1';
 
 const loader = new GLTFLoader();
 const loaderModels = new Map(); // instanceId -> mesh
@@ -15,6 +15,9 @@ let globalRegisterDraggable = null;
 let lastConvId = null; // Theo dõi sự thay đổi cuộc hội thoại
 const pendingModelToolIds = new Set();
 const notifiedModelFailureIds = new Set();
+const STATUS_POLL_INTERVAL_MS = 5000;
+const STATUS_POLL_TIMEOUT_MS = 8000;
+let statusPollInFlight = false;
 
 function normalizeToolId(value) {
     return value === undefined || value === null ? null : String(value);
@@ -68,7 +71,7 @@ function getLoadedToolModels() {
 function persistLoadedToolPositions() {
     const models = getLoadedToolModels();
     if (!models.length) return Promise.resolve([]);
-    return Promise.allSettled(models.map(model => persistToolPosition(model)));
+    return Promise.allSettled(models.map(model => persistToolPosition(model, { immediate: true })));
 }
 
 function removeFromDraggableObjects(model) {
@@ -113,13 +116,13 @@ export function initLabLogic(scene, registerDraggable) {
     
     // Xuất các hàm ra window để chat_logic.js hoặc các file khác gọi trực tiếp
     window.clearLab = () => clearLab(scene);
-    window.checkBackendStatus = () => checkBackendStatus(scene);
+    window.checkBackendStatus = (options = {}) => checkBackendStatus(scene, options);
     window.registerPendingModelTools = registerPendingModelTools;
     window.loadAndPlaceModel = (tool, displayIndex, instanceId) => 
         loadAndPlaceModel(scene, tool, displayIndex, instanceId);
 
     // Polling định kỳ cập nhật trạng thái dụng cụ (5 giây/lần)
-    setInterval(() => checkBackendStatus(scene), 5000);
+    setInterval(() => checkBackendStatus(scene), STATUS_POLL_INTERVAL_MS);
 }
 
 /**
@@ -154,7 +157,9 @@ export function clearLab(scene, options = {}) {
 /**
  * Kiểm tra trạng thái dụng cụ từ Backend
  */
-async function checkBackendStatus(scene) {
+async function checkBackendStatus(scene, options = {}) {
+    if (statusPollInFlight && !options.force) return;
+
     const id_conv = window.currentConvId;
     const token = localStorage.getItem('access_token');
 
@@ -168,6 +173,12 @@ async function checkBackendStatus(scene) {
         return;
     }
 
+    statusPollInFlight = true;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), STATUS_POLL_TIMEOUT_MS);
+
+    try {
+
     // Nếu người dùng chuyển sang hội thoại khác, tự động dọn bàn
     if (lastConvId !== id_conv) {
         console.log("Phát hiện chuyển đổi hội thoại, đang làm mới bàn thí nghiệm...");
@@ -176,9 +187,9 @@ async function checkBackendStatus(scene) {
         lastConvId = id_conv;
     }
 
-    try {
         // Gửi request kèm tham số id_conv rõ ràng
         const res = await fetch(`/api/lab/status?id_conv=${encodeURIComponent(id_conv)}&include_failures=true`, {
+            signal: controller.signal,
             headers: {
                 Authorization: `Bearer ${token}`
             }
@@ -243,11 +254,16 @@ async function checkBackendStatus(scene) {
         });
     } catch (err) {
         // Chỉ log cảnh báo thay vì lỗi đỏ nếu không kết nối được backend
-        if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
+        if (err.name === 'AbortError') {
+            console.warn("Polling Lab qua thoi gian cho, bo qua luot nay.");
+        } else if (err.name === 'TypeError' && err.message.includes('Failed to fetch')) {
             console.warn("Không thể kết nối đến backend qua origin hiện tại.");
         } else {
             console.error("Lỗi Polling Lab:", err);
         }
+    } finally {
+        window.clearTimeout(timeoutId);
+        statusPollInFlight = false;
     }
 }
 

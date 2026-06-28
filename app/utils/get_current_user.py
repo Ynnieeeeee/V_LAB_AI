@@ -5,14 +5,14 @@ from uuid import UUID
 
 from app.config import SECRET_KEY
 from sqlmodel import Session, select
-from app.models.base_db import engine
+from app.models.base_db import get_session
 from app.models.profiles import Profiles
-from app.utils.admin_schema import ensure_admin_schema
 
 security = HTTPBearer(auto_error=False)
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(security)
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    session: Session = Depends(get_session),
 ):
     if not credentials:
         raise HTTPException(
@@ -39,21 +39,17 @@ def get_current_user(
             detail="Invalid token"
         )
 
-    with Session(engine) as session:
-        ensure_admin_schema(session)
-        session.commit()
+    stmt = select(Profiles).where(
+        Profiles.id_profile == id_user
+    )
 
-        stmt = select(Profiles).where(
-            Profiles.id_profile == id_user
+    user = session.exec(stmt).first()
+
+    if not user:
+
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
         )
 
-        user = session.exec(stmt).first()
-
-        if not user:
-
-            raise HTTPException(
-                status_code=404,
-                detail="User not found"
-            )
-
-        return user
+    return user
