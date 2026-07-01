@@ -27,13 +27,13 @@ document.addEventListener("DOMContentLoaded", () => {
                     <button id="update-btn"
                         class="w-full text-left px-4 py-3 text-sm hover:bg-gray-100 flex items-center gap-2">
                         <i class="fa-solid fa-crown text-yellow-500"></i>
-                        Nâng cấp
+                        Upgrade
                     </button>  
 
                     <button id="logout-btn"
                         class="w-full text-left px-4 py-3 text-sm hover:bg-gray-100 flex items-center gap-2">
                         <i class="fa-solid fa-right-from-bracket text-gray-600"></i>
-                        Đăng xuất
+                        Log out
                     </button>
 
                 </div>
@@ -73,7 +73,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <a href="/login">
                 <button
                     class="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded-xl text-sm font-semibold transition shadow-lg">
-                    Đăng nhập
+                    Log in
                 </button>
             </a>
         `

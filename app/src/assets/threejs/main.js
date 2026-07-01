@@ -9,10 +9,19 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { camera, cameraGroup, updateCameraAspect } from './camera.js';
 import { initControls } from './controls.js?v=20260621-xr-input-v24';
 import { registerDraggableObject, initInteractionEvents, updateArmsAnimation, updateDroppedObjectFalls, draggableObjects, findOpenFloorPositionForObject, getCenterAimResultFromCamera } from './interaction.js?v=20260628-smooth-save-v1';
-import { initChatEvents } from '../js/chatEvents.js?v=20260621-ngrok-same-origin-v2';
+import { initChatEvents } from '../js/chatEvents.js?v=20260701-upload-image-model-v1';
 import { initLabLogic } from './lab_logic.js?v=20260628-smooth-save-v1';
 import { initLights } from './lights.js';
-import { initEnvironment, createLabTable } from './environment.js?v=20260621-xr-input-v24';
+import {
+    DEFAULT_ROOM_SIZE,
+    MAX_ROOM_SIZE,
+    MIN_ROOM_SIZE,
+    createLabTable,
+    getLabRoomSize,
+    initEnvironment,
+    normalizeRoomSize,
+    setLabRoomSize
+} from './environment.js?v=20260629-room-layout-v1';
 import { notifyLab } from './labNotifier.js';
 import { setupChemicalCabinet } from './cabinetChemical.js?v=20260622-label-fit-v1';
 import { pouringEffect, pouringState } from './interaction.js?v=20260628-smooth-save-v1';
@@ -174,8 +183,15 @@ let chemicalCabinet = null;
 const frameClock = new three.Clock();
 let movableTableCounter = 0;
 const MOVABLE_TABLES_STORAGE_KEY = 'vlab_movable_tables_by_room';
+const DRAFT_ROOM_LAYOUT_STORAGE_KEY = 'vlab_draft_room_layout';
+const ROOM_SIZE_STEP = 4;
 let currentMovableTableRoomKey = null;
 let isRestoringMovableTables = false;
+let roomLayoutSaveTimer = null;
+let roomLayoutLoadToken = 0;
+let isApplyingRoomLayout = false;
+
+setupRoomSizeControls();
 
 function isUsableRoomId(value) {
     return Boolean(value && value !== 'null' && value !== 'undefined');
@@ -198,6 +214,235 @@ function readMovableTablesState() {
 
 function writeMovableTablesState(state) {
     localStorage.setItem(MOVABLE_TABLES_STORAGE_KEY, JSON.stringify(state));
+}
+
+function currentRoomLayoutPayload() {
+    return { room_size: getLabRoomSize() };
+}
+
+function readDraftRoomLayout() {
+    try {
+        return JSON.parse(sessionStorage.getItem(DRAFT_ROOM_LAYOUT_STORAGE_KEY) || 'null');
+    } catch (_) {
+        return null;
+    }
+}
+
+function writeDraftRoomLayout(layout = currentRoomLayoutPayload()) {
+    const normalized = { room_size: normalizeRoomSize(layout.room_size ?? layout.roomSize ?? DEFAULT_ROOM_SIZE) };
+    window.pendingLabRoomLayout = normalized;
+    try {
+        sessionStorage.setItem(DRAFT_ROOM_LAYOUT_STORAGE_KEY, JSON.stringify(normalized));
+    } catch (_) {}
+    return normalized;
+}
+
+function clearDraftRoomLayout() {
+    window.pendingLabRoomLayout = null;
+    try {
+        sessionStorage.removeItem(DRAFT_ROOM_LAYOUT_STORAGE_KEY);
+    } catch (_) {}
+}
+
+function roomLayoutHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = localStorage.getItem('access_token');
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return typeof window.labAuthHeaders === 'function'
+        ? window.labAuthHeaders(headers)
+        : headers;
+}
+
+function applyLabRoomLayout(layout = {}, options = {}) {
+    const roomSize = normalizeRoomSize(layout.room_size ?? layout.roomSize ?? DEFAULT_ROOM_SIZE);
+    isApplyingRoomLayout = true;
+    try {
+        setLabRoomSize(roomSize, { silent: options.silent === true });
+    } finally {
+        isApplyingRoomLayout = false;
+    }
+    updateRoomSizeControls();
+
+    if (options.rememberDraft !== false && !isUsableRoomId(window.currentConvId)) {
+        writeDraftRoomLayout({ room_size: roomSize });
+    }
+    return roomSize;
+}
+
+async function loadLabRoomLayout(conversationId = window.currentConvId) {
+    const id = isUsableRoomId(conversationId) ? conversationId : null;
+    const loadToken = ++roomLayoutLoadToken;
+
+    if (!id) {
+        applyLabRoomLayout(readDraftRoomLayout() || { room_size: DEFAULT_ROOM_SIZE });
+        return null;
+    }
+
+    try {
+        const response = await fetch(`/api/lab/layout/${encodeURIComponent(id)}`, {
+            headers: roomLayoutHeaders()
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const layout = await response.json();
+        if (loadToken !== roomLayoutLoadToken || String(window.currentConvId) !== String(id)) {
+            return layout;
+        }
+        applyLabRoomLayout(layout, { rememberDraft: false });
+        return layout;
+    } catch (error) {
+        console.warn('[RoomLayout] failed to load:', error);
+        if (loadToken === roomLayoutLoadToken && String(window.currentConvId) === String(id)) {
+            applyLabRoomLayout({ room_size: DEFAULT_ROOM_SIZE }, { rememberDraft: false });
+            notifyLab?.('Kh\u00f4ng th\u1ec3 t\u1ea3i k\u00edch th\u01b0\u1edbc ph\u00f2ng, \u0111ang d\u00f9ng m\u1eb7c \u0111\u1ecbnh.');
+        }
+        return null;
+    }
+}
+
+async function saveCurrentLabRoomLayout(conversationId = window.currentConvId, options = {}) {
+    const id = isUsableRoomId(conversationId) ? conversationId : null;
+    const payload = currentRoomLayoutPayload();
+
+    if (!id) {
+        writeDraftRoomLayout(payload);
+        return payload;
+    }
+
+    try {
+        const response = await fetch(`/api/lab/layout/${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            headers: roomLayoutHeaders(),
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const layout = await response.json();
+        if (options.clearDraft !== false) clearDraftRoomLayout();
+        return layout;
+    } catch (error) {
+        console.warn('[RoomLayout] failed to save:', error);
+        writeDraftRoomLayout(payload);
+        if (options.notify !== false) {
+            notifyLab?.('Kh\u00f4ng th\u1ec3 l\u01b0u k\u00edch th\u01b0\u1edbc ph\u00f2ng. H\u1ec7 th\u1ed1ng s\u1ebd th\u1eed l\u1ea1i khi b\u1ea1n thao t\u00e1c ti\u1ebfp.');
+        }
+        return null;
+    }
+}
+
+function scheduleRoomLayoutSave() {
+    if (isApplyingRoomLayout) return;
+    if (roomLayoutSaveTimer) window.clearTimeout(roomLayoutSaveTimer);
+
+    if (!isUsableRoomId(window.currentConvId)) {
+        writeDraftRoomLayout();
+        return;
+    }
+
+    roomLayoutSaveTimer = window.setTimeout(() => {
+        roomLayoutSaveTimer = null;
+        saveCurrentLabRoomLayout(window.currentConvId);
+    }, 350);
+}
+
+function claimCurrentRoomLayoutForRoom(conversationId) {
+    if (!isUsableRoomId(conversationId)) return Promise.resolve(null);
+    return saveCurrentLabRoomLayout(conversationId, { clearDraft: true, notify: false });
+}
+
+function resetDraftRoomLayout() {
+    clearDraftRoomLayout();
+    applyLabRoomLayout({ room_size: DEFAULT_ROOM_SIZE }, { rememberDraft: true });
+}
+
+function getChemicalCabinetZ() {
+    const minZ = Number(window.labRoomBounds?.minZ);
+    return Number.isFinite(minZ) ? minZ + 0.2 : -9.8;
+}
+
+function positionChemicalCabinetAgainstWall() {
+    if (!chemicalCabinet?.isObject3D) return;
+    chemicalCabinet.position.z = getChemicalCabinetZ();
+    chemicalCabinet.updateMatrixWorld?.(true);
+}
+
+function collectRoomFitObjects() {
+    const candidates = [
+        ...(Array.isArray(window.labTables) ? window.labTables : []),
+        ...draggableObjects
+    ];
+    const seen = new Set();
+    return candidates.filter(object => {
+        if (!object?.isObject3D || seen.has(object.uuid)) return false;
+        seen.add(object.uuid);
+        if (object.visible === false || object.userData?.isDeleted === true) return false;
+        return true;
+    });
+}
+
+function getRoomFitBlocker(roomSize) {
+    const half = (roomSize / 2) - 0.25;
+    for (const object of collectRoomFitObjects()) {
+        object.updateMatrixWorld?.(true);
+        const box = new three.Box3().setFromObject(object);
+        if (box.isEmpty()) continue;
+        if (box.min.x < -half || box.max.x > half || box.min.z < -half || box.max.z > half) {
+            return object;
+        }
+    }
+    return null;
+}
+
+function updateRoomSizeControls() {
+    const label = document.getElementById('roomSizeLabel');
+    const growBtn = document.getElementById('roomGrowBtn');
+    const shrinkBtn = document.getElementById('roomShrinkBtn');
+    const roomSize = getLabRoomSize();
+
+    if (label) label.textContent = `${Math.round(roomSize)}m`;
+    if (growBtn) {
+        growBtn.disabled = roomSize >= MAX_ROOM_SIZE;
+        growBtn.classList.toggle('opacity-40', growBtn.disabled);
+        growBtn.classList.toggle('cursor-not-allowed', growBtn.disabled);
+    }
+    if (shrinkBtn) {
+        shrinkBtn.disabled = roomSize <= MIN_ROOM_SIZE;
+        shrinkBtn.classList.toggle('opacity-40', shrinkBtn.disabled);
+        shrinkBtn.classList.toggle('cursor-not-allowed', shrinkBtn.disabled);
+    }
+}
+
+function changeLabRoomSize(delta) {
+    const currentSize = getLabRoomSize();
+    const nextSize = normalizeRoomSize(currentSize + delta);
+    if (nextSize === currentSize) return;
+
+    if (nextSize < currentSize) {
+        const blocker = getRoomFitBlocker(nextSize);
+        if (blocker) {
+            notifyLab?.('H\u00e3y k\u00e9o b\u00e0n ho\u1eb7c d\u1ee5ng c\u1ee5 v\u00e0o g\u1ea7n gi\u1eefa ph\u00f2ng tr\u01b0\u1edbc khi thu nh\u1ecf.');
+            return;
+        }
+    }
+
+    setLabRoomSize(nextSize);
+    updateRoomSizeControls();
+    scheduleRoomLayoutSave();
+}
+
+function setupRoomSizeControls() {
+    window.loadLabRoomLayout = loadLabRoomLayout;
+    window.saveCurrentLabRoomLayout = saveCurrentLabRoomLayout;
+    window.claimCurrentRoomLayoutForRoom = claimCurrentRoomLayoutForRoom;
+    window.resetDraftRoomLayout = resetDraftRoomLayout;
+    window.applyLabRoomLayout = applyLabRoomLayout;
+
+    document.getElementById('roomGrowBtn')?.addEventListener('click', () => changeLabRoomSize(ROOM_SIZE_STEP));
+    document.getElementById('roomShrinkBtn')?.addEventListener('click', () => changeLabRoomSize(-ROOM_SIZE_STEP));
+    window.addEventListener('lab:room-size-changed', () => {
+        updateRoomSizeControls();
+        positionChemicalCabinetAgainstWall();
+    });
+
+    updateRoomSizeControls();
 }
 
 function getSceneMovableTables() {
@@ -404,11 +649,12 @@ export async function loadChemistryCabinet() {
     try {
         const bookcaseGltf = await loader.loadAsync(`${modelPath}bookcase.glb`);
         chemicalCabinet = bookcaseGltf.scene;
-        chemicalCabinet.position.set(0, 0, -9.8);
+        chemicalCabinet.position.set(0, 0, getChemicalCabinetZ());
         chemicalCabinet.rotation.y = -Math.PI / 2;
         chemicalCabinet.scale.set(2.0, 2.0, 2.0);
         scene.add(chemicalCabinet);
         window.chemicalCabinet = chemicalCabinet;
+        positionChemicalCabinetAgainstWall();
 
         const bottleGltf = await loader.loadAsync(`${modelPath}chemical_bottle_1778830207.glb`);
         const bottleBase = bottleGltf.scene;

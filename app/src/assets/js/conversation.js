@@ -22,6 +22,28 @@ function syncSubjectEnvironment(subject, attempt = 0) {
     }
 }
 
+function syncRoomLayout(id, attempt = 0) {
+    if (typeof window.loadLabRoomLayout === "function") {
+        window.loadLabRoomLayout(id);
+        return;
+    }
+
+    if (attempt < 20) {
+        setTimeout(() => syncRoomLayout(id, attempt + 1), 100);
+    }
+}
+
+function resetDraftRoomLayout(attempt = 0) {
+    if (typeof window.resetDraftRoomLayout === "function") {
+        window.resetDraftRoomLayout();
+        return;
+    }
+
+    if (attempt < 20) {
+        setTimeout(() => resetDraftRoomLayout(attempt + 1), 100);
+    }
+}
+
 function getConversationIdFromPath() {
     const match = window.location.pathname.match(/^\/chat\/([^/]+)$/);
     return match?.[1] || null;
@@ -34,6 +56,7 @@ function activateConversation(id, subject, options = {}) {
     window.currentSubject = subject;
     localStorage.setItem('lab_conv_id', id);
     syncSubjectEnvironment(subject);
+    syncRoomLayout(id);
 
     if (options.updateHistory !== false) {
         window.history.pushState({}, "", `/chat/${id}`);
@@ -118,6 +141,7 @@ document.addEventListener("click", async (e) => {
         window.currentConvId = id;
         window.currentSubject = subject;
         syncSubjectEnvironment(subject);
+        syncRoomLayout(id);
         localStorage.setItem('lab_conv_id', id);
         window.history.pushState({}, "", `/chat/${id}`);
         
@@ -228,6 +252,7 @@ async function confirmDeleteConversation() {
         localStorage.removeItem('lab_conv_id');
         window.history.pushState({}, "", "/chat");
         window.clearLab();
+        resetDraftRoomLayout();
         document.getElementById('subject-overlay')?.classList.remove('hidden');
     }
     loadConversations();
@@ -247,6 +272,7 @@ document.addEventListener("DOMContentLoaded", () => {
             localStorage.removeItem('lab_conv_id');
             window.history.pushState({}, "", "/chat");
             if (window.clearLab) window.clearLab();
+            resetDraftRoomLayout();
             
             //hiện lại bảng chọn môn học
             if (window.showSubjectOverlay) {

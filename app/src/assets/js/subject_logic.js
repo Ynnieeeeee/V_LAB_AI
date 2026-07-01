@@ -38,18 +38,18 @@ function ensureSubjectLoginDialog() {
         <div class="subject-login-backdrop" data-subject-login-cancel></div>
         <div class="subject-login-card" role="dialog" aria-modal="true" aria-labelledby="subject-login-title" tabindex="-1">
             <div class="subject-login-header">
-                <h2 id="subject-login-title">Đăng nhập để tiếp tục</h2>
+                <h2 id="subject-login-title">Log in to continue</h2>
             </div>
             <div class="subject-login-divider"></div>
             <p class="subject-login-message">
-                Bạn cần đăng nhập để chọn môn học và bắt đầu phòng thí nghiệm.
+                You need to log in to select a subject and start the lab.
             </p>
             <div class="subject-login-actions">
                 <button type="button" class="subject-login-primary" data-subject-login-confirm>
-                    Đăng nhập
+                    Log in
                 </button>
                 <button type="button" class="subject-login-secondary" data-subject-login-cancel>
-                    Hủy
+                    Cancel
                 </button>
             </div>
         </div>
@@ -193,6 +193,9 @@ window.selectSubject = async function(type, name) {
     // Luôn dọn sạch bàn 3D khi chọn môn học mới để bắt đầu
     if (window.clearLab) {
         window.clearLab();
+        if (typeof window.resetDraftRoomLayout === 'function') {
+            window.resetDraftRoomLayout();
+        }
     }
 
     // 3.5. Hiển thị/Ẩn tủ hóa chất tùy theo môn học

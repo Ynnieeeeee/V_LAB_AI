@@ -172,14 +172,9 @@ async def start_3d_pipeline_task(tool_ids: list, engine):
 
                 if tool.image_2d_url and not _is_public_image_url(tool.image_2d_url):
                     print(
-                        "[Image2Model] Existing image is local/private; replacing with a direct internet URL:",
+                        "[Image2Model] Existing image is local/private; will upload image bytes directly:",
                         tool.image_2d_url,
                     )
-                    tool.image_2d_url = None
-                    tool.image_hash = None
-                    _reset_model_for_new_image(tool, None, "replace_local_image_with_public_url")
-                    session.add(tool)
-                    session.commit()
 
                 if _model_matches_current_image(tool):
                     print("[Image2Model] FORCE regenerate:", False)

@@ -200,6 +200,7 @@
                 document.title = room.title ? `${room.title} – vlab` : "Shared Lab – vlab";
                 applySharedChrome();
                 syncSharedSubject(window.currentSubject);
+                window.loadLabRoomLayout?.(room.id);
                 window.dispatchEvent(new CustomEvent("lab:shared-room-ready", { detail: room }));
                 window.checkBackendStatus?.();
                 sharedRoomLoaded = true;

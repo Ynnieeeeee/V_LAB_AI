@@ -12,7 +12,7 @@ import uuid
 router = APIRouter()
 
 # URL ngrok hiện tại
-BASE_URL = "https://earplugs-direness-scurvy.ngrok-free.dev"
+BASE_URL = "https://protrude-scariness-linoleum.ngrok-free.dev"
 
 @router.get("/auth/google")
 async def login_google(request: Request):

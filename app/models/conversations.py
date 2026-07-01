@@ -1,4 +1,5 @@
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, JSON
 from typing import Optional
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ class Conversations(SQLModel, table=True):
     id_profile: uuid.UUID = Field(foreign_key="profiles.id_profile")
     subject_type: str = Field(default="general")
     title: Optional[str] = None
+    lab_layout: dict = Field(default_factory=dict, sa_column=Column(JSON, default=dict))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     is_deleted: bool = False

@@ -1,8 +1,114 @@
 import * as three from 'three';
 
-const ROOM_SIZE = 20;
+export const DEFAULT_ROOM_SIZE = 20;
+export const MIN_ROOM_SIZE = 20;
+export const MAX_ROOM_SIZE = 60;
+const ROOM_HEIGHT = 10;
+const ROOM_CENTER_Y = 4.9;
 const TABLE_TOP_HEIGHT = 1.5;
 const TABLE_TOP_THICKNESS = 0.2;
+
+const environmentState = {
+    scene: null,
+    room: null,
+    grid: null,
+    tableGroup: null,
+    roomSize: DEFAULT_ROOM_SIZE
+};
+
+export function normalizeRoomSize(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return DEFAULT_ROOM_SIZE;
+    const clamped = Math.min(MAX_ROOM_SIZE, Math.max(MIN_ROOM_SIZE, numeric));
+    return Math.round(clamped * 10) / 10;
+}
+
+function disposeMaterial(material) {
+    if (Array.isArray(material)) {
+        material.forEach(item => item?.dispose?.());
+        return;
+    }
+    material?.dispose?.();
+}
+
+function disposeMesh(mesh) {
+    mesh?.geometry?.dispose?.();
+    disposeMaterial(mesh?.material);
+}
+
+function applyRoomGlobals(roomSize) {
+    const halfSize = roomSize / 2;
+    window.labRoomSize = roomSize;
+    window.labRoomBounds = {
+        minX: -halfSize,
+        maxX: halfSize,
+        minZ: -halfSize,
+        maxZ: halfSize,
+        size: roomSize
+    };
+}
+
+function createRoomMesh(roomSize) {
+    const roomGeometry = new three.BoxGeometry(roomSize, ROOM_HEIGHT, roomSize);
+    const roomMaterial = new three.MeshStandardMaterial({
+        color: 0xCFECF3,
+        side: three.BackSide,
+        roughness: 0.8
+    });
+    const room = new three.Mesh(roomGeometry, roomMaterial);
+    room.position.y = ROOM_CENTER_Y;
+    room.receiveShadow = true;
+    // The inside of this box is also the visible floor/walls/ceiling. Mark it
+    // explicitly so XR gaze selection treats it as scenery, never as a tool.
+    room.userData.isRoomSurface = true;
+    return room;
+}
+
+function createRoomGrid(roomSize) {
+    const divisions = Math.max(1, Math.round(roomSize));
+    const grid = new three.GridHelper(roomSize, divisions, 0xCFECF3, 0x1e293b);
+    grid.position.y = 0.01;
+    return grid;
+}
+
+export function getLabRoomSize() {
+    return environmentState.roomSize;
+}
+
+export function setLabRoomSize(value, options = {}) {
+    const previousSize = environmentState.roomSize;
+    const roomSize = normalizeRoomSize(value);
+    environmentState.roomSize = roomSize;
+    applyRoomGlobals(roomSize);
+
+    if (environmentState.room) {
+        environmentState.room.geometry?.dispose?.();
+        environmentState.room.geometry = new three.BoxGeometry(roomSize, ROOM_HEIGHT, roomSize);
+        environmentState.room.position.y = ROOM_CENTER_Y;
+        environmentState.room.updateMatrixWorld(true);
+    }
+
+    if (environmentState.scene) {
+        if (environmentState.grid) {
+            environmentState.scene.remove(environmentState.grid);
+            disposeMesh(environmentState.grid);
+        }
+        environmentState.grid = createRoomGrid(roomSize);
+        environmentState.scene.add(environmentState.grid);
+    }
+
+    if (options.silent !== true && previousSize !== roomSize) {
+        window.dispatchEvent(new CustomEvent('lab:room-size-changed', {
+            detail: {
+                roomSize,
+                previousSize,
+                bounds: window.labRoomBounds
+            }
+        }));
+    }
+
+    return roomSize;
+}
 
 export function createLabTable(options = {}) {
     const {
@@ -72,19 +178,9 @@ export function createLabTable(options = {}) {
 }
 
 export function initEnvironment(scene) {
-    const roomSize = ROOM_SIZE;
-    const roomGeometry = new three.BoxGeometry(roomSize, 10, roomSize);
-    const roomMaterial = new three.MeshStandardMaterial({
-        color: 0xCFECF3,
-        side: three.BackSide,
-        roughness: 0.8
-    });
-    const room = new three.Mesh(roomGeometry, roomMaterial);
-    room.position.y = 4.9;
-    room.receiveShadow = true;
-    // The inside of this box is also the visible floor/walls/ceiling. Mark it
-    // explicitly so XR gaze selection treats it as scenery, never as a tool.
-    room.userData.isRoomSurface = true;
+    const pendingLayout = window.pendingLabRoomLayout || {};
+    const roomSize = normalizeRoomSize(window.pendingLabRoomSize || pendingLayout.room_size || pendingLayout.roomSize || DEFAULT_ROOM_SIZE);
+    const room = createRoomMesh(roomSize);
     scene.add(room);
 
     const loader = new three.CubeTextureLoader();
@@ -104,16 +200,16 @@ export function initEnvironment(scene) {
     window.tableObject = tableGroup;
     window.labTable = tableGroup;
     window.TABLE_Y = tableGroup.userData.tableSurfaceY;
-    window.labRoomBounds = {
-        minX: -roomSize / 2,
-        maxX: roomSize / 2,
-        minZ: -roomSize / 2,
-        maxZ: roomSize / 2
-    };
+    applyRoomGlobals(roomSize);
 
-    const grid = new three.GridHelper(roomSize, roomSize, 0xCFECF3, 0x1e293b);
-    grid.position.y = 0.01;
+    const grid = createRoomGrid(roomSize);
     scene.add(grid);
+
+    environmentState.scene = scene;
+    environmentState.room = room;
+    environmentState.grid = grid;
+    environmentState.tableGroup = tableGroup;
+    environmentState.roomSize = roomSize;
 
     return { room, tableGroup, grid };
 }
